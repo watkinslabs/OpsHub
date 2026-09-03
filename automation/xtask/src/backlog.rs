@@ -195,10 +195,11 @@ pub(crate) fn scaffold_plan() -> Result<(), String> {
         for lane in ["requirements", "api", "database", "frontend", "e2e", "accessibility", "performance"] {
             let lane_dir = dir.join(lane);
             fs::create_dir_all(&lane_dir).map_err(|e| e.to_string())?;
-            for (file, body) in [("README.md", format!("# {} {lane}\n\nFeature-gated `{}_FEATURE` evidence for {}.\n", f.id, f.id, f.title)), ("cases.md", format!("# {} {lane} cases\n\n[testable cases for {}]\n", f.id, f.title))] {
-                let target = lane_dir.join(file);
-                if !target.exists() { fs::write(&target, body).map_err(|e| e.to_string())?; created += 1; }
-            }
+            // Only cases.md. A per-lane README restates the id, flag, and title already carried by
+            // the path, the feature README, and cases.md itself.
+            let target = lane_dir.join("cases.md");
+            let body = format!("# {} {lane} cases\n\n[testable cases for {}]\n", f.id, f.title);
+            if !target.exists() { fs::write(&target, body).map_err(|e| e.to_string())?; created += 1; }
         }
         for (file, body) in [("README.md", format!("# {} — {} harness\n\n- Gate: `{}_FEATURE`\n- Targeted: `cargo xtask test-feature {}`\n- Full: `cargo xtask test-all`\n", f.id, f.title, f.id, f.id)), ("feature.toml", format!("feature = \"{}\"\nflag = \"{}_FEATURE\"\nfixture_scope = \"isolated-tenant\"\nparallel_safe = true\ntargeted_command = \"cargo xtask test-feature {}\"\nfull_command = \"cargo xtask test-all\"\n", f.id, f.id, f.id))] {
             let target = dir.join(file);

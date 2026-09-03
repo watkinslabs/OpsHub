@@ -7,7 +7,7 @@ testing/
 ├── harness/             # shared Rust/API/DB/React/browser runners
 ├── fixtures/            # deterministic builders and seed data
 ├── features/            # one folder per feature ticket
-│   └── F###/
+│   └── F###/            # feature.toml, README.md, then one cases.md per lane
 │       ├── requirements/
 │       ├── api/
 │       ├── database/

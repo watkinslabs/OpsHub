@@ -27,13 +27,24 @@ pub(crate) fn report(errors: Vec<String>) -> Result<(), String> {
 }
 
 fn staged() -> Result<Vec<String>, String> {
-    Ok(git(&["diff", "--cached", "--name-only", "-z"])?.split('\0')
-        .filter(|x| !x.is_empty()).map(str::to_owned).collect())
+    staged_filtered(&[])
+}
+
+/// Paths whose staged blob is readable with `git show :<path>`. A deletion has no such blob,
+/// so scanning content must exclude it (FR-F042-02); the ownership gate still sees every path.
+fn staged_content() -> Result<Vec<String>, String> {
+    staged_filtered(&["--diff-filter=ACMR"])
+}
+
+fn staged_filtered(extra: &[&str]) -> Result<Vec<String>, String> {
+    let mut args = vec!["diff", "--cached", "--name-only", "-z"];
+    args.extend_from_slice(extra);
+    Ok(git(&args)?.split('\0').filter(|x| !x.is_empty()).map(str::to_owned).collect())
 }
 
 pub(crate) fn audit_staged() -> Result<(), String> {
     let mut errors = Vec::new();
-    for path in staged()? {
+    for path in staged_content()? {
         if policy_file(&path) { continue; }
         errors.extend(findings(&format!("staged file {path}"), &git(&["show", &format!(":{path}")])?));
     }
