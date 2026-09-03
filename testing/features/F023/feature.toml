@@ -1,0 +1,6 @@
+feature = "F023"
+flag = "F023_FEATURE"
+fixture_scope = "isolated-tenant"
+parallel_safe = true
+targeted_command = "cargo xtask test-feature F023"
+full_command = "cargo xtask test-all"

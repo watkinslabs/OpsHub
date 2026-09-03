@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/opshub-xtask-target}"
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if [ "$local_oid" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+  if [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
+    range="$local_oid"
+  else
+    range="$remote_oid..$local_oid"
+  fi
+  cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- audit-range "$range"
+done
+cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-plan
+cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-work
+cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-contracts

@@ -1,0 +1,36 @@
+name: repository-gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: policy and backlog gates
+        env:
+          CARGO_TARGET_DIR: /tmp/opshub-xtask-target
+        run: |
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-decisions
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-plan
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-work
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-tickets
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-contracts
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-migrations
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- self-test
+      - name: pull request text gate
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_TITLE" > /tmp/pr-title
+          printf '%s' "$PR_BODY" > /tmp/pr-body
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- audit-pr /tmp/pr-title /tmp/pr-body

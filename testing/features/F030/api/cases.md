@@ -1,0 +1,62 @@
+# F030 api cases
+
+File: `testing/features/F030/api/{registry_tests.rs,sync_tests.rs,mapping_tests.rs,transform_tests.rs,preview_tests.rs,jira_tests.rs,salesforce_tests.rs,files_tests.rs,database_tests.rs,cursor_tests.rs,retry_tests.rs,conflict_tests.rs,replay_tests.rs,negative_tests.rs}`. Flag `F030_FEATURE`.
+
+- `registry_lists_jira_with_work_kind` — FR-F030-01: `jira` registers with `sync_kinds: [work]`, `cursor_kind: timestamp`, `api_version: "3"`; the F029 provider list grows to nine entries.
+- `registry_never_reads_oauth_tokens_table` — NFR-F030-02: a query recorder proves no F030 statement touches `oauth_tokens` or `integration_connections` beyond the `connection_id` join.
+- `create_sync_returns_paused_version_one` — FR-F030-02: valid request → 201, `state: paused`, `version: 1`, audit `sync.created`.
+- `create_sync_rejects_unsupported_direction` — FR-F030-02: `tableau` with `inbound` → 400 `invalid` with `field_errors.direction`.
+- `create_sync_on_needs_reauth_connection_conflicts` — FR-F030-02: F029 connection in `needs_reauth` → 409 `conflict`.
+- `list_syncs_filters_by_connector_and_state` — FR-F030-03: `connector=salesforce&state=active` → one row; cursor paging over 60 syncs.
+- `patch_sync_stale_version_conflicts` — FR-F030-04: `expected_version` behind current → 409 with the current version; a fresh patch publishes `sync.updated.v1` with changed keys.
+- `activate_sync_without_mappings_rejected` — FR-F030-04: `state: active` with zero mappings → 400 `invalid`.
+- `replace_mappings_is_atomic_on_validation_failure` — FR-F030-05: an invalid third mapping leaves the previous set intact and bumps no version.
+- `replace_mappings_rejects_duplicate_column` — FR-F030-05: two inbound mappings on one `column_id` → `field_errors["mappings[1].column_id"]`.
+- `replace_mappings_rejects_over_300` — NFR-F030-05: the 301st mapping → 400 `invalid`.
+- `required_without_default_rejected` — FR-F030-05: `required: true` on a nullable external field with no `default_value` → 400.
+- `transform_output_type_must_match_column` — FR-F030-05: `number_scale` into a date column → `field_errors["mappings[0].transform"]`.
+- `unknown_transform_returns_field_error` — FR-F030-06: transform name `regex_replace` → 400 `invalid`.
+- `transform_date_tz_converts_to_column_timezone` — FR-F030-06: `2026-09-03T04:30:00Z` under `America/Chicago` → `2026-09-02`.
+- `transform_value_map_falls_back_to_default` — FR-F030-06: unmapped Jira status → `default_value`, not an error.
+- `transform_lookup_miss_marks_record_mapping_failed` — FR-F030-06: `lookup` with no matching key fails one record `mapping_failed`; the run continues.
+- `transform_budget_under_five_milliseconds` — NFR-F030-01: each catalog entry evaluates under 5 ms over 1,000 iterations.
+- `preview_returns_five_mapped_records_without_writing` — FR-F030-21: preview returns five mapped records and per-field errors; no row or link is written.
+- `trigger_run_second_time_conflicts` — FR-F030-07: second `POST /run` while `running` → 409 with the active `run_id`.
+- `scheduler_skips_inactive_connection` — FR-F030-08: sync on a `revoked` connection is not enqueued; an `active` one is.
+- `jira_webhook_signature_rejected` — FR-F030-08, NFR-F030-02: bad signature → 401 and no run enqueued; a valid one enqueues within 30 s.
+- `cursor_checkpoints_every_500_records` — FR-F030-09: a 1,200-record run writes `sync_cursors` three times with advancing `checkpoint_record_id`.
+- `run_resumes_from_checkpoint_after_restart` — FR-F030-09, NFR-F030-04: worker killed at record 500 → restart applies 700 more, no row written twice.
+- `reset_cursor_writes_audit_event` — FR-F030-09: `reset_cursor_to` → cursor rewound and audit `sync.cursor-reset`.
+- `transient_error_retries_five_times_with_backoff` — FR-F030-10: mock 503 six times → five retries then dead letter, sync `state: error`.
+- `retry_after_header_is_honored` — FR-F030-10: 429 with `Retry-After: 3` → one wait of 3 s, then success.
+- `permanent_error_is_not_retried` — FR-F030-10: provider 422 → one call, record recorded `permanent`.
+- `run_partial_under_ten_percent_failures` — FR-F030-10: 40 failures of 500 → `partial`, sync stays `active`.
+- `run_fails_and_pauses_sync_at_ten_percent` — FR-F030-10: 50 failures of 500 → `failed`, `sync-run.failed.v1`, sync `error` and schedule paused.
+- `run_history_reports_counters_and_cursors` — FR-F030-11: history row carries six counters, duration, `cursor_before`, `cursor_after`, and 50 failed samples.
+- `replay_starts_from_source_cursor_before` — FR-F030-12: replay run reads the same window as the source run.
+- `replay_only_failed_skips_applied_records` — FR-F030-12: 40 failed of 500 → replay updates 40 and touches none of the 460.
+- `dry_run_replay_writes_nothing` — FR-F030-12: projection returned, row, link, and cursor tables unchanged.
+- `replay_of_running_run_conflicts` — FR-F030-12: replay of a `running` run → 409.
+- `replay_uses_current_mappings_and_records_versions` — FR-F030-12: mappings changed after the source run are applied and both mapping versions stored on the run.
+- `conflict_detected_leaves_both_sides_untouched` — FR-F030-13: both sides changed under `manual` → conflict row with per-field values, `sync-conflict.detected.v1`, no write.
+- `newest_wins_auto_resolves_with_resolution` — FR-F030-13: OpsHub 10:00 vs external 10:05 → external applied, conflict `auto_resolved`.
+- `resolve_merge_requires_all_field_values` — FR-F030-14: `merge` missing one conflicting field → 400 `invalid`.
+- `resolve_settled_conflict_conflicts` — FR-F030-14: resolving an already-resolved conflict → 409.
+- `mark_deleted_writes_column_and_never_hard_deletes` — FR-F030-15: external delete → checkbox column true, row still present; `ignore` leaves the row untouched.
+- `jira_list_changes_applies_overlap_window` — FR-F030-16: cursor 10:00 queries `updated >= 09:58`; a record inside the overlap is skipped as already applied.
+- `jira_status_without_transition_fails_permanent` — FR-F030-16: target status absent from the transition graph → `permanent` with code `no_transition`.
+- `soql_with_dml_keyword_rejected` — FR-F030-17, NFR-F030-02: filter containing `UPDATE` or a subquery → 400 `invalid`.
+- `composite_batch_maps_per_record_results` — FR-F030-17: 200-record batch with 3 failures → 197 updated, 3 recorded with Salesforce error codes.
+- `request_limit_exceeded_is_transient` — FR-F030-17: `REQUEST_LIMIT_EXCEEDED` → classified `transient` and retried after the reported reset.
+- `scan_rejected_file_is_not_attached` — FR-F030-18: EICAR sample → `permanent` with code `scan_rejected`, no attachment row.
+- `run_stops_at_two_gigabyte_cap` — FR-F030-18: cumulative downloads over 2 GB → run ends `partial` with the remaining files untouched.
+- `tableau_publish_replaces_datasource` — FR-F030-19: publish → mock records a replace and the LUID is stored in `sync_record_links`.
+- `database_connector_rejects_update_statement` — FR-F030-19, NFR-F030-02: a named query containing `UPDATE` → 400; the pool refuses writes at the session level.
+- `row_cap_ends_run_partial` — FR-F030-19: 50,001 rows available → 50,000 read, run `partial` with `row_cap_reached`.
+- `member_cannot_create_sync` — FR-F030-20: member POST → 403 `denied`, no row created.
+- `admin_without_sheet_edit_denied` — FR-F030-20: integration-admin without edit rights on the target sheet → 403 on create and on run.
+- `foreign_tenant_sync_not_found` — FR-F030-20: tenant B sync, run, and conflict ids → 404 on every route.
+- `run_metrics_and_span_emitted` — NFR-F030-04: a run emits `sync_records_total`, `sync_run_duration_seconds`, `sync_conflicts_open`, `sync_cursor_lag_seconds` and one span with `sync_id` and `run_id`.
+- `run_log_stores_digests_unless_debug` — NFR-F030-02: default run stores SHA-256 digests; `debug_payloads` stores raw samples and writes the audit event.
+
+Evidence: JUnit output and mock connector logs under `testing/evidence/F030/api/`.

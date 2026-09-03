@@ -1,0 +1,202 @@
+---
+id: F046
+type: feature
+status: planned
+priority: P2
+owner: platform
+estimate: 8
+target_milestone: M3
+parent_epic: E004
+depends_on: [F045, F004]
+blocks: []
+conflicts_with: []
+parallel_safe: true
+owned_paths: [crates/domain/src/realtime/**, services/api/src/realtime/**, services/realtime/src/realtime/**, apps/web/src/features/realtime/**, services/api/migrations/*_realtime_*.sql, testing/features/F046/**]
+feature_flag: F046_FEATURE
+flag_default: off
+branch: f046-live-collaboration
+started_at: null
+finished_at: null
+---
+
+# F046 — Live collaboration
+
+## 1. Identity and dates
+
+- Branch: `f046-live-collaboration`
+- Capability area: concurrent editing (spec 5.4a DOC-03 and the live-session low-level rules; section 6 scale target of 1,000 concurrent edits per tenant; section 10 mobile decision excluding offline co-editing)
+- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 5, 7; `docs/capability-contracts.md` row F046
+- Aggregate: `collaboration-session`
+- Module slug: `realtime`
+
+## 2. Requirement specification
+
+### Problem and user outcome
+
+Two people editing the same document or sheet today overwrite each other or wait for a page refresh to see changes. They need a live session that shows who is present, merges document edits deterministically, delivers sheet cell patches in order, recovers what was missed after a disconnect, and makes any conflict visible instead of silently discarding a newer revision.
+
+As a document or sheet editor, I want to see collaborators' presence and cursors, have my edits merged live, reconnect without losing changes, and be told when a change conflicts, so that co-editing is safe and nothing is silently lost.
+
+### Functional requirements
+
+- **FR-F046-01:** A client opens `GET /ws/v1/documents/{id}` or `GET /ws/v1/sheets/{id}` with the gateway session; the handshake verifies `{ tenant_id, actor_id, roles, scopes, correlation_id }` and the target ACL (`document-editor` or `sheet-editor` for write, viewer roles for read-only), creates a `collaboration_sessions` row, and replies `hello { session_id, durable_rev, read_only }`; a denied actor is closed with code `4403`, an unknown or foreign-tenant target with `4404`, and a missing session with `4401`.
+- **FR-F046-02:** Every message is a JSON envelope `{ type, seq, rev, payload, correlation_id }` with `type` in `hello, presence, change, ack, replay, patch, conflict, error, ping, pong`; the client increments `seq` per message and the server rejects an out-of-order `seq` with `error { code: invalid }` without closing the socket.
+- **FR-F046-03:** On join the server writes a `presence_leases` row with `expires_at = now + 30 s`, broadcasts `presence.joined.v1` to the target's other sessions, and the client renews the lease every 10 seconds with `presence { cursor, selection }`; a lease not renewed within 30 seconds is expired by the sweeper, which emits `presence.left.v1` and removes the collaborator from every client's presence list.
+- **FR-F046-04:** A `change` message for a document carries an Automerge binary change (≤ 256 KB) and the client's last known `rev`; the server appends it to `document_changes` with the next sequential `rev` for that document, replies `ack { seq, rev }` only after the row commits, and broadcasts the change with its `rev` to other sessions, emitting `document.change-applied.v1`.
+- **FR-F046-05:** Document changes are deduplicated on `(document_id, hash)` so a client retransmitting after a lost `ack` receives the original `rev` and no duplicate row is written; a change whose Automerge dependencies are unknown to the server is rejected with `error { code: conflict, missing_deps }` and the client must replay first.
+- **FR-F046-06:** Every 500 changes or 5 minutes since the last snapshot, whichever comes first, the realtime service materializes the Automerge document and posts a revision through the F045 route `POST /api/v1/documents/{id}/revisions` with `If-Match` on the last snapshot revision, recording `snapshot_rev` on the change row; clients joining after a snapshot load the revision body and replay only changes with `rev > snapshot_rev`.
+- **FR-F046-07:** A `patch` message for a sheet carries `{ row_id, column_id, value, if_match_version }`; the server applies it through the F008 row update path as the actor, replies `ack { seq, rev, row_version }`, broadcasts `sheet.patch-applied.v1` to other sessions, and on a stale `if_match_version` replies `conflict { row_id, column_id, server_value, server_version }` without applying anything.
+- **FR-F046-08:** A conflict is never resolved silently: the client renders the server value beside the local value with `Keep mine` and `Take theirs`, and `Keep mine` resubmits the patch with the server version; the conflict stays visible until the user chooses.
+- **FR-F046-09:** `GET /api/v1/documents/{id}/changes?since={rev}` returns changes with `rev > since` in order, paged with `limit` up to 1,000 and an opaque cursor, and a reconnecting client sends `replay { since }` over the socket to receive the same range before resuming live changes; a `since` older than the oldest retained change returns `conflict` with `snapshot_rev` so the client reloads from the revision.
+- **FR-F046-10:** The client keeps unacknowledged changes and patches in an in-memory outbound queue, retransmits them after reconnect in order, and shows `Reconnecting` after 2 seconds offline and `Changes not saved` after 30 seconds; when the tab is closed with pending changes the browser `beforeunload` prompt is shown.
+- **FR-F046-11:** Each session is limited to 100 messages per second and 256 KB per message; exceeding the rate returns `error { code: rate_limited }` and a third violation within one minute closes the socket with `4429`; each tenant is limited to 1,000 concurrent sessions and each document to 100, and joins beyond the limit are closed with `4429`.
+- **FR-F046-12:** `GET /api/v1/collaboration/sessions` lists sessions for the tenant (tenant-admin) or the actor's own sessions with `target_type`, `target_id`, `actor_id`, `connected_at`, `last_seen_at`; `DELETE /api/v1/collaboration/sessions/{id}` force-closes a session with code `4400` and is allowed for tenant-admin or the session's own actor.
+- **FR-F046-13:** Presence, changes, and patches are fanned out across realtime nodes through JetStream subjects `realtime.doc.{document_id}` and `realtime.sheet.{sheet_id}` so two clients on different nodes see each other within 1 second; each node keeps a durable consumer per connected target and drops it when the last local session leaves.
+- **FR-F046-14:** The web app shows presence avatars and remote cursors in the F045 document editor and the F006 grid, a connection status badge (`Live`, `Reconnecting`, `Read-only`, `Offline`), and the conflict banner; read-only viewers see presence and live changes but cannot send `change` or `patch`.
+
+### Non-functional requirements
+
+- **NFR-F046-01 Performance:** change round trip (send to ack) p95 under 250 ms in-region with 50 concurrent editors on one document; presence propagation under 1 second across nodes; 1,000 concurrent sessions per tenant on one realtime node with under 512 MB resident memory; replay of 1,000 changes under 500 ms.
+- **NFR-F046-02 Security/privacy:** ACL checked at handshake and re-checked every 60 seconds so a revoked editor is downgraded to read-only or closed with `4403`; cursors and selections are broadcast only to sessions on the same target; cross-tenant targets close with `4404`; change payloads are never logged.
+- **NFR-F046-03 Accessibility:** presence joins and leaves are announced through a polite live region with a rate limit of one announcement per 5 seconds; connection status uses text and icon; remote cursor animation respects `prefers-reduced-motion`; the conflict banner is focusable and keyboard resolvable.
+- **NFR-F046-04 Reliability/observability:** at-least-once fan-out with idempotent `(document_id, rev, hash)` application; `ack` only after commit; metrics `realtime_sessions{tenant}`, `realtime_change_latency_ms`, `realtime_conflict_total`, `realtime_lease_expired_total`, `realtime_replay_total`; spans carry `tenant_id`, `session_id`, `target_id`, `correlation_id`.
+
+### Scope
+
+Included: WebSocket session service, handshake and ACL, message envelope, presence leases and sweeper, Automerge change log and snapshots, sheet patches with visible conflicts, replay API and socket replay, reconnect queue, per-session and per-tenant limits, session admin routes, cross-node fan-out, presence and conflict UI.
+
+Excluded: document metadata, revisions, folders, and search (F045); grid editing semantics and bulk edits (F008); offline document co-editing (excluded by section 10); comments and mentions (F016); mobile offline queue for rows and forms (F058).
+
+## 3. UX specification
+
+- Entry points: opening a document at `/w/{workspace_id}/documents/{document_id}` or a sheet at `/w/{workspace_id}/sheets/{sheet_id}` with `F046_FEATURE` on connects automatically; the status badge in the header opens a session panel.
+- Primary flow: two editors open the same document; each sees the other's avatar and a colored cursor with a name label; typing merges live; one editor loses network, keeps typing, sees `Reconnecting`, regains network, changes replay, and both documents converge; on a sheet, two editors change the same cell, the later one sees the conflict banner and picks `Take theirs`.
+- Loading: badge shows `Connecting` with skeleton avatars; Empty: no other collaborators shows only the actor's avatar; Error: badge `Offline` with retry; Success: badge `Live`; Stale/conflict: conflict banner with both values; Offline: editor stays editable for documents with `Changes not saved` after 30 seconds and sheet cells locked.
+- Permission-denied: viewers see `Read-only` badge, presence, and live changes; revoked editors are downgraded live with a toast; foreign targets render not-found.
+- Responsive: avatars collapse to `+N` over 5 collaborators under 768 px; conflict banner stacks values vertically under 640 px.
+- Keyboard: `Alt+Shift+P` opens the presence list, `Alt+Shift+C` focuses the conflict banner, `Enter` on `Keep mine` / `Take theirs`, `Escape` closes; focus ring from shared token; cursor animation off under `prefers-reduced-motion`.
+- Font/icon/design tokens: Inter variable; Lucide icons `Users`, `Wifi`, `WifiOff`, `RefreshCw`, `Eye`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+
+## 4. Technical specification
+
+### Rust backend
+
+- Domain entities in `crates/domain/src/realtime/`: `CollaborationSession { id, tenant_id, actor_id, target: Target::{Document(id), Sheet(id)}, read_only, node_id, connected_at, last_seen_at, closed_at, close_code }`, `PresenceLease { session_id, tenant_id, target, actor_id, cursor: serde_json::Value, expires_at }`, `DocumentChange { tenant_id, document_id, rev: i64, actor_id, session_id, change: Vec<u8>, hash: [u8; 32], deps: Vec<[u8; 32]>, snapshot_rev: Option<i64>, applied_at }`, `Envelope { type: MessageType, seq: u64, rev: Option<i64>, payload, correlation_id }`, `SheetPatch { row_id, column_id, value, if_match_version }`.
+- Use cases: `open_session`, `close_session`, `renew_lease`, `expire_leases`, `append_change`, `replay_changes`, `snapshot_document`, `apply_sheet_patch`, `list_sessions`, `force_close_session`, `recheck_acl`.
+- Realtime service (`services/realtime/src/realtime/`): Axum WebSocket handlers `ws_document.rs`, `ws_sheet.rs`; `session.rs` per-connection task with outbound queue; `fanout.rs` JetStream publish/subscribe on `realtime.doc.{id}` and `realtime.sheet.{id}`; `lease_sweeper.rs` every 5 seconds; `snapshotter.rs`; `limits.rs` token buckets; `acl_recheck.rs` every 60 seconds.
+- API endpoints (`services/api/src/realtime/`): `GET /ws/v1/documents/{id}` (WebSocket), `GET /ws/v1/sheets/{id}` (WebSocket), `GET /api/v1/collaboration/sessions`, `DELETE /api/v1/collaboration/sessions/{id}`, `GET /api/v1/documents/{id}/changes?since={rev}`. The two `/ws/v1` routes are served by `services/realtime` behind the gateway; the three HTTP routes by `services/api`. DTOs: `SessionResponse`, `Page<SessionResponse>`, `ChangeResponse { rev, actor_id, change_base64, hash, applied_at }`, `Page<ChangeResponse>`.
+- Events: `presence.joined.v1`, `presence.left.v1`, `document.change-applied.v1` (with `rev`, `hash`), `sheet.patch-applied.v1` (with `row_id`, `column_id`, `row_version`).
+- Authorization: handshake requires target read; `change` and `patch` require `document-editor` or `sheet-editor`; session list for tenant-admin or self; force-close for tenant-admin or self; explicit deny wins; foreign tenant closes `4404`.
+- Validation: message ≤ 256 KB, `seq` strictly increasing, Automerge change decodes and its deps are known, `since ≥ 0`, `limit` 1–1,000. Idempotency: changes by `(document_id, hash)`, patches by `(session_id, seq)` retained for 10 minutes.
+- Error mapping: `RealtimeError::Denied → close 4403`, `RealtimeError::NotFound → close 4404`, `RealtimeError::Unauthenticated → close 4401`, `RealtimeError::RateLimited → error rate_limited then close 4429`, `RealtimeError::MissingDeps → error conflict`, `SheetError::StaleVersion → conflict message`, HTTP routes map `denied`, `not_found`, `conflict`, `invalid` per contracts.
+
+### PostgreSQL/SQLx
+
+- Migration `*_realtime_*.sql` creates `collaboration_sessions(id uuid pk, tenant_id uuid not null, actor_id uuid not null, target_type text not null check (target_type in ('document','sheet')), target_id uuid not null, read_only bool not null, node_id text not null, connected_at timestamptz not null, last_seen_at timestamptz not null, closed_at timestamptz null, close_code int null, correlation_id uuid not null)`, `presence_leases(session_id uuid pk references collaboration_sessions(id), tenant_id uuid not null, target_type text not null, target_id uuid not null, actor_id uuid not null, cursor jsonb not null default '{}', expires_at timestamptz not null)`, `document_changes(tenant_id uuid not null, document_id uuid not null, rev bigint not null, actor_id uuid not null, session_id uuid not null, change bytea not null, hash bytea not null, deps bytea[] not null default '{}', snapshot_rev bigint null, applied_at timestamptz not null, primary key (document_id, rev))`.
+- Invariants: unique `document_changes(document_id, hash)`; `rev` assigned by `select coalesce(max(rev), 0) + 1 ... for update` on a per-document advisory lock `pg_advisory_xact_lock(hashtext(document_id))`; `presence_leases.expires_at` always within 30 seconds of `last_seen_at`; `document_changes.document_id` references F045 `documents(id)` with `on delete restrict`.
+- Indexes: `collaboration_sessions(tenant_id, target_type, target_id) where closed_at is null`, `collaboration_sessions(tenant_id, actor_id) where closed_at is null`, `presence_leases(expires_at)`, `document_changes(document_id, rev desc)`, `document_changes(document_id, snapshot_rev) where snapshot_rev is not null`.
+- Audit events: `collaboration-session.open`, `collaboration-session.close`, `collaboration-session.force-close`, `document.snapshot` with session and target IDs; individual changes and patches are not audited (the F045 revision and F008 row update carry the audit).
+- Retention/deletion: closed sessions and expired leases older than 7 days are deleted by the sweeper; `document_changes` older than the latest snapshot plus 30 days are deleted by the F027 job once the snapshot revision exists; rollback drops the three tables.
+
+### React/TypeScript
+
+- Module `apps/web/src/features/realtime/`: components `PresenceAvatars`, `RemoteCursorLayer`, `ConnectionStatusBadge`, `ConflictBanner`, `SessionPanel`; hooks `useCollaborationSession(target)`, `usePresence(target)`, `useDocumentSync(documentId)` (Automerge in the browser via the `@automerge/automerge` package), `useSheetPatches(sheetId)`; integration props exported for `apps/web/src/features/documents/DocumentEditor.tsx` and the F006/F008 grid.
+- State: socket state in a per-target store; TanStack Query keys `['collab-sessions', workspaceId]`, `['document-changes', documentId, since]`; outbound queue persisted in memory only.
+- API client: generated `RealtimeApi` with `listSessions`, `closeSession`, `listDocumentChanges`; socket client `RealtimeSocket` with `connect`, `send`, `onMessage`, reconnect with exponential backoff `1 s, 2 s, 4 s, 8 s, max 30 s`.
+- Optimistic updates: local Automerge changes apply immediately; sheet patches apply locally and roll back on `conflict` with the banner.
+- Telemetry: `collab_session_opened`, `collab_reconnected`, `change_applied`, `patch_conflict_shown`, `patch_conflict_resolved`, `presence_lease_expired` with `target_type`, `session_id`, `latency_ms`.
+
+## 5. TDD and isolated test harness
+
+- [ ] Requirement tests: FR-F046-01 through FR-F046-14 in `testing/features/F046/requirements/cases.md`
+- [ ] Failure/edge-case tests: out-of-order seq, retransmitted change, missing deps, lease expiry, replay older than retention, stale patch, rate-limit close, 101st document session, revoked editor mid-session
+- [ ] Permission-negative and tenant-isolation tests: viewer `change` rejected, foreign tenant closes `4404`, cursor not leaked across targets
+- [ ] Rust unit tests: `crates/domain/src/realtime/` envelope parsing, rev assignment, lease expiry math, backoff schedule
+- [ ] API contract/integration tests: every route above with success and each close code or error
+- [ ] Database migration/constraint tests: change hash uniqueness, rev primary key, lease reference, rollback
+- [ ] React component tests: `PresenceAvatars`, `ConnectionStatusBadge`, `ConflictBanner`, `useDocumentSync`
+- [ ] Browser E2E tests: two-browser co-editing convergence, reconnect replay, sheet conflict resolution, read-only viewer
+- [ ] Accessibility tests: axe with presence and banner, live region announcements, keyboard conflict resolution
+- [ ] Performance/load tests: 50-editor round trip, 1,000 sessions per node, replay 1,000 changes
+
+### Fast fanout configuration
+
+- Test harness path: `testing/features/F046/`
+- Feature flag: `F046_FEATURE`
+- Fixture/seed factory: `testing/fixtures/realtime.rs` builds tenant, workspace, one document with a 20-change history and snapshot at rev 10, one sheet with 50 rows, two editors, one viewer, tenant-admin, foreign tenant
+- Deterministic test data: fixed UUIDv7 seeds, controllable clock `2026-09-03T00:00:00Z` with `advance()`, fixed Automerge actor IDs
+- Mock/stub contracts: embedded NATS JetStream per worker; two in-process realtime nodes for fan-out tests; F045 revision route real; F008 row update real; WebSocket test client in `testing/harness/ws.rs`
+- Parallel isolation: one schema and JetStream subject prefix per test worker, tenant ID per test
+- Targeted command: `cargo xtask test-feature F046`
+- Full command: `cargo xtask test-all`
+- CI artifact/evidence: `testing/evidence/F046/`
+
+## 6. Acceptance criteria
+
+```gherkin
+Feature: Live collaboration
+
+Scenario: Two editors converge on a document
+  Given editors Ana and Ben connected to document "Launch brief"
+  When Ana inserts "Goals" at the top and Ben appends "Risks" at the bottom within the same second
+  Then both receive acks with consecutive revs and both documents render the same text
+  And document.change-applied.v1 is published twice
+
+Scenario: Reconnect replays missed changes
+  Given Ben disconnected at rev 12 while Ana made changes to rev 20
+  When Ben reconnects and sends replay since 12
+  Then Ben receives revs 13 to 20 in order before any live change
+  And his queued offline changes are acked with revs 21 and 22
+
+Scenario: Stale sheet patch shows a conflict
+  Given Ana and Ben both see cell Status at row version 3
+  When Ana patches it to "Done" and Ben patches it to "Blocked" with if_match_version 3
+  Then Ben receives conflict with server_value "Done" and server_version 4 and nothing is overwritten
+
+Scenario: Viewer cannot send changes
+  Given a viewer connected read-only to "Launch brief"
+  When the viewer sends a change message
+  Then the server replies error denied and the change is not stored
+
+Scenario: Presence lease expires
+  Given Ana connected with a lease renewed every 10 seconds
+  When her client stops renewing and 30 seconds pass
+  Then presence.left.v1 is published and Ben's presence list no longer shows Ana
+```
+
+- [ ] Every functional requirement has an executable acceptance test.
+- [ ] Every non-functional requirement has a measurable verification method.
+
+## 7. Dependencies and risks
+
+- Depends on: F045 (documents, revisions route, editor integration point), F004 (JetStream, worker baseline, metrics); decisions sections 2–5, 7; contracts row F046
+- Blocks: none
+- Conflicts with: none (disjoint owned paths)
+- External dependencies: `@automerge/automerge` in the browser and the `automerge` Rust crate for server-side materialization; NATS JetStream
+- Risks and mitigations: rev assignment under concurrent writers could collide, so the append uses a per-document advisory lock inside the transaction; change log growth is bounded by snapshots every 500 changes and F027 pruning; a slow client could exhaust node memory, so outbound queues are capped at 1,000 messages and the socket is closed with `4429` beyond that; multi-node fan-out could reorder, so clients apply by `rev` and request replay on gaps.
+- Open questions: none
+
+## 7.1 Agent handoff
+
+Recorded at implementation: implemented summary, files changed, commands and evidence, known issues, follow-up tickets, migration and rollback status.
+
+## 8. Entry criteria — ready for implementation
+
+- [ ] F045 and F004 accepted and archived
+- [ ] Requirement IDs above mapped to failing tests in `testing/features/F046/`
+- [ ] Migration file name and owned paths claimed
+- [ ] WebSocket test client and two-node harness available in `testing/harness/`
+
+## 9. Exit criteria — accepted and releasable
+
+- [ ] All FR/NFR acceptance tests pass in targeted and full modes
+- [ ] Rust unit/API/database, React, E2E, permission-negative, accessibility, and performance gates pass
+- [ ] Audit events and outbox events verified for sessions, changes, patches, and presence
+- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets` and `check-contracts` pass
+- [ ] Rollback verified: disable `F046_FEATURE` (editors fall back to F045 revision saves), run down migration on an empty tenant
+- [ ] `finished_at` recorded and file moved to `work/archived/`
+
+## 10. Release notes
+
+- Documents and sheets now support live co-editing with presence, cursors, ordered changes, reconnect replay, and visible conflicts that are never overwritten silently.
+- Migration adds `collaboration_sessions`, `presence_leases`, and `document_changes`; rollback drops them. Feature is off by default behind `F046_FEATURE`.

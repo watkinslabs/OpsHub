@@ -1,0 +1,204 @@
+---
+id: F052
+type: feature
+status: planned
+priority: P1
+owner: platform
+estimate: 8
+target_milestone: M7
+parent_epic: E008
+depends_on: [F010, F048]
+blocks: []
+conflicts_with: []
+parallel_safe: true
+owned_paths: [crates/domain/src/data-shuttle/**, services/api/src/data-shuttle/**, services/worker/src/data-shuttle/**, apps/web/src/features/data-shuttle/**, services/api/migrations/*_data-shuttle_*.sql, testing/features/F052/**]
+feature_flag: F052_FEATURE
+flag_default: off
+branch: f052-data-shuttle
+started_at: null
+finished_at: null
+---
+
+# F052 — Data Shuttle
+
+## 1. Identity and dates
+
+- Branch: `f052-data-shuttle`
+- Capability area: advanced modules (spec 5.11 Data Shuttle, 5.2 DATA-04 and the import low-level bullets, 5.1 import/export bullet, section 6 async acknowledgement, section 10 "Advanced modules use entitlement records plus feature flags")
+- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 7, 9, 10; `docs/capability-contracts.md` row F052
+- Module slug: `data-shuttle`
+
+## 2. Requirement specification
+
+### Problem and user outcome
+
+Operations teams receive CSV and XLSX extracts from finance, HR, and vendor systems on a schedule and re-key or hand-import them into sheets. F010 gives a one-off import and export job, but nothing remembers the mapping, watches a drop location, validates each file the same way, archives what was processed, or lets an operator replay a bad run. Data Shuttle turns the F010 job into a governed, scheduled flow with run history.
+
+As a data administrator, I want to define a flow that picks up a file from a drop location on a schedule, maps its columns onto a sheet with a duplicate strategy, validates it, archives it, and records every run, so that recurring data movement is automatic, auditable, and recoverable without touching the sheet by hand.
+
+### Functional requirements
+
+- **FR-F052-01:** An actor with the `data-admin` role can create a flow with `name` (1–120 chars), `direction` (`import` | `export`), `location` (`{ kind: attachment | inbox | connector, file_id? | prefix? | connection_id + path? }`), `sheet_id`, `mapping`, `validation`, `schedule`, and `archive_policy`; the response returns a UUIDv7 `id`, `version` 1, and `next_run_at` (null for manual flows).
+- **FR-F052-02:** `mapping` is a list of `{ source_column: string, column_id: uuid, coerce: text | number | currency | date | datetime | boolean | select }` plus `key_column_ids` (1–5 ids) and `duplicate_strategy` (`append` | `update` | `replace` | `skip`); a `column_id` not on the sheet, a `coerce` incompatible with the column type, or `update`/`replace`/`skip` without `key_column_ids` returns `400 invalid` with `field_errors.mapping[i].<field>`.
+- **FR-F052-03:** `schedule` is either `{ kind: manual }` or `{ kind: cron, expression, timezone }` where the expression fires no more often than every 15 minutes and `timezone` is an IANA name; a denser cadence returns `400 invalid` with `field_errors.schedule.expression = "min_interval_15m"`; `shuttle_schedules` stores the computed `next_run_at` in UTC.
+- **FR-F052-04:** `validation` holds `required_column_ids`, `max_errors` (0–10,000, default 100), and `on_error` (`abort` | `partial`); when rejected rows exceed `max_errors` the run stops with status `failed` and no rows are committed under `abort`, or commits valid rows and finishes `partial` under `partial`.
+- **FR-F052-05:** Per-tenant limits come from the F048 entitlement `limits` for `data-shuttle`: creating more than `max_flows` flows returns `409 conflict` with `field_errors.flows = "limit_reached"`; a file above `max_file_mb` fails the run with `error_code = file_too_large`; a file with more rows than `max_rows_per_run` fails with `error_code = too_many_rows` before any row is written.
+- **FR-F052-06:** `POST /api/v1/data-shuttle/flows/{id}/run` enqueues a run and returns `202` with the run `id` and `status: queued` within 2 seconds; a second run request while a run for the same flow is `queued` or `running` returns `409 conflict` with `field_errors.run = "already_active"`; scheduled runs obey the same single-active rule and skip with a recorded `skipped_reason = overlap`.
+- **FR-F052-07:** The worker executes a run by locating the file, computing its SHA-256, creating an F010 `import_jobs` or `export_jobs` record, streaming rows through the mapping and validation, and recording `rows_read`, `rows_inserted`, `rows_updated`, `rows_skipped`, `rows_rejected`, `duration_ms`, `error_code`, and `validation_report_file_id` on `shuttle_runs`; a run whose `(flow_id, file_checksum)` pair already succeeded finishes `succeeded` with `skipped_reason = duplicate_file` and writes nothing.
+- **FR-F052-08:** Every processed import file is copied to tenant object storage under `shuttle/{tenant_id}/{flow_id}/{run_id}` and recorded in `shuttle_archives` with `storage_key`, `checksum`, `size_bytes`, `mime`, and `retain_until = completed_at + archive_policy.keep_days` (1–365, default 30); export runs archive the produced file the same way; the nightly purge deletes archives past `retain_until` and marks the run `archive_purged`.
+- **FR-F052-09:** `POST /api/v1/data-shuttle/runs/{id}/replay` starts a new run from the archived file using the flow version captured on the original run; a purged archive returns `409 conflict` with `field_errors.archive = "purged"`; the replay run records `replay_of_run_id`.
+- **FR-F052-10:** `GET /api/v1/data-shuttle/flows/{id}/runs` pages runs by cursor newest first with `limit` up to 100 and filters `status` and `since`; `GET /api/v1/data-shuttle/runs/{id}` returns the run, its counts, the first 50 rejected rows with reasons, and an expiring (15-minute) download URL for the archive and the validation report when the caller may read the sheet.
+- **FR-F052-11:** Every run publishes `shuttle-run.started.v1` when the worker claims it and `shuttle-run.completed.v1` or `shuttle-run.failed.v1` when it ends, with `flow_id`, `run_id`, counts, and `error_code` in the payload; every flow mutation and run request requires `Idempotency-Key`, uses `If-Match` for `PATCH`, and writes an `audit_events` row with the diff.
+- **FR-F052-12:** Every route is mounted behind `RequireModule(ModuleSlug::DataShuttle)` from `crates/auth/src/entitlements/`, so a tenant without an active or trial entitlement and an enabled `F052_FEATURE` receives `403 denied` with `field_errors.module` before any handler runs; disabling the flag stops scheduled runs at the next tick and leaves flows and history intact.
+- **FR-F052-13:** Rows written by a run carry the flow owner's actor id with `source = data_shuttle` and `run_id` in the cell history, and a run never writes to a sheet the flow owner can no longer edit (the run fails with `error_code = sheet_denied`).
+- **FR-F052-14:** The web app renders the flow list at `/w/{workspace_id}/data-shuttle`, a flow editor with mapping preview from the first 20 rows of a sample file, and a run history page with a run drawer showing counts, rejected rows, replay, and archive download; cross-tenant access to any flow or run by id returns `not_found`.
+
+### Non-functional requirements
+
+- **NFR-F052-01 Performance:** run acknowledgement under 2 seconds; a 100,000-row, 50-column CSV import finishes in under 10 minutes on the reference worker; flow and run list routes respond in under 500 ms p95 (spec section 6).
+- **NFR-F052-02 Security/privacy:** files stay in tenant-scoped storage keys; download URLs expire after 15 minutes; connector credentials are never returned by any route; rejected-row samples redact columns the caller cannot read; cross-tenant and role negatives are in the harness.
+- **NFR-F052-03 Accessibility:** flow editor, mapping table, and run drawer pass axe with zero serious violations; the mapping table is keyboard-operable with row-level labels; run status uses text plus icon.
+- **NFR-F052-04 Reliability/observability:** runs are JetStream jobs with per-tenant quota, three bounded retries for transient storage errors, a 30-minute timeout, and dead-letter state visible in the run; metrics `shuttle_run_total{status}`, `shuttle_run_duration_seconds`, and `shuttle_rows_rejected_total`; each run span carries `tenant_id`, `flow_id`, `run_id`, `correlation_id`.
+
+### Scope
+
+Included: flow CRUD, mapping and validation model, schedule computation, worker execution over F010 jobs, duplicate detection by checksum, archive and retention, run history, replay, entitlement limits, audit, outbox events, flow editor and run history UI.
+
+Excluded: new file-format parsers beyond F010 CSV/XLSX; connector authentication (F029); sheet-to-sheet synchronization (F053); PDF export (F025); transformation expressions beyond type coercion; notification delivery for run failures beyond the F037 event subscription.
+
+## 3. UX specification
+
+- Entry points: workspace navigation `Data Shuttle` (visible only when `useModuleAllowed('data-shuttle')` is true); route `/w/{workspace_id}/data-shuttle` for the flow list; `/w/{workspace_id}/data-shuttle/{flow_id}` for editor and run history; sheet menu `Automate imports` deep-links to a new flow with the sheet preselected.
+- Primary flow: admin clicks `New flow`, picks `Import`, chooses the inbox prefix `finance/`, selects the `Budget` sheet, uploads a sample file, maps `Cost Center` to the `Cost center` column and `Amount` to `Amount (currency)`, marks `Cost center` as key with `update`, sets cron `0 6 * * 1-5` in `America/New_York`, keeps archives 30 days, saves, presses `Run now`, sees the run move `queued → running → succeeded` with counts, opens the drawer, and downloads the archived file.
+- Loading: skeleton list and drawer; Empty: `No flows yet` with `New flow`; Error: inline banner with `correlation_id` and retry; Success: toast `Flow saved` / `Run queued`; Stale/conflict: banner `This flow changed` with `Reload`; `already_active` shows an inline notice with the active run link; Offline: editor disabled with offline badge.
+- Permission-denied: non-`data-admin` users see flows read-only and no `Run`/`Replay`; a tenant without entitlement sees the shared `ModuleNotEntitled` panel.
+- Run drawer: status, timestamps, counts as labelled numbers, rejected rows table with reason column, `Replay` (disabled with tooltip when archive purged), `Download archive`, `Download validation report`.
+- Responsive: mapping table scrolls horizontally under 768 px with the source column frozen; drawer becomes a full-screen sheet under 640 px.
+- Keyboard: `Tab` order covers list, filters, rows, actions; mapping rows are edited with arrow keys and `Enter`; `Escape` closes the drawer and returns focus; motion respects `prefers-reduced-motion`.
+- Font/icon/design tokens: Inter variable, Lucide icons `Truck`, `Upload`, `Download`, `Play`, `RotateCcw`, `Archive`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+
+## 4. Technical specification
+
+Canonical contract: `docs/capability-contracts.md` row F052 (aggregate `shuttle-flow`, module `data-shuttle`, role `data-admin`).
+
+### Rust backend
+
+- Domain entities in `crates/domain/src/data-shuttle/`: `ShuttleFlow { id, tenant_id, workspace_id, sheet_id, name, direction: Direction, location: FileLocation, mapping: Mapping, validation: ValidationPolicy, schedule: Schedule, archive_policy: ArchivePolicy, owner_id, enabled: bool, version, audit fields, deleted_at }`, `Mapping { columns: Vec<ColumnMap>, key_column_ids: Vec<Uuid>, duplicate_strategy: DuplicateStrategy }`, `ShuttleSchedule { flow_id, expression, timezone, next_run_at, last_fired_at }`, `ShuttleRun { id, tenant_id, flow_id, flow_version, status: RunStatus, trigger: manual | scheduled | replay, replay_of_run_id, file_checksum, job_id, counts: RunCounts, error_code, skipped_reason, validation_report_file_id, started_at, completed_at, duration_ms, correlation_id }`, `ShuttleArchive { id, run_id, storage_key, checksum, size_bytes, mime, retain_until, purged_at }`.
+- Use cases: `create_flow`, `update_flow`, `list_flows`, `request_run`, `list_runs`, `get_run`, `replay_run`, `compute_next_run`, `execute_run` (worker), `purge_archives` (worker nightly); pure functions `validate_mapping(sheet_columns, mapping)`, `min_interval_ok(expression)`, and `apply_duplicate_strategy(existing, incoming)` are unit tested.
+- Worker in `services/worker/src/data-shuttle/`: `RunConsumer` on subject `data-shuttle.run`, `FileFetcher` (attachment via F017, inbox via S3 prefix listing newest-first, connector via the F030 adapter `download`), `Importer` and `Exporter` wrapping F010 job APIs, `Archiver`, `Scheduler` tick every 60 seconds selecting `shuttle_schedules where next_run_at <= now()` with `for update skip locked`.
+- API endpoints (`services/api/src/data-shuttle/`): `GET /api/v1/data-shuttle/flows`, `POST /api/v1/data-shuttle/flows`, `PATCH /api/v1/data-shuttle/flows/{id}`, `POST /api/v1/data-shuttle/flows/{id}/run`, `GET /api/v1/data-shuttle/flows/{id}/runs`, `GET /api/v1/data-shuttle/runs/{id}`, `POST /api/v1/data-shuttle/runs/{id}/replay`. DTOs `CreateFlowRequest`, `UpdateFlowRequest`, `FlowResponse`, `RunRequestResponse { run_id, status }`, `RunResponse { …, rejected_sample: Vec<RejectedRow>, archive_url?, report_url? }`, `Page<RunResponse>`.
+- Events: `shuttle-run.started.v1`, `shuttle-run.completed.v1`, `shuttle-run.failed.v1` with `{ flow_id, run_id, trigger, counts, error_code }` in addition to the contract envelope.
+- Authorization: `RequireModule(ModuleSlug::DataShuttle)` on the router; `data-admin` for create/update/run/replay; sheet read permission for run detail and downloads; the run executes with the flow owner's actor and re-checks `sheet-editor` at execution time.
+- Validation: name 1–120 chars; mapping 1–500 columns; `key_column_ids` 1–5; cron five-field syntax; `keep_days` 1–365; `max_errors` 0–10,000; `limit` 1–100.
+- Error mapping: `FlowError::LimitReached → 409 conflict`, `FlowError::RunActive → 409 conflict`, `FlowError::ArchivePurged → 409 conflict`, `FlowError::StaleVersion → 409 conflict`, `FlowError::NotFound → 404 not_found`, mapping/schedule validation → `400 invalid`, `AuthzError::Denied → 403 denied`, module guard → `403 denied`.
+
+### PostgreSQL/SQLx
+
+- Migration `*_data-shuttle_*.sql` creates `shuttle_flows(id uuid pk, tenant_id uuid not null, workspace_id uuid not null, sheet_id uuid not null, name text not null, direction text not null check (direction in ('import','export')), location jsonb not null, mapping jsonb not null, validation jsonb not null, schedule jsonb not null, archive_policy jsonb not null, owner_id uuid not null, enabled bool not null default true, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `shuttle_schedules(flow_id uuid pk references shuttle_flows(id), tenant_id, expression text, timezone text, next_run_at timestamptz, last_fired_at timestamptz)`, `shuttle_runs(id uuid pk, tenant_id, flow_id, flow_version bigint, status text check (status in ('queued','running','succeeded','failed','partial')), trigger text, replay_of_run_id uuid, file_checksum text, job_id uuid, rows_read int, rows_inserted int, rows_updated int, rows_skipped int, rows_rejected int, error_code text, skipped_reason text, validation_report_file_id uuid, started_at, completed_at, duration_ms int, correlation_id uuid, created_at)`, `shuttle_archives(id uuid pk, tenant_id, run_id uuid references shuttle_runs(id), storage_key text, checksum text, size_bytes bigint, mime text, retain_until timestamptz, purged_at timestamptz)`.
+- Invariants: unique `shuttle_flows(tenant_id, workspace_id, lower(name)) where deleted_at is null`; partial unique `shuttle_runs(flow_id) where status in ('queued','running')` enforces one active run; unique `shuttle_runs(flow_id, file_checksum) where status = 'succeeded' and trigger <> 'replay'` backs duplicate detection; one archive per run via unique `shuttle_archives(run_id)`.
+- Indexes: `shuttle_runs(flow_id, created_at desc)`, `shuttle_runs(tenant_id, status)`, `shuttle_schedules(next_run_at) where next_run_at is not null`, `shuttle_archives(retain_until) where purged_at is null`.
+- Audit events: `shuttle-flow.create`, `shuttle-flow.update`, `shuttle-flow.delete`, `shuttle-run.request`, `shuttle-run.replay`, `shuttle-archive.purge` with field diffs.
+- Retention/deletion: flows soft delete; runs and archives are retained per `archive_policy` and the F027 tenant retention; rollback drops the four tables.
+
+### React/TypeScript
+
+- Routes: `/w/:workspaceId/data-shuttle`, `/w/:workspaceId/data-shuttle/new`, `/w/:workspaceId/data-shuttle/:flowId` in `apps/web/src/features/data-shuttle/`; components `FlowListPage`, `FlowRow`, `FlowEditorPage`, `LocationPicker`, `MappingTable`, `MappingRow`, `SamplePreview`, `ValidationFields`, `ScheduleFields`, `ArchiveFields`, `RunHistoryPage`, `RunRow`, `RunDrawer`, `RejectedRowsTable`, `ReplayConfirmDialog`.
+- State: TanStack Query keys `['shuttle-flows', workspaceId]`, `['shuttle-flow', flowId]`, `['shuttle-runs', flowId, cursor]`, `['shuttle-run', runId]`; run pages poll every 5 seconds while a run is `queued` or `running`.
+- API client: generated `DataShuttleApi` with `listFlows`, `createFlow`, `updateFlow`, `requestRun`, `listRuns`, `getRun`, `replayRun`; module gate via `useModuleAllowed('data-shuttle')` from `apps/web/src/features/entitlements`.
+- Optimistic updates: none for runs (server state polled); flow save shows the stale banner on `conflict`.
+- Telemetry: `shuttle_flow_created`, `shuttle_flow_updated`, `shuttle_run_requested`, `shuttle_run_replayed`, `shuttle_archive_downloaded`, `shuttle_mapping_previewed` with `flow_id`, `direction`, `trigger`.
+
+## 5. TDD and isolated test harness
+
+- [ ] Requirement tests: FR-F052-01 through FR-F052-14 in `testing/features/F052/requirements/cases.md`
+- [ ] Failure/edge-case tests: mapping to foreign column, coerce mismatch, cron under 15 minutes, `max_errors` exceeded under abort and partial, duplicate checksum, oversize file, replay of purged archive, owner lost sheet access
+- [ ] Permission-negative and tenant-isolation tests: non-admin run denied, no entitlement denied by guard, tenant B run detail not_found, download URL expired
+- [ ] Rust unit tests: `validate_mapping`, `min_interval_ok`, `apply_duplicate_strategy`, `compute_next_run` across DST
+- [ ] API contract/integration tests: every route above with success and each error code
+- [ ] Database migration/constraint tests: single active run index, checksum uniqueness, schedule index, archive retention index, rollback
+- [ ] React component tests: `MappingTable`, `RunDrawer`, `FlowEditorPage`, `RunHistoryPage` states
+- [ ] Browser E2E tests: create import flow, run now, see counts, replay, archive download, scheduled run fires
+- [ ] Accessibility tests: axe on list, editor, drawer; keyboard mapping edit
+- [ ] Performance/load tests: 100k-row import under 10 minutes, run ack under 2 seconds, run list p95 under 500 ms
+
+### Fast fanout configuration
+
+- Test harness path: `testing/features/F052/`
+- Feature flag: `F052_FEATURE`
+- Fixture/seed factory: `testing/fixtures/data_shuttle.rs` builds tenant A (data-admin, editor, viewer), tenant B, an active `data-shuttle` entitlement with `max_flows 3`, `max_rows_per_run 200000`, `max_file_mb 50`, a `Budget` sheet with 6 typed columns, sample CSV/XLSX files in MinIO, and one flow with two historical runs
+- Deterministic test data: fixed UUIDv7 seeds, fixed clock `2026-09-03T00:00:00Z`, UTC, fixed file checksums
+- Mock/stub contracts: outbox publisher recorded in memory; MinIO from compose; F030 connector adapter stubbed with a recorded `download`; scheduler tick driven by an injectable clock
+- Parallel isolation: one schema per test worker, tenant ID per test, MinIO bucket prefix per test
+- Targeted command: `cargo xtask test-feature F052`
+- Full command: `cargo xtask test-all`
+- CI artifact/evidence: `testing/evidence/F052/`
+
+## 6. Acceptance criteria
+
+```gherkin
+Feature: Data Shuttle scheduled file flows
+
+Scenario: Scheduled import updates matching rows
+  Given flow "Budget import" with key column "Cost center", strategy update, and cron 0 6 * * 1-5 in America/New_York
+  When the scheduler fires at 2026-09-03T10:00:00Z and the inbox holds budget-2026-09-03.csv with 120 rows
+  Then the run finishes succeeded with rows_updated 100 and rows_inserted 20
+  And shuttle-run.started.v1 and shuttle-run.completed.v1 are in the outbox
+  And the file is archived with retain_until 30 days later
+
+Scenario: Duplicate file is skipped
+  Given the same file checksum already succeeded for the flow
+  When an admin presses Run now
+  Then the run finishes succeeded with skipped_reason duplicate_file and no rows change
+
+Scenario: Validation abort writes nothing
+  Given validation max_errors 5 and on_error abort
+  When a file with 12 rows missing the required "Amount" column is processed
+  Then the run status is failed with rows_rejected 12 and the sheet row count is unchanged
+
+Scenario: Editor without data-admin cannot run
+  Given a sheet editor without the data-admin role
+  When they POST /api/v1/data-shuttle/flows/{id}/run
+  Then the response is 403 denied and no run row exists
+
+Scenario: Tenant without entitlement is blocked
+  Given tenant B has no data-shuttle entitlement
+  When its admin lists flows
+  Then the response is 403 denied with field_errors.module not_entitled
+```
+
+- [ ] Every functional requirement has an executable acceptance test.
+- [ ] Every non-functional requirement has a measurable verification method.
+
+## 7. Dependencies and risks
+
+- Depends on: F010 (`import_jobs`, `export_jobs`, CSV/XLSX parsing, job status), F048 (`RequireModule`, entitlement limits, `useModuleAllowed`); decisions sections 2–4, 7, 9, 10; contracts row F052
+- Blocks: none
+- Conflicts with: none (disjoint owned paths)
+- External dependencies: S3-compatible storage (MinIO locally); connector drives via F029/F030 for `connector` locations
+- Risks and mitigations: a scheduler running on several workers could fire the same flow twice, so schedule rows are claimed with `for update skip locked` and the single-active-run index rejects the second claim; large files can exhaust worker memory, so rows stream through the F010 parser with a 50 MB default cap from the entitlement; DST transitions can double-fire or skip cron slots, so `compute_next_run` is tested across the 2026-11-01 and 2027-03-14 transitions.
+- Open questions: none
+
+## 7.1 Agent handoff
+
+Recorded at implementation: implemented summary, files changed, commands and evidence, known issues, follow-up tickets, migration and rollback status.
+
+## 8. Entry criteria — ready for implementation
+
+- [ ] F010 and F048 accepted and archived
+- [ ] Requirement IDs above mapped to failing tests in `testing/features/F052/`
+- [ ] Migration file name and owned paths claimed, including `services/worker/src/data-shuttle/**`
+- [ ] Fixture factory, MinIO bucket isolation, and schema-per-worker available in `testing/harness/`
+
+## 9. Exit criteria — accepted and releasable
+
+- [ ] All FR/NFR acceptance tests pass in targeted and full modes
+- [ ] Rust unit/API/database/worker, React, E2E, permission-negative, accessibility, and performance gates pass
+- [ ] Audit events and outbox events verified for every mutation and run
+- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets` and `check-contracts` pass
+- [ ] Rollback verified: disable `F052_FEATURE` (routes unmounted, scheduler idle, history intact), run down migration on an empty tenant
+- [ ] `finished_at` recorded and file moved to `work/archived/`
+
+## 10. Release notes
+
+- Data administrators can define scheduled import and export flows with column mapping, duplicate strategy, validation, archiving, run history, and replay at `/w/{workspace_id}/data-shuttle`.
+- Migration adds `shuttle_flows`, `shuttle_schedules`, `shuttle_runs`, and `shuttle_archives`; rollback drops them. Feature is off by default behind `F052_FEATURE` and requires a `data-shuttle` entitlement.
