@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 1, 2, 3, 4, 7, 9, 10
-- Capability contract: `docs/capability-contracts.md` rows F001, F002, F038, F003, F004
+- Capability contract: `docs/capability-contracts.md` rows F001, F062, F002, F038, F003, F004
 - Product spec: `docs/product-capability-spec.md` sections 3, 4, 5.8, 6, 7 (Phase 0 and Phase 1), 10
 
 # E001 — Platform foundation
@@ -23,12 +23,13 @@ A clean checkout boots the complete multi-tenant runtime (API, web, worker, real
 
 ## Scope
 
-- Included: Cargo workspace, pnpm workspace, CI matrix and policy gates (F001); tenant, user and group lifecycle with the shared tenant fixture (F002); OIDC login, session store, refresh rotation, TOTP and WebAuthn factors, API tokens, rate-limit buckets and the tenant security policy (F038); roles, role bindings, resource ACLs, the `authz::require` middleware, the audit writer and audit query API (F003); compose baseline, typed configuration and secret sources, outbox relay, JetStream job transport, worker skeleton, OpenTelemetry tracing, Prometheus metrics, `/healthz`, `/readyz`, backups and PITR (F004).
+- Included: Cargo workspace, pnpm workspace, CI matrix and policy gates (F001); design tokens, themes, and the shared UI primitive and pattern library (F062); tenant, user and group lifecycle with the shared tenant fixture (F002); OIDC login, session store, refresh rotation, TOTP and WebAuthn factors, API tokens, rate-limit buckets and the tenant security policy (F038); roles, role bindings, resource ACLs, the `authz::require` middleware, the audit writer and audit query API (F003); compose baseline, typed configuration and secret sources, outbox relay, JetStream job transport, worker skeleton, OpenTelemetry tracing, Prometheus metrics, `/healthz`, `/readyz`, backups and PITR (F004).
 - Excluded: SAML 2.0 and SCIM 2.0 provisioning (F026), retention, legal hold, tenant export and purge (F027), public API applications and webhooks (F028), workspaces and folders (F005), locale settings (F049), entitlements and feature-flag administration (F048), notifications (F037).
 
 ## Child features
 
 - F001 Repository and CI: Rust 2024 workspace, React 19 app shell, `gates.yml` CI matrix, line-limit and attribution gates. Depends on F041, F042.
+- F062 Design system and UI primitives: token scales for color, type, spacing, radius, elevation, motion and density, light and dark themes, and the shared `apps/web/src/ui/**` primitive and pattern library every feature composes. Depends on F001.
 - F002 Tenant, users, and groups: `tenants`, `users`, `groups`, `group_members` tables, twelve admin routes, seven events, the reusable two-tenant fixture. Depends on F001.
 - F038 Authentication and MFA: OIDC login, sessions, refresh tokens, TOTP and WebAuthn factors, API tokens, rate-limit buckets, tenant security policy, gateway `ActorContext`. Depends on F002.
 - F003 Authorization and audit: roles, role bindings, resource ACLs, policy engine, `RequirePermission` middleware, append-only `audit_events`, audit query API. Depends on F002, F038.

@@ -16,6 +16,7 @@ Every feature row names its real aggregate, module slug, routes, events, tables,
 
 | ID | Aggregate | Module | Surface | Events | Persistence | Roles |
 |---|---|---|---|---|---|---|
+| F062 | `design-system` | `design-system` | `apps/web/src/design/**`, `apps/web/src/ui/**`, `pnpm --filter web storybook`, `pnpm --filter web test:ui` | none | `apps/web/src/design/tokens.css` | maintainer |
 | F041 | `work-item` | `xtask-schema` | `cargo xtask validate-work`, `validate-plan`, `validate-tickets` | none | `work/**` front matter | maintainer |
 | F042 | `policy-gate` | `xtask-policy` | `cargo xtask audit-staged`, `audit-message`, `audit-range`, `audit-pr`, `check-ownership`, `self-test` | none | `.githooks/**`, `automation/xtask/**` | maintainer |
 | F043 | `execution-lane` | `xtask-lanes` | `cargo xtask claim-lane <ID>`, `release-lane <ID>`, `allocate-target <ID>`, `allocate-fixture <ID>`, `collect-artifacts <ID>` | none | `work/inprogress/**`, `.lanes/<ID>.toml` | maintainer |

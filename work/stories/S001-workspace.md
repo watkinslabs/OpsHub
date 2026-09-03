@@ -5,7 +5,7 @@ status: planned
 parent_epic: E001
 parent_feature: F001
 depends_on: [F041, F042]
-owned_paths: [Cargo.toml, rust-toolchain.toml, .cargo/config.toml, rustfmt.toml, clippy.toml, crates/*/Cargo.toml, services/*/Cargo.toml, package.json, pnpm-workspace.yaml, apps/web/package.json, apps/web/vite.config.ts, apps/web/tsconfig.json, apps/web/src/main.tsx, apps/web/src/design/tokens.css, apps/web/src/features/platform/**, testing/features/F001/**]
+owned_paths: [Cargo.toml, rust-toolchain.toml, .cargo/config.toml, rustfmt.toml, clippy.toml, crates/*/Cargo.toml, services/*/Cargo.toml, package.json, pnpm-workspace.yaml, apps/web/package.json, apps/web/vite.config.ts, apps/web/tsconfig.json, apps/web/src/main.tsx, apps/web/src/features/platform/**, testing/features/F001/**]
 feature_flag: F001_FEATURE
 branch: s001-workspace
 started_at: null
@@ -36,14 +36,14 @@ As a maintainer, I want a clean checkout to build the Rust workspace and the web
 - **SR-S001-03:** `pnpm install --frozen-lockfile && pnpm --filter web build` exits 0 and writes `apps/web/dist/index.html`; `pnpm --filter web typecheck` passes under `strict: true` (FR-F001-04).
 - **SR-S001-04:** `pnpm --filter web dev` serves `/status`, which renders `StatusPage` from `GET /healthz` with loading, `ok`, `degraded`, `unreachable`, and offline states (FR-F001-05, NFR-F001-03).
 - **SR-S001-05:** `.cargo/config.toml` respects `CARGO_TARGET_DIR`; two concurrent builds with different values never touch the same `target/` (FR-F001-13).
-- **SR-S001-06:** `apps/web/src/design/tokens.css` defines color, spacing, type, focus, motion, and density tokens, and the self-hosted Inter font loads with a system sans fallback (decisions section 6).
+- **SR-S001-06:** The web baseline boots and renders `/status` using browser defaults only: it imports no stylesheet from `apps/web/src/design/`, loads no web font, and owns no design token, so F062 can introduce the token set and the shared UI library without contending for a file (decisions section 6).
 
 ## Surfaces
 
 - Infrastructure/container: none (F004 owns compose and images)
 - Rust service/API: `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`, `rustfmt.toml`, `clippy.toml`, `crates/{domain,persistence,contracts,auth,events}/Cargo.toml`, `services/{api,worker,realtime,mcp}/Cargo.toml`
 - Data/migration: none; `services/api/migrations/.gitkeep` only
-- React/UI: `package.json`, `pnpm-workspace.yaml`, `apps/web/{package.json, vite.config.ts, tsconfig.json}`, `apps/web/src/main.tsx`, `apps/web/src/design/tokens.css`, `apps/web/src/features/platform/{routes.ts, StatusPage.tsx, useHealth.ts, api.ts}`
+- React/UI: `package.json`, `pnpm-workspace.yaml`, `apps/web/{package.json, vite.config.ts, tsconfig.json}`, `apps/web/src/main.tsx`, `apps/web/src/features/platform/{routes.ts, StatusPage.tsx, useHealth.ts, api.ts}`
 - Mocks/fixtures: MSW handler for `GET /healthz`; `testing/fixtures/platform.rs` temporary clone builder
 
 ## TDD harness

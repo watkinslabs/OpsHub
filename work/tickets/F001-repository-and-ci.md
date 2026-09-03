@@ -11,7 +11,7 @@ depends_on: [F041, F042]
 blocks: [F002, F004]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [Cargo.toml, rust-toolchain.toml, .cargo/config.toml, rustfmt.toml, clippy.toml, crates/*/Cargo.toml, services/*/Cargo.toml, package.json, pnpm-workspace.yaml, apps/web/package.json, apps/web/vite.config.ts, apps/web/tsconfig.json, apps/web/src/main.tsx, apps/web/src/design/tokens.css, apps/web/src/features/platform/**, .github/workflows/**, testing/features/F001/**]
+owned_paths: [Cargo.toml, rust-toolchain.toml, .cargo/config.toml, rustfmt.toml, clippy.toml, crates/*/Cargo.toml, services/*/Cargo.toml, package.json, pnpm-workspace.yaml, apps/web/package.json, apps/web/vite.config.ts, apps/web/tsconfig.json, apps/web/src/main.tsx, apps/web/src/features/platform/**, .github/workflows/**, testing/features/F001/**]
 feature_flag: F001_FEATURE
 flag_default: off
 branch: f001-repository-and-ci
@@ -67,7 +67,7 @@ As a maintainer, I want a clean checkout to build both the Rust workspace and th
 
 ### Scope
 
-Included: Cargo workspace and toolchain pins, shared dependency versions, lint configuration, pnpm workspace, Vite/React/TypeScript baseline, design tokens file, `/status` page, `gates.yml` with five jobs, required-check configuration, evidence upload, lane-isolated target directories.
+Included: Cargo workspace and toolchain pins, shared dependency versions, lint configuration, pnpm workspace, Vite/React/TypeScript baseline, `/status` page, `gates.yml` with five jobs, required-check configuration, evidence upload, lane-isolated target directories.
 
 Excluded: xtask commands themselves (F041, F042, F043, F044), container images and compose (F004), domain crates' real code (F002 onward), authentication (F038), any product UI beyond `/status`.
 
@@ -78,7 +78,7 @@ Excluded: xtask commands themselves (F041, F042, F043, F044), container images a
 - `/status` states: loading (spinner with `aria-busy`), success (`ok` badge with build SHA and API version), degraded (`degraded` badge listing failed dependencies), error (`unreachable` badge with retry button and correlation ID if the response carried one), offline (badge `offline` when `navigator.onLine` is false).
 - CI output: every failing gate prints one `BLOCKED:` line per finding with path and reason; the job summary lists findings as a markdown table.
 - Keyboard: retry button is a native `button`; focus is moved to the status badge after retry completes; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: self-hosted Inter variable from `apps/web/src/design/fonts/`; Lucide icons `Activity`, `RefreshCw`; tokens in `apps/web/src/design/tokens.css` (color, spacing, type scale, focus ring, motion, density).
+- Font/icon/design tokens: the `/status` page uses only browser defaults and two Lucide icons `Activity`, `RefreshCw`; it ships before F062 and deliberately consumes no design token, so F001 owns no file under `apps/web/src/design/`.
 
 ## 4. Technical specification
 
@@ -196,5 +196,5 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 
 ## 10. Release notes
 
-- Adds the Cargo workspace, pnpm workspace, toolchain pins, lint configuration, design tokens, and the `/status` page.
+- Adds the Cargo workspace, pnpm workspace, toolchain pins, lint configuration, and the `/status` page. Design tokens and the shared UI library arrive with F062.
 - Adds `gates.yml` with `validate-work`, `rust`, `web`, `policy`, and `line-limit` required checks. No migrations. `F001_FEATURE` gates only the `/status` route.

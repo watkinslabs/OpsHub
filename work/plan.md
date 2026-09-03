@@ -41,6 +41,7 @@ Outcome: secure, observable, reproducible multi-tenant runtime. Milestone M1.
 | Feature | Stories | Tasks | Depends on |
 |---|---|---|---|
 | F001 Repository and CI | S001 workspace; S002 quality gates | T001 Rust workspace; T002 React app; T003 CI matrix; T004 line/attribution gates | F041, F042 |
+| F062 Design system and UI primitives | S123 design tokens and theming; S124 UI primitives and patterns | T245 token scales and themes; T246 primitive components; T247 pattern components and app shell layout; T248 visual and accessibility harness | F001 |
 | F002 Tenant, users, and groups | S003 tenant lifecycle; S004 users and groups | T005 tenant schema; T006 user/group API; T007 membership state; T008 tenant harness | F001 |
 | F038 Authentication and MFA | S075 OIDC login and sessions; S076 MFA and API tokens | T149 OIDC client and session store; T150 WebAuthn/TOTP; T151 API tokens and rate limits; T152 auth negative tests | F002 |
 | F003 Authorization and audit | S005 roles/policies; S006 activity history | T009 policy engine; T010 ACL middleware; T011 audit schema; T012 negative tests | F002, F038 |
