@@ -13,7 +13,7 @@ Feature: Views. Flag `F013_FEATURE`. Every case maps to a ticket requirement ID.
 | `F013-REQ-007` | FR-F013-07 | frontend, e2e | lane drag patches lane cell; calendar and timeline drag call reschedule; 409 rolls back |
 | `F013-REQ-008` | FR-F013-08 | api | PATCH with stale `If-Match` → 409; `is_default` set clears previous default; viewer patching sheet view → 403 |
 | `F013-REQ-009` | FR-F013-09 | api, database | delete default → 400; delete other → shares revoked, GET → 404 |
-| `F013-REQ-010` | FR-F013-10 | api, e2e | owner shares to group and link ≤ 30 days → 201 with URL; non-owner → 403; 31 days → 400; `GET /public/views/{token}` with no session resolves to a read-only `ViewLinkActor` and returns the filtered rows; expired, revoked, or unknown token → 404 |
+| `F013-REQ-010` | FR-F013-10 | api, e2e | owner shares to a user and a group → 201 and `view.shared.v1`; non-owner → 403; duplicate live share for one principal → 409; revoked or expired share → the view is no longer listed and returns 404 |
 | `F013-REQ-011` | FR-F013-11 | api | list shows own private, sheet, and shared views; other's private → absent and 404 by ID |
 | `F013-REQ-012` | FR-F013-12 | api, database | each mutation → one audit event and one `view.*.v1` outbox event |
 | `F013-REQ-013` | FR-F013-13 | frontend, e2e | switcher lists default first; card, calendar, timeline render; share dialog for owner |

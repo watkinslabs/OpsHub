@@ -18,14 +18,14 @@ File: `testing/features/F013/api/{view_tests.rs,view_rows_tests.rs,view_share_te
 - `view_stale_version_conflicts` — FR-F013-08: `If-Match: 2` against version 3 → 409 with `current_version: 3`, no write.
 - `viewer_cannot_patch_sheet_view` — FR-F013-08: non-owner viewer PATCH on a `sheet` view → 403 `denied`; `sheet-editor` → 200.
 - `view_default_delete_invalid` — FR-F013-09: DELETE on default → 400 `field_errors.is_default`; DELETE other → 204, GET → 404, shares `revoked_at` set.
-- `view_share_link_expires_within_30_days` — FR-F013-10: `expires_at` 30 days → 201 with `/public/views/{token}`; 31 days → 400 `field_errors.expires_at`.
+- `view_share_requires_principal_and_is_unique` — FR-F013-10: null `principal_id` → 400 `field_errors.principal_id`; a second live share for the same principal → 409 `conflict`.
 - `view_share_non_owner_denied` — FR-F013-10: editor who is not owner → 403; no `view_shares` row.
 - `view_list_hides_unshared_private` — FR-F013-11: user B lists views → own private, sheet views, group-shared; user A's private absent and GET by ID → 404.
 - `group_share_visible_to_member` — FR-F013-11: share to group → both members see the view; a non-member does not.
 - `view_mutation_writes_audit_and_outbox` — FR-F013-12: create, update, delete, share → one `audit_events` row and one matching `view.*.v1` outbox row each.
 - `view_idempotent_replay_returns_original` — FR-F013-12: same `Idempotency-Key` twice → one view, identical body; different body → 409.
 - `view_cross_tenant_not_found` — NFR-F013-02: tenant B GET/PATCH/DELETE/rows/share on tenant A view → 404 on every route.
-- `link_actor_cannot_mutate` — NFR-F013-02: token actor GET view and rows → 200; PATCH, DELETE, share, cell patch, reschedule → 403.
+- `scoped_reader_cannot_mutate` — NFR-F013-02: an F036 scoped-token actor targeting this view GETs the view and rows → 200; PATCH, DELETE, share, cell patch, reschedule → 403.
 - `expired_link_not_found` — NFR-F013-02: token past `expires_at` or with `revoked_at` → 404.
 - `export_with_view_id_matches_rows` — FR-F013-14: `POST /api/v1/exports { view_id }` → CSV row set equals view rows for the same actor.
 - `view_request_span_and_metrics` — NFR-F013-04: span has `tenant_id`, `sheet_id`, `view_id`, `correlation_id`; bad filter increments `views_filter_compile_errors_total`.

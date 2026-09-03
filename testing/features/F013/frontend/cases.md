@@ -11,7 +11,7 @@ File: `testing/features/F013/frontend/{CardView.test.tsx,CalendarView.test.tsx,T
 - `zoom_changes_header_scale` — FR-F013-04: switching `zoom` from `week` to `quarter` re-renders the timeline header with quarter columns.
 - `timeline_bar_move_calls_reschedule` — FR-F013-07: ArrowRight on a focused bar with `zoom=day` calls `rescheduleRow` one day later.
 - `limits_operators_to_column_type` — FR-F013-02: `FilterBuilder` offers `before`/`after` for dates and `contains` for text only; 51st condition is blocked with a message.
-- `creates_link_share_and_copies_url` — FR-F013-10: dialog submits a link share with a 30-day expiry and copies `/public/views/{token}`.
+- `share_dialog_manages_user_and_group_shares` — FR-F013-10: dialog adds a group as viewer, revokes a user share, and points to F036 for public link sharing.
 - `hidden_for_non_owner` — FR-F013-10: share button absent when the viewer is not the owner.
 - `switcher_lists_default_first` — FR-F013-13: `ViewSwitcher` shows the default view first with a star and grouped by kind.
 - `shows_empty_state_with_clear_filters` — FR-F013-13: zero matching rows shows `No rows match this view` and `Clear filters` resets the AST.

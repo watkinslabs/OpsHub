@@ -40,11 +40,11 @@ finished_at: null
 
 A sheet holds the canonical rows, but a team needs to look at the same rows as a Kanban board, a calendar, or a timeline, with their own filters, sorts, and groupings, and share that arrangement with others without copying data. Today only the grid and the default board lanes exist (F006), and nothing is saved per user.
 
-As a sheet member, I want to save named views of a sheet with filters, sorts, grouping, visible columns, and card, calendar, or timeline settings, and share them with people or a link, so that everyone plans from one record set through the presentation that fits their work.
+As a sheet member, I want to save named views of a sheet with filters, sorts, grouping, visible columns, and card, calendar, or timeline settings, and share them with people and groups, so that everyone plans from one record set through the presentation that fits their work.
 
 ### Functional requirements
 
-- **FR-F013-01:** An actor with `sheet-viewer` on a sheet can create a view with `sheet_id`, `name` (1–120 chars), `kind` in `grid|card|calendar|timeline`, `visibility` in `private|sheet|link`, and typed `settings`; the response returns a UUIDv7 `id`, `version` 1, and `owner_id` equal to the actor; a sheet with 100 non-deleted views returns `invalid` with `field_errors.sheet_id = "view_limit"`.
+- **FR-F013-01:** An actor with `sheet-viewer` on a sheet can create a view with `sheet_id`, `name` (1–120 chars), `kind` in `grid|card|calendar|timeline`, `visibility` in `private|sheet`, and typed `settings`; the response returns a UUIDv7 `id`, `version` 1, and `owner_id` equal to the actor; a sheet with 100 non-deleted views returns `invalid` with `field_errors.sheet_id = "view_limit"`.
 - **FR-F013-02:** View `settings.filter` is a typed AST of `and`/`or` groups whose leaf conditions reference a column ID and an operator valid for that column type (`eq`, `neq`, `contains`, `in`, `is_empty`, `gt`, `lt`, `between`, `before`, `after`, `is_me`); an unknown column, a type-mismatched operator, or more than 50 leaf conditions returns `invalid` with `field_errors.settings.filter`.
 - **FR-F013-03:** `settings.sorts` holds at most 5 `{ column_id, direction }` entries, `settings.group_by` is one column ID or null, and `settings.columns` is the ordered list of visible column IDs; unknown column IDs return `invalid`.
 - **FR-F013-04:** A `card` view requires `settings.card.lane_column_id` to be a `select` column; it accepts `card_fields` (≤ 8 column IDs) and optional `swimlane_column_id`; a `calendar` view requires either `date_column_id` or the pair `start_column_id`/`end_column_id` of `date|datetime` type plus `mode` in `month|week|day`; a `timeline` view requires `start_column_id`, `end_column_id`, `zoom` in `day|week|month|quarter`, and optional `color_by_column_id`; a `gantt` settings block is stored opaquely for F012.
@@ -53,7 +53,7 @@ As a sheet member, I want to save named views of a sheet with filters, sorts, gr
 - **FR-F013-07:** Dragging a card between lanes calls `PATCH /api/v1/sheets/{sheet_id}/cells` (F008) for the lane column with `If-Match`, and dragging a bar or event on calendar or timeline calls `POST /api/v1/rows/{id}/reschedule` (F011); a `conflict` response rolls the item back and shows the stale banner.
 - **FR-F013-08:** `PATCH /api/v1/views/{id}` updates `name`, `visibility`, `is_default`, and `settings` with `If-Match`; only the view owner or a `sheet-editor` may update a `sheet` view, only the owner may update a `private` view, and marking `is_default` clears the previous default in the same transaction.
 - **FR-F013-09:** `DELETE /api/v1/views/{id}` soft-deletes the view and its shares; the default view cannot be deleted (`invalid` with `field_errors.is_default`); a deleted view returns `not_found` on every route.
-- **FR-F013-10:** `POST /api/v1/views/{id}/share` by the owner creates a `view_shares` row with `principal_kind` in `user|group|link`, `principal_id`, `role` in `viewer|editor`, and for `link` an `expires_at` no more than 30 days out and a signed token; the response contains the share ID and, for links, the URL served by `GET /public/views/{token}`, which resolves the token to a read-only `ViewLinkActor`; a non-owner receives `denied`. This route is the view-specific link surface; general resource share links and guest invitations are F036 and are not duplicated here.
+- **FR-F013-10:** `POST /api/v1/views/{id}/share` by the owner creates a `view_shares` row with `principal_kind` in `user|group`, a non-null `principal_id`, `role` in `viewer|editor`, and an optional `expires_at`; the response contains the share ID and publishes `view.shared.v1`; a non-owner receives `denied`. F013 mints no tokens and serves no unauthenticated route: public link sharing of a view is F036 `POST /api/v1/share-links` with `target_kind: view`, served by `GET /public/share/{token}`, and arrives with F036 in M3. F013's obligation to that actor is FR-F013-05: the row read filters by the actor's permissions however that actor authenticated.
 - **FR-F013-11:** `GET /api/v1/sheets/{sheet_id}/views` lists views the actor may see: their own `private` views, all `sheet` views, and views shared to them or their groups, with cursor pagination, `filter` by `kind`, and `sort` by `name` or `updated_at`; foreign-tenant or unshared private views return `not_found`.
 - **FR-F013-12:** Every mutation requires `Idempotency-Key`, writes an `audit_events` row, and publishes `view.created.v1`, `view.updated.v1`, `view.deleted.v1`, or `view.shared.v1` through the outbox with `changed_fields`.
 - **FR-F013-13:** The web app renders `CardView`, `CalendarView`, and `TimelineView` from the saved view, a `ViewSwitcher` listing accessible views with the default first, a `ViewSettingsPanel` with `FilterBuilder`, and a `ShareViewDialog`; the route is `/w/:workspaceId/sheets/:sheetId/views/:viewId`.
@@ -62,20 +62,20 @@ As a sheet member, I want to save named views of a sheet with filters, sorts, gr
 ### Non-functional requirements
 
 - **NFR-F013-01 Performance:** `GET /views/{id}/rows` with a 3-condition filter and 2 sorts over a 100,000-row sheet responds in under 500 ms p95 for a 500-row page; a card lane move (cell patch) responds in under 800 ms p95; calendar month range over 5,000 dated rows renders in under 500 ms p95.
-- **NFR-F013-02 Security/privacy:** row and cell permission filtering runs in the service layer on every view row read; link shares expire within 30 days, are revocable, grant no tenant discovery, and never permit writes; cross-tenant view IDs return `not_found`.
+- **NFR-F013-02 Security/privacy:** row and cell permission filtering runs in the service layer on every view row read; an F036 scoped-token actor reading a shared view is filtered by the same service-layer path as a session actor and can never write; cross-tenant view IDs return `not_found`.
 - **NFR-F013-03 Accessibility:** card, calendar, and timeline pass axe with zero serious violations; lane moves, calendar day changes, and timeline bar moves are keyboard operable and announced through a live region; motion respects `prefers-reduced-motion`.
 - **NFR-F013-04 Reliability/observability:** every view read carries a span with `tenant_id`, `sheet_id`, `view_id`, and `correlation_id`; filter compile errors are counted in `views_filter_compile_errors_total`; outbox publish failure never loses the write.
 
 ### Scope
 
-Included: saved view CRUD, typed filter AST, sorts, grouping, visible columns, card/calendar/timeline settings and rendering, default view, personal versus sheet visibility, user/group/link shares, server-side filtered row list, drag interactions delegated to F008 and F011, view export handoff, audit and events.
+Included: saved view CRUD, typed filter AST, sorts, grouping, visible columns, card/calendar/timeline settings and rendering, default view, personal versus sheet visibility, user and group shares, row filtering for F036 scoped-token actors, server-side filtered row list, drag interactions delegated to F008 and F011, view export handoff, audit and events.
 
-Excluded: Gantt rendering and dependency arrows (F012), restricted field-level dynamic views (F050), embed and public publication rendering beyond the link token (F059), conditional formatting (F060), multi-source calendar app (F055), report views (F021), the grid editor itself (F008).
+Excluded: share links, guest invitations, and every unauthenticated token route for views (F036 owns the single share-link system; F013 duplicates none of it), Gantt rendering and dependency arrows (F012), restricted field-level dynamic views (F050), embed and public publication rendering beyond the link token (F059), conditional formatting (F060), multi-source calendar app (F055), report views (F021), the grid editor itself (F008).
 
 ## 3. UX specification
 
 - Entry points: sheet header `ViewSwitcher` dropdown with `New view`; route `/w/{workspace_id}/sheets/{sheet_id}/views/{view_id}`; `Share` button in the view header; `Export` in the view overflow menu.
-- Primary flow: open a sheet, choose `New view`, pick `Card`, select the `Status` lane column, save; cards appear in lanes per status; drag a card from `Backlog` to `Doing`, the API confirms and the card stays; switch to a `Calendar` view keyed on `Due`, drag an event to the next week, the row is rescheduled; open `Share`, add a group as viewer, copy the 30-day link.
+- Primary flow: open a sheet, choose `New view`, pick `Card`, select the `Status` lane column, save; cards appear in lanes per status; drag a card from `Backlog` to `Doing`, the API confirms and the card stays; switch to a `Calendar` view keyed on `Due`, drag an event to the next week, the row is rescheduled; open `Share`, add a group as viewer, and see the group's members gain access.
 - Loading: lane, month grid, and timeline skeletons; Empty: `No rows match this view` with `Clear filters`; Error: banner with `correlation_id` and retry; Success: toast on save and share; Stale/conflict: dragged item snaps back with `This row changed` banner and `Reload`; Offline: drag disabled with offline badge.
 - Permission-denied: viewers see cards, events, and bars without drag handles; share button hidden for non-owners; unshared private view URL renders the not-found page.
 - Responsive: lanes scroll horizontally with snap under 768 px; calendar switches to agenda list under 640 px; timeline shows a day zoom with a pinned row label column under 640 px.
@@ -86,19 +86,19 @@ Excluded: Gantt rendering and dependency arrows (F012), restricted field-level d
 
 ### Rust backend
 
-- Domain entities: `View { id, tenant_id, sheet_id, owner_id, name, kind: ViewKind, visibility: Visibility, is_default, settings: ViewSettings, version, created/updated actor+time, deleted_at }`, `ViewSettings { filter: Option<FilterNode>, sorts: Vec<SortSpec>, group_by: Option<ColumnId>, columns: Vec<ColumnId>, card: Option<CardSettings>, calendar: Option<CalendarSettings>, timeline: Option<TimelineSettings>, gantt: Option<serde_json::Value> }`, `FilterNode::{And(Vec<FilterNode>), Or(Vec<FilterNode>), Leaf { column_id, op: FilterOp, value }}`, `ViewShare { id, tenant_id, view_id, principal_kind: PrincipalKind, principal_id, role: ShareRole, token_hash, expires_at, revoked_at }`.
+- Domain entities: `View { id, tenant_id, sheet_id, owner_id, name, kind: ViewKind, visibility: Visibility, is_default, settings: ViewSettings, version, created/updated actor+time, deleted_at }`, `ViewSettings { filter: Option<FilterNode>, sorts: Vec<SortSpec>, group_by: Option<ColumnId>, columns: Vec<ColumnId>, card: Option<CardSettings>, calendar: Option<CalendarSettings>, timeline: Option<TimelineSettings>, gantt: Option<serde_json::Value> }`, `FilterNode::{And(Vec<FilterNode>), Or(Vec<FilterNode>), Leaf { column_id, op: FilterOp, value }}`, `ViewShare { id, tenant_id, view_id, principal_kind: PrincipalKind, principal_id, role: ShareRole, expires_at, revoked_at }`.
 - Use cases in `crates/domain/src/views/`: `create_view`, `update_view`, `delete_view`, `get_view`, `list_views`, `list_view_rows`, `share_view`, `revoke_share`, `compile_filter` (AST to SQL predicate over F008 row query with column type table), `validate_settings`.
 - API endpoints (`services/api/src/views/`): `GET /api/v1/sheets/{sheet_id}/views`, `POST /api/v1/views`, `GET /api/v1/views/{id}`, `PATCH /api/v1/views/{id}`, `DELETE /api/v1/views/{id}`, `GET /api/v1/views/{id}/rows`, `POST /api/v1/views/{id}/share`. DTOs `CreateViewRequest`, `UpdateViewRequest`, `ShareViewRequest`, `ViewResponse`, `ViewShareResponse`, `Page<ViewRowResponse>`; row query `{ cursor?, limit?, range_start?, range_end? }`.
 - Events: `view.created.v1`, `view.updated.v1`, `view.deleted.v1`, `view.shared.v1` with contract payload and `changed_fields`.
-- Authorization: `sheet-viewer` on the sheet to create and read; owner or `sheet-editor` to update `sheet` views; owner only for `private` views and for `share`; link principals resolve to a `ViewLinkActor` with read-only scope; sheet ACL and explicit deny win over any share.
-- Validation: name 1–120, ≤ 100 views per sheet, ≤ 50 filter leaves, ≤ 5 sorts, ≤ 8 card fields, range ≤ 366 days, `limit` 1–500, link `expires_at` ≤ now + 30 days. Idempotency keys stored 24 hours. `If-Match` compared inside the update transaction.
-- Error mapping: `ViewError::Limit → 400 invalid`, `ViewError::BadFilter → 400 invalid` with `field_errors.settings.filter`, `ViewError::DefaultDelete → 400 invalid`, `ViewError::StaleVersion → 409 conflict`, `ViewError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, expired link → `404 not_found`.
+- Authorization: `sheet-viewer` on the sheet to create and read; owner or `sheet-editor` to update `sheet` views; owner only for `private` views and for `share`; an F036 scoped-token actor whose target is this view reads it read-only through the same filtering path; sheet ACL and explicit deny win over any share.
+- Validation: name 1–120, ≤ 100 views per sheet, ≤ 50 filter leaves, ≤ 5 sorts, ≤ 8 card fields, range ≤ 366 days, `limit` 1–500. Idempotency keys stored 24 hours. `If-Match` compared inside the update transaction.
+- Error mapping: `ViewError::Limit → 400 invalid`, `ViewError::BadFilter → 400 invalid` with `field_errors.settings.filter`, `ViewError::DefaultDelete → 400 invalid`, `ViewError::StaleVersion → 409 conflict`, `ViewError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, expired or revoked share → `404 not_found`.
 
 ### PostgreSQL/SQLx
 
-- Migration `*_views_*.sql` creates `views(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, owner_id uuid not null, name text not null, kind text not null check (kind in ('grid','card','calendar','timeline')), visibility text not null check (visibility in ('private','sheet','link')), is_default bool not null default false, settings jsonb not null default '{}', version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)` and `view_shares(id uuid pk, tenant_id uuid not null, view_id uuid not null references views(id) on delete restrict, principal_kind text not null check (principal_kind in ('user','group','link')), principal_id uuid null, role text not null check (role in ('viewer','editor')), token_hash bytea null, expires_at timestamptz null, revoked_at timestamptz null, version bigint not null default 1, audit fields)`.
-- Invariants: partial unique index `views_default_per_sheet_idx on (sheet_id) where is_default and deleted_at is null`; unique `views_sheet_owner_name_idx on (sheet_id, owner_id, lower(name)) where deleted_at is null`; check `link shares have token_hash and expires_at not null and principal_id null`; check `user/group shares have principal_id not null`.
-- Indexes: `views(tenant_id, sheet_id, updated_at desc) where deleted_at is null`, `views(tenant_id, owner_id)`, `view_shares(view_id) where revoked_at is null`, unique `view_shares(token_hash) where token_hash is not null`, GIN on `settings` for column-usage lookups when F007 deletes a column.
+- Migration `*_views_*.sql` creates `views(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, owner_id uuid not null, name text not null, kind text not null check (kind in ('grid','card','calendar','timeline')), visibility text not null check (visibility in ('private','sheet')), is_default bool not null default false, settings jsonb not null default '{}', version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)` and `view_shares(id uuid pk, tenant_id uuid not null, view_id uuid not null references views(id) on delete restrict, principal_kind text not null check (principal_kind in ('user','group')), principal_id uuid not null, role text not null check (role in ('viewer','editor')), expires_at timestamptz null, revoked_at timestamptz null, version bigint not null default 1, audit fields)`.
+- Invariants: partial unique index `views_default_per_sheet_idx on (sheet_id) where is_default and deleted_at is null`; unique `views_sheet_owner_name_idx on (sheet_id, owner_id, lower(name)) where deleted_at is null`; unique `view_shares_principal_idx on (view_id, principal_kind, principal_id) where revoked_at is null`.
+- Indexes: `views(tenant_id, sheet_id, updated_at desc) where deleted_at is null`, `views(tenant_id, owner_id)`, `view_shares(view_id) where revoked_at is null`, GIN on `settings` for column-usage lookups when F007 deletes a column.
 - Audit events: `view.create`, `view.update`, `view.delete`, `view.share`, `view.share-revoke` with field-level diffs; share tokens are hashed and never logged.
 - Retention/deletion: soft delete sets `deleted_at` on the view and `revoked_at` on its shares; purge follows the F027 retention job; rollback drops both tables.
 
@@ -113,7 +113,7 @@ Excluded: Gantt rendering and dependency arrows (F012), restricted field-level d
 ## 5. TDD and isolated test harness
 
 - [ ] Requirement tests: FR-F013-01 through FR-F013-14 in `testing/features/F013/requirements/cases.md`
-- [ ] Failure/edge-case tests: 51-leaf filter, operator mismatched to column type, lane column not select, deleting the default view, link share past 30 days, expired link, range over 366 days
+- [ ] Failure/edge-case tests: 51-leaf filter, operator mismatched to column type, lane column not select, deleting the default view, duplicate share for one principal, expired share, range over 366 days
 - [ ] Permission-negative and tenant-isolation tests: cross-tenant view returns `not_found`, non-owner share returns `denied`, unshared private view hidden from list, link actor cannot patch cells, hidden rows excluded from view rows
 - [ ] Rust unit tests: `crates/domain/src/views/` filter compile per operator, settings validation per kind, share token hashing and expiry
 - [ ] API contract/integration tests: every route above with success and each error code
@@ -156,10 +156,10 @@ Scenario: Non-owner cannot share
   When user B posts a share for the view
   Then the response is 403 denied and no view_shares row exists
 
-Scenario: Link share expires
-  Given a link share created with expires_at 31 days out
-  When the owner submits it
-  Then the response is 400 invalid with field_errors.expires_at
+Scenario: Share to a group is visible to its members
+  Given view "Q3 plan" shared to group "Delivery" as viewer
+  When a member of Delivery lists views for the sheet
+  Then the view appears and its rows are filtered by that member's permissions
 
 Scenario: Calendar drag reschedules
   Given calendar view "Due dates" keyed on "Due" in timezone America/New_York
