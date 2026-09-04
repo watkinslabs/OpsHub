@@ -17,6 +17,7 @@ implementation.
 | `docs/capability-contracts.md` | Contract catalog: aggregate, module slug, routes, events, tables, and roles per feature. |
 | `docs/product-capability-spec.md` | Product requirements and build order. |
 | `work/plan.md` | Delivery index: every feature with its stories, tasks, and dependencies. |
+| `docs/milestones/README.md` | What each milestone M0–M7 contains and its exit criteria, generated from the tickets. |
 | `work/epics/`, `work/tickets/`, `work/stories/`, `work/tasks/` | 9 epics, 61 feature tickets, 122 stories, 244 tasks. |
 | `work/inprogress/`, `work/archived/` | Lifecycle folders. A work item file moves between folders; it is never copied. |
 | `testing/features/F###/` | Per-feature, feature-gated test harness: `feature.toml` plus seven lanes of cases. |

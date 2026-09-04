@@ -4,7 +4,7 @@ Status: READY FOR IMPLEMENTATION. Source: `docs/product-capability-spec.md`; dec
 
 ## Rules
 
-- Hierarchy: `Epic → Feature ticket → Story → Task`.
+- Hierarchy: `Epic → Feature ticket → Story → Task`. Milestones M0–M7 and their exit criteria are in `docs/milestones/README.md`.
 - One feature ticket is the complete product contract. Stories are vertical slices. Tasks are owned implementation units. Each story owns the two tasks listed after it, in order.
 - Every item has a branch: `e###-slug`, `f###-slug`, `s###-slug`, or `t###-slug`.
 - The `Depends on` column is authoritative. A feature ticket's `depends_on` must match it exactly.
