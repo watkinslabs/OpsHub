@@ -176,6 +176,7 @@ and the other is corrected — never both edited to meet in the middle.
 | Threats, trust boundaries and their mitigations | `docs/threat-model.md` |
 | How code is written and styled | `docs/engineering-standards.md` |
 | What each plan includes | `docs/packaging.md` |
+| Who consumes which event | `docs/event-map.md` |
 | Incident behaviour and postmortems | `docs/incident-management.md` |
 | Accessibility claim and its evidence | `docs/accessibility-conformance.md` |
 | Setup, pull requests and review | `docs/contributing.md` |

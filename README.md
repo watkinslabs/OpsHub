@@ -17,6 +17,7 @@ implementation.
 | `docs/capability-contracts.md` | Contract catalog: aggregate, module slug, routes, events, tables, and roles per feature. |
 | `docs/product-capability-spec.md` | Product requirements and build order. |
 | `work/plan.md` | Delivery index: every feature with its stories, tasks, and dependencies. |
+| `docs/event-map.md` | Every event, who publishes it, and the cross-feature couplings that break if a payload changes. |
 | `docs/capacity.md` | What 506 points means in time, with the assumptions stated. |
 | `docs/contributing.md` | Day-one setup, how to pick up work, and the pull-request and review policy. |
 | `docs/accessibility-conformance.md` | The WCAG 2.2 AA claim, the tests behind it, and where we fall short. |
