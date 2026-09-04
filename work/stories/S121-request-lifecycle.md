@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F061
 depends_on: [F061]
-owned_paths: [crates/domain/src/update-requests/**, services/api/src/update-requests/**, services/worker/src/update-requests/**, apps/web/src/features/update-requests/**, services/api/migrations/*_update-requests_*.sql, testing/features/F061/api/**, testing/features/F061/database/**, testing/features/F061/performance/**]
+owned_paths: [crates/domain/src/update-requests/**, crates/persistence/src/update-requests/**, services/api/src/update-requests/**, services/worker/src/update-requests/**, apps/web/src/features/update-requests/**, services/api/migrations/*_update-requests_*.sql, testing/features/F061/api/**, testing/features/F061/database/**, testing/features/F061/performance/**]
 feature_flag: F061_FEATURE
 branch: s121-request-lifecycle
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F061` Update requests
 - Owner: platform
 - Branch: `s121-request-lifecycle`
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 6; `docs/capability-contracts.md` row F061
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6; `docs/capability-contracts.md` row F061
 
 ## Vertical slice
 
@@ -27,9 +27,9 @@ As a sheet owner, I want to create an update request over chosen rows and column
 
 ## Requirements
 
-- **SR-S121-01:** `POST /api/v1/update-requests` validates the scope against the sheet, rejects columns the actor cannot write with `field_errors.column_ids`, caps the scope at 200 rows and 20 columns, mints one hashed token per recipient, stores the opaque `scope_keys` map, publishes `update-request.sent.v1`, and notifies every recipient through F037 category `update_request` (covers FR-F061-01, FR-F061-02, FR-F061-03).
+- **SR-S121-01:** `POST /api/v1/update-requests` validates the scope against the sheet, rejects columns the actor cannot write with `field_errors.column_ids`, caps the scope at 200 rows and 20 columns, mints one hashed token per recipient, and writes the whole aggregate through `UpdateRequestRepository::insert_with_scope` — the request row, one `update_request_scope_rows` row per row, one `update_request_scope_fields` row per column, one `update_request_reminder_offsets` row per scheduled reminder — with the recipient rows from `UpdateRequestRecipientRepository::insert_recipients` in the same `UnitOfWork`, keeping the `row_ids`, `column_ids`, `recipients`, and `reminder_policy` request and response shapes unchanged; publishes `update-request.sent.v1`, and notifies every recipient through F037 category `update_request` (covers FR-F061-01, FR-F061-02, FR-F061-03).
 - **SR-S121-02:** `expires_at` defaults to `due_at + 7 days`, is rejected beyond 90 days after creation with `400 invalid`, and the `expire` worker job closes lapsed requests as `expired`, revokes their tokens, and cancels their pending reminders (FR-F061-02, FR-F061-09).
-- **SR-S121-03:** The `remind` worker job claims due `reminder_schedules` rows with `for update skip locked`, sends through `NotificationService::create` with `dedupe_key = update-request:{recipient_id}:{sequence}`, publishes `update-request.reminded.v1`, advances the sequence from the cadence, and stops at `max_reminders`, at `expires_at`, or at the first response when `stop_on_response` is set (FR-F061-10, NFR-F061-04).
+- **SR-S121-03:** The `remind` worker job holds no SQL: it claims due `reminder_schedules` rows through `ReminderScheduleRepository::claim_due`, which applies `for update skip locked` inside `crates/persistence`, sends through `NotificationService::create` with `dedupe_key = update-request:{recipient_id}:{sequence}`, publishes `update-request.reminded.v1`, advances the sequence to the `next_run_at` given by the request's `update_request_reminder_offsets` row for that sequence, and stops when no offset row remains, at `expires_at`, or at the first response when `stop_on_response` is set (FR-F061-10, NFR-F061-04).
 - **SR-S121-04:** `POST /api/v1/update-requests/{id}/remind` sends immediately to pending, opened, and partial recipients, returns `skipped` entries with reasons for completed, revoked, and expired recipients, reuses the existing token, and returns `429 rate_limited` past 3 manual reminders per recipient per 24 hours (FR-F061-11).
 - **SR-S121-05:** `POST /api/v1/update-requests/{id}/cancel` sets `cancelled`, nulls every `token_hash`, cancels pending `reminder_schedules` rows, publishes `update-request.cancelled.v1`, is idempotent on repeat, and returns `409 conflict` on a completed request (FR-F061-12).
 - **SR-S121-06:** `GET /api/v1/update-requests` pages by cursor and filters by `status`, `sheet_id`, `requested_by`, and `due_before`; `GET /api/v1/update-requests/{id}` returns recipient states and the per-cell `changes` list with old and new values and the contributing `recipient_id`, masking emails for non-owners (FR-F061-13).

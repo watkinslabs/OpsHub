@@ -37,7 +37,7 @@ Prove aggregation correctness, permission filtering, stale detection, accessibil
 
 ## TDD
 
-- Failing test first: `testing/features/F056/api/golden_tests.rs::golden_pivots_match_sql_reference`, `::hidden_rows_never_change_visible_sums`; `testing/features/F056/e2e/pivot.spec.ts::build_compute_materialize_open_sheet`, `::stale_banner_after_source_edit`, `::unentitled_tenant_sees_upsell`; `testing/features/F056/accessibility/pivot.a11y.spec.ts::builder_and_grid_have_no_serious_axe_violations`; `testing/features/F056/performance/pivot_bench.rs::outputs_read_5k_cells_p95`, `::compute_100k_rows_under_30s`
+- Failing test first: `testing/features/F056/api/golden_tests.rs::golden_pivots_match_expected_cells`, `::hidden_rows_never_change_visible_sums`; `testing/features/F056/api/constraint_tests.rs::fourth_row_dimension_position_rejected`, `::duplicate_column_on_row_axis_rejected`, `::duplicate_measure_column_and_aggregate_rejected`, `::fifty_first_filter_position_rejected`, `::unknown_filter_operator_rejected`, `::duplicate_output_source_version_rejected`, `::pivot_delete_cascades_definition_rows`, `::only_cells_and_filter_value_are_jsonb`; `testing/features/F056/e2e/pivot.spec.ts::build_compute_materialize_open_sheet`, `::stale_banner_after_source_edit`, `::unentitled_tenant_sees_upsell`; `testing/features/F056/accessibility/pivot.a11y.spec.ts::builder_and_grid_have_no_serious_axe_violations`; `testing/features/F056/performance/pivot_bench.rs::outputs_read_5k_cells_p95`, `::compute_100k_rows_under_30s`
 - Targeted command: `cargo xtask test-feature F056`
 - Full command: `cargo xtask test-all`
 - Fixtures/mocks: golden JSON with fixed seed; 100,000-row generator; Playwright against the real API on a seeded entitled tenant and an unentitled tenant

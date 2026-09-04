@@ -177,7 +177,7 @@ Scenario: A row changed since the recipient opened the link
 
 ## 7. Dependencies and risks
 
-- Depends on: F008 (`apply_cell_edits`, row versions, `cell_history`, `cell.updated.v1`); F037 (`NotificationService::create`, category `update_request`, delivery log); F014 token-hash pattern and public-route conventions; F007 column validators; F003 `record_audit` and permission checks; F038 `rate_limit_buckets`; decisions sections 2, 3, 4, 6; contracts row F061
+- Depends on: F008 (`apply_cell_edits`, row versions, `cell_history`, `cell.updated.v1`); F037 (`NotificationService::create`, category `update_request`, delivery log); F014 token-hash pattern and public-route conventions; F007 column validators; F003 `record_audit` and permission checks; F038 `rate_limit_buckets`; F068 `Repository` and `UnitOfWork` contracts in `crates/persistence`; decisions sections 2, 2.1, 3, 4, 6; contracts row F061
 - Blocks: none
 - Conflicts with: none (disjoint owned paths)
 - External dependencies: none directly; email reaches recipients through the F037 SMTP adapter (Mailpit in tests)
@@ -200,7 +200,7 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 - [ ] All FR/NFR acceptance tests pass in targeted and full modes
 - [ ] Rust unit/API/database, React, E2E, permission-negative, accessibility, and performance gates pass
 - [ ] Audit events and outbox events verified for send, reminder, response, and cancel, with a shared `correlation_id` proven against `cell_history`
-- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets` and `check-contracts` pass
+- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets`, `check-contracts`, and `check-persistence` pass
 - [ ] Rollback verified: disable `F061_FEATURE`, run the down migration on an empty tenant
 - [ ] `finished_at` recorded and file moved to `work/archived/`
 

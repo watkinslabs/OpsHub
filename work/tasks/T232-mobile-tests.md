@@ -28,7 +28,7 @@ Prove the install, offline, reconnect, conflict, push, and wipe flows on emulate
 
 ## Specification
 
-- Owned paths: `testing/features/F058/e2e/mobile.spec.ts`, `testing/features/F058/e2e/push.spec.ts`, `testing/features/F058/accessibility/mobile.a11y.spec.ts`, `testing/features/F058/performance/sync_bench.rs`, `testing/features/F058/api/concurrency_tests.rs`
+- Owned paths: `testing/features/F058/e2e/mobile.spec.ts`, `testing/features/F058/e2e/push.spec.ts`, `testing/features/F058/accessibility/mobile.a11y.spec.ts`, `testing/features/F058/performance/sync_bench.rs`, `testing/features/F058/api/concurrency_tests.rs`, `testing/features/F058/database/constraint_tests.rs`
 - Contract/input: Playwright Pixel 7 emulation with `context.setOffline`, a second desktop session editing the same row, the in-memory push recorder exposing the delivered payload, and a 100-op batch generator.
 - Output/behavior: E2E covers install prompt, offline edits and form submission with queue badge, reconnect drain, conflict card resolution both ways, push tap opening the row, logout wipe, and lost-permission rejection; concurrency test sends the same batch from two connections and asserts one application; axe reports zero serious violations with 44 px targets; performance lane records 100-op batch p95 (< 2 s), 500-row pull p95 (< 500 ms), and cached shell load (< 1.5 s).
 - Dependencies: T231 complete; Playwright device emulation and push recorder from `testing/harness/`.

@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F061
 depends_on: [F061]
-owned_paths: [crates/domain/src/update-requests/**, services/api/src/update-requests/**, apps/web/src/features/update-requests/**, testing/features/F061/api/**, testing/features/F061/frontend/**, testing/features/F061/e2e/**, testing/features/F061/accessibility/**]
+owned_paths: [crates/domain/src/update-requests/**, crates/persistence/src/update-requests/**, services/api/src/update-requests/**, apps/web/src/features/update-requests/**, testing/features/F061/api/**, testing/features/F061/frontend/**, testing/features/F061/e2e/**, testing/features/F061/accessibility/**]
 feature_flag: F061_FEATURE
 branch: s122-recipient-experience
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F061` Update requests
 - Owner: platform
 - Branch: `s122-recipient-experience`
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 6; `docs/capability-contracts.md` row F061
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6; `docs/capability-contracts.md` row F061
 
 ## Vertical slice
 

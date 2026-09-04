@@ -15,3 +15,4 @@ done
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-plan
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-work
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-contracts
+cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-persistence
