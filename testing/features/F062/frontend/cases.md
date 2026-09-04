@@ -18,9 +18,11 @@ File: `testing/features/F062/frontend/{theme_tests,surface_tests,lint_tests,patt
 - `empty_state_takes_copy_from_props` — FR-F062-11: no pattern renders hard-coded feature wording; the five `LoadingSkeleton` shapes render distinctly.
 - `data_grid_virtualizes_above_one_hundred_rows` — FR-F062-10: a 5,000-row `DataGridPanel` mounts a bounded number of row nodes and keeps its header sticky.
 - `data_grid_scrolls_within_its_container` — FR-F062-10: a wide grid scrolls horizontally inside its own element and the page does not.
-- `no_paid_grid_package_in_build_graph` — FR-F062-16: the dependency tree and built bundle contain no `@mui/x-data-grid-pro` or `-premium`, and no upgrade prompt renders anywhere in the grid.
+- `no_entitlement_is_consulted_by_the_grid` — FR-F062-16: the grid renders every capability without reading an entitlement and shows no upgrade prompt.
+- `licence_key_is_build_time_only` — FR-F062-16: the key comes from the build-time secret, no runtime request is made for it, and a production build without it fails naming `mui/x-license-key`.
 - `server_capabilities_available_at_every_tier` — FR-F062-16: grouping, tree rows, aggregation and xlsx export all work unentitled, and the grid calls the F013, F009, F022 and F010 endpoints rather than a client implementation.
 - `column_reorder_writes_layout_column_order` — FR-F062-17: dragging a header, and its keyboard equivalent, persist the new order to F008 `layout.column_order` within 1 s and leave another user's order untouched.
+- `pinning_persists_through_layout` — FR-F062-17: column and row pinning persist through the `layout` field and restore on reload.
 - `freeze_and_hide_persist_through_layout` — FR-F062-17: freeze-up-to-here and hide-column persist through `layout.frozen_column_count` and `layout.hidden_columns`.
 - `range_selection_extends_and_copies_tsv` — FR-F062-17: Shift+Arrow, Shift+Click and Ctrl+Click build contiguous and non-contiguous ranges and the clipboard carries TSV with the grid's visible formatting.
 - `grid_behaviours_have_keyboard_equivalents` — FR-F062-17: reorder, freeze, hide and selection are each operable by keyboard with an accessible announcement.

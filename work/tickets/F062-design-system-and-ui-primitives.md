@@ -56,8 +56,8 @@ As a product engineer building any OpsHub feature, I want a themed MUI installat
 - **FR-F062-12:** `AppShell` in `apps/web/src/ui/shell/` defines the frame every route renders inside: a 56px top bar, a left navigation rail (collapsed 56px, expanded 240–400px, width persisted per viewer), an optional right inspector panel, the content region, and one global toast region. Breakpoints are `--bp-sm:640px`, `-md:768px`, `-lg:1024px`, `-xl:1280px`, `-2xl:1536px`; below `--bp-lg` the rail collapses to a drawer and below `--bp-sm` the inspector becomes a sheet. The shell owns skip-to-content, `[` and `]` to toggle rail and inspector, and `?` for the shortcut sheet. F005 composes this shell rather than defining its own.
 - **FR-F062-13:** Charts use one fixed categorical series palette in order — `var(--brand)`, `#0e9aa7`, `#e0930f`, `#d6558f`, `#5aa06b` — distinguishable under deuteranopia and protanopia, and no chart uses color as its only signal: every series carries a legend entry, a direct label, or a value. Sequential scales derive from a single hue by lightness; the axis, grid, and label colors come from the border and text tokens.
 - **FR-F062-14:** Icons come from one registry, `apps/web/src/ui/icons.ts`, exporting a stroke set on a 24px grid at sizes 14, 16, 20, and 24 aligned to the type scale. A decorative icon is `aria-hidden`; a meaningful one takes a required `title`. Importing an icon package directly from a feature module fails lint.
-- **FR-F062-16:** OpsHub ships one grid tier. Every capability the product promises is delivered on MUI X Community plus OpsHub's own state, and no grid capability is sold, gated, or licence-keyed. Row grouping is F013 `settings.group_by`, tree rows are F009 `row_hierarchy`, aggregation is F022 metrics, and file export is F010 `POST /api/v1/exports`: `DataGridPanel` renders what those endpoints return and triggers those jobs, never re-implementing any of them client-side. Column resize, reorder, hide, and freeze, range selection with Shift+Arrow, Shift+Click and Ctrl+Click, and clipboard copy and paste are F008 requirements FR-F008-10 through FR-F008-14 and are built here on the Community grid against F008's per-user `layout` field, which is the single store for column order, widths, hidden columns and frozen count. No `@mui/x-data-grid-pro` or `-premium` package may appear in the dependency tree or the build graph, and a test asserts their absence, so an upgrade prompt can never appear for a capability the product already owes the user.
-- **FR-F062-17:** `DataGridPanel` implements those F008 behaviours itself rather than deferring to a paid grid: column reorder by header drag with a keyboard equivalent, freeze up to a column, hide and show, range selection extended by Shift+Arrow and Shift+Click with non-contiguous Ctrl+Click, and clipboard copy emitting TSV that pastes into a spreadsheet with the grid's visible formatting. Each writes through F008's `layout` field or selection state, each carries a keyboard path and an accessible announcement, and each is exercised in the story matrix. Where a Community primitive is missing, the behaviour is supplied by this wrapper — the wrapper is the seam, so replacing the vendor grid later touches `ui/data/` alone.
+- **FR-F062-16:** The grid is MUI X **Pro**, licensed once for the deployment and available to every tenant at every plan. There is no grid entitlement, no per-tenant licence key, no upgrade prompt, and no capability behind a gate: `@mui/x-data-grid-pro` is a normal dependency of `apps/web`. The licence is per concurrent front-end developer, not per tenant or per end user, so enabling it for everyone costs nothing extra. The key is injected at build time from the deployment secret `mui/x-license-key` through the F004 secret source, is public by design and validated offline, and is never fetched at runtime. Development and CI run on the 30-day evaluation with no key: components function, a watermark and console warning appear, and this is expected and must not be treated as a test failure — the build asserts the key is present for a production build and absent-or-present for any other, so a missing key can never silently ship a watermarked production bundle.
+- **FR-F062-17:** `DataGridPanel` uses the Pro capabilities directly — column pinning, row pinning, column reorder, cell range selection with clipboard copy, and the Pro virtualization path — and binds them to OpsHub state: column order, widths, hidden set and frozen count persist through F008's `layout` field with a 1-second debounce; range and non-contiguous selection follow F008 FR-F008-13; clipboard copy emits TSV that pastes into a spreadsheet with visible formatting. Server-owned capabilities stay server-owned and are rendered, never re-implemented in the grid: row grouping from F013 `settings.group_by`, tree rows from F009 `row_hierarchy`, aggregation from F022 metrics, and file export from F010 `POST /api/v1/exports`. Every behaviour carries a keyboard path and an accessible announcement, and the wrapper is the only module importing the grid package, so replacing the vendor touches `ui/data/` alone.
 - **FR-F062-15:** Every themed component, wrapper, and pattern has a story in `apps/web/src/ui/**/*.stories.tsx` covering its states (default, hover, focus, disabled, loading, error, empty where applicable) in both themes and both densities; `pnpm --filter web storybook` builds them and the visual harness renders each story deterministically.
 
 ### Non-functional requirements
@@ -95,7 +95,7 @@ Excluded: row grouping (F013), tree data (F009), aggregation (F022) and file exp
 ### React/TypeScript
 
 - Files: `apps/web/src/design/{tokens.css, themes/{light.css, dark.css}, density.css, typography.css, theme.ts, brand.ts, fonts/}`; `apps/web/src/ui/{index.ts, icons.ts, ThemeProvider.tsx, data/{DataGridPanel.tsx, ChartPanel.tsx, DateField.tsx}, patterns/*.tsx, shell/{AppShell.tsx, TopBar.tsx, NavRail.tsx, InspectorPanel.tsx, ToastRegion.tsx}, internal/{focus.ts, usePersistedState.ts, useMediaQuery.ts}}`.
-- Dependencies: `@mui/material` v7 with `@emotion/react` and `@emotion/styled`, `@mui/x-data-grid` (Community), `@mui/x-charts`, `@mui/x-date-pickers`. `@mui/x-data-grid-pro` and `-premium` are absent from the dependency tree entirely; the Community grid plus this wrapper covers every F008 requirement, and a dependency test fails the build if either package appears. MUI's CSS-variables theme mode is enabled so theme and density switch without re-rendering the tree.
+- Dependencies: `@mui/material` v7 with `@emotion/react` and `@emotion/styled`, `@mui/x-data-grid-pro`, `@mui/x-charts`, `@mui/x-date-pickers`. The Pro licence is one commercial purchase sized to the number of front-end developers ($299/dev/year at the time of writing, or the perpetual option with 12 months of updates); it is not a per-tenant cost and nothing in the product meters it. MUI's CSS-variables theme mode is enabled so theme and density switch without re-rendering the tree.
 - `ui/data/gridLayout.ts` binds the grid's column order, widths, hidden set and frozen count to F008's `layout` field with a 1-second debounce, and `ui/data/gridSelection.ts` implements range and non-contiguous selection with the clipboard TSV writer. These are the two places any later vendor-grid change would touch.
 - `brand.ts` exposes `deriveBrand(hue)` returning the accent, selection, and focus tokens by `color-mix`, plus `validateBrand(hue)` running the FR-F062-06 contrast check that tenant settings calls before saving.
 - State: no global store. `ThemeProvider` wraps MUI's provider and reads `localStorage` with the pre-paint bootstrap; the toast region owns a queue capped at 5 with a 6-second dismissal that pauses on hover and focus.
@@ -154,12 +154,17 @@ Scenario: A feature cannot bypass the theme
   When pnpm --filter web lint runs
   Then the run fails naming the direct import
 
-Scenario: Every grid capability ships at one tier
+Scenario: Every grid capability ships to every tenant
   Given any tenant on any plan
   When a sheet grid renders
-  Then sorting, filtering, resize, reorder, freeze, range selection, clipboard copy, grouping, tree rows and xlsx export all work
-  And the build graph contains no paid grid package
-  And no upgrade prompt appears anywhere in the grid
+  Then pinning, reorder, range selection, clipboard copy, grouping, tree rows and xlsx export all work
+  And no entitlement is consulted and no upgrade prompt appears
+
+Scenario: A production build without the licence key fails loudly
+  Given a production build with the mui/x-license-key secret absent
+  When the build runs
+  Then it fails naming the missing secret
+  And no watermarked bundle is produced
 
 Scenario: Column reorder persists through the F008 layout field
   Given an editor drags a column to a new position
@@ -182,8 +187,8 @@ Scenario: Reduced motion removes animation without removing meaning
 - Blocks: F005, and in practice every feature with a React surface — none should build screens before this lands
 - Conflicts with: none; `apps/web/src/design/**` and `apps/web/src/ui/**` are owned by this feature alone and F001 no longer claims `tokens.css`
 - External dependencies: MUI v7 with Emotion, MUI X Data Grid, Charts and Date Pickers, Plus Jakarta Sans and JetBrains Mono (vendored), axe for the accessibility lane, a deterministic screenshot runner for the visual lane
-- Risks and mitigations: MUI major-version churn, mitigated by consuming it only through the re-export surface and the three wrappers so an upgrade touches one directory; a later contributor reaching for a paid grid package to shortcut a behaviour, mitigated by the dependency test in FR-F062-16 and the wrapper seam in FR-F062-17; a token change silently restyling fifty-nine features, mitigated by pinned visual baselines failing on a 0.1% diff; features drifting by importing MUI directly or writing local CSS, mitigated by the lint rules in section 4 and the owned-path gate; over-theming MUI until upgrades are painful, mitigated by keeping overrides to the token mapping and default sizes rather than restyling internals
-- Open questions: none. The Data Grid tier is settled: MUI X Community only, at one product tier, with no paid grid package in the tree. Every capability is already owed to every tenant — grouping, tree rows, aggregation and export by F013, F009, F022 and F010, and reorder, freeze, hide, range selection and clipboard by F008 FR-F008-10 through FR-F008-14 — so there is nothing left to gate.
+- Risks and mitigations: MUI major-version churn, mitigated by consuming it only through the re-export surface and the three wrappers so an upgrade touches one directory; the 30-day evaluation lapsing before seats are bought, mitigated by provisioning the licence before the first production build and by the build-time key assertion; vendor lock-in on a commercial grid, mitigated by the wrapper seam in FR-F062-17 so a replacement touches one directory; a token change silently restyling fifty-nine features, mitigated by pinned visual baselines failing on a 0.1% diff; features drifting by importing MUI directly or writing local CSS, mitigated by the lint rules in section 4 and the owned-path gate; over-theming MUI until upgrades are painful, mitigated by keeping overrides to the token mapping and default sizes rather than restyling internals
+- Open questions: none. The Data Grid tier is settled: MUI X Pro, one deployment licence, every tenant, no gate. The licence is per front-end developer rather than per tenant, so there is no per-customer cost to recover and nothing to meter.
 
 ## 7.1 Agent handoff
 
@@ -194,13 +199,13 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 - [ ] F001 accepted and archived so the pnpm workspace and `web` CI job exist
 - [ ] Requirement IDs above mapped to failing tests in `testing/features/F062/`
 - [ ] Owned paths claimed and `tokens.css` released by F001
-- [ ] MUI v7, MUI X Community, Plus Jakarta Sans and JetBrains Mono vendored; no paid grid package in the dependency tree
+- [ ] MUI v7, MUI X Pro, Plus Jakarta Sans and JetBrains Mono vendored; the `mui/x-license-key` deployment secret provisioned for production builds, with development and CI on the 30-day evaluation
 
 ## 9. Exit criteria — accepted and releasable
 
 - [ ] All FR/NFR acceptance tests pass in targeted and full modes
 - [ ] React component, E2E, accessibility, visual, and performance gates pass in both themes and both densities
-- [ ] Token parity and computed contrast pass for every brand preset; no raw color, spacing, radius, or duration literal exists under `apps/web/src/**`; no feature imports MUI directly; the build graph contains no paid grid package
+- [ ] Token parity and computed contrast pass for every brand preset; no raw color, spacing, radius, or duration literal exists under `apps/web/src/**`; no feature imports MUI directly; the production build fails without the licence key and no watermarked bundle can ship
 - [ ] Every changed file ≤ 500 lines; `cargo xtask validate-tickets` and `check-contracts` pass
 - [ ] Rollback verified: disabling `F062_FEATURE` falls back to the unstyled `/status` baseline without a build error
 - [ ] `finished_at` recorded and file moved to `work/archived/`
