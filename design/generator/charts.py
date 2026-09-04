@@ -24,13 +24,13 @@ funnel = "".join(
     <div style="flex:1;height:20px;border-radius:4px;background:var(--bg-sunken);">
       <div style="width:{p}%;height:100%;border-radius:4px;background:{c};"></div></div>
     <span class="mono" style="width:38px;font-size:10px;text-align:right;">{p}%</span></div>'''
-  for n,p,c in [("Intake",100,"var(--brand)"),("Qualified",72,"#0e9aa7"),("Approved",48,"#e0930f"),
-                ("Delivered",31,"#d6558f")])
+  for n,p,c in [("Intake",100,"var(--brand)"),("Qualified",72,ch.SER[1]),("Approved",48,ch.SER[2]),
+                ("Delivered",31,ch.SER[3])])
 
 scatter_pts = "".join(
   f'<circle cx="{x}" cy="{y}" r="{r}" fill="{c}" opacity=".78"/>'
-  for x,y,r,c in [(40,90,7,"var(--brand)"),(78,66,10,"var(--brand)"),(120,104,6,"#0e9aa7"),(150,44,13,"#0e9aa7"),
-                  (188,80,8,"#e0930f"),(216,30,9,"#e0930f"),(250,96,11,"#d6558f"),(278,58,7,"#d6558f")])
+  for x,y,r,c in [(40,90,7,"var(--brand)"),(78,66,10,"var(--brand)"),(120,104,6,ch.SER[1]),(150,44,13,ch.SER[1]),
+                  (188,80,8,ch.SER[2]),(216,30,9,ch.SER[2]),(250,96,11,ch.SER[3]),(278,58,7,ch.SER[3])])
 
 body = f'''
   <div style="padding:var(--space-7);display:flex;flex-direction:column;gap:var(--space-5);
@@ -41,7 +41,7 @@ body = f'''
         Every widget type a dashboard, report or metric surface can place (F022–F024). Built on MUI X Charts with the
         OpsHub theme; the categorical series palette is fixed and colour-blind safe, and no chart uses colour as its
         only signal — each carries a label, a legend or a direct value.</p>
-      <div style="margin-top:var(--space-3);">{lg([("Series 1","var(--brand)"),("Series 2","#0e9aa7"),("Series 3","#e0930f"),("Series 4","#d6558f"),("Series 5","#5aa06b")])}</div>
+      <div style="margin-top:var(--space-3);">{lg([("Series 1","var(--brand)"),("Series 2",ch.SER[1]),("Series 3",ch.SER[2]),("Series 4",ch.SER[3]),("Series 5",ch.SER[4])])}</div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:var(--space-4);flex:1;min-height:0;">
       {w("KPI tile","metric + delta + spark",
@@ -62,7 +62,7 @@ body = f'''
       {w("Gauge","single measure vs. target", ch.gauge(170,78))}
       {w("Sparkline grid","dense per-row trend",
         f'''<div style="width:100%;display:flex;flex-direction:column;gap:7px;">
-          {"".join(f'<div style="display:flex;align-items:center;gap:8px;"><span class="mono" style="width:52px;font-size:10px;color:var(--text-tertiary);">{n}</span>{ch.spark(120,20,v,c)}<span class="mono" style="margin-left:auto;font-size:10px;">{t}</span></div>' for n,v,c,t in [("Priya",[4,6,5,8,7,9],"var(--brand)","92%"),("Ana",[3,4,6,5,8,7],"#0e9aa7","104%"),("Marcus",[6,5,7,9,8,11],"#e0930f","140%")])}
+          {"".join(f'<div style="display:flex;align-items:center;gap:8px;"><span class="mono" style="width:52px;font-size:10px;color:var(--text-tertiary);">{n}</span>{ch.spark(120,20,v,c)}<span class="mono" style="margin-left:auto;font-size:10px;">{t}</span></div>' for n,v,c,t in [("Priya",[4,6,5,8,7,9],"var(--brand)","92%"),("Ana",[3,4,6,5,8,7],ch.SER[1],"104%"),("Marcus",[6,5,7,9,8,11],ch.SER[2],"140%")])}
         </div>''')}
       {w("Heatmap","resource × week utilization",
         f'<div style="width:100%;display:grid;grid-template-columns:repeat(6, minmax(0,1fr));gap:4px;">{heat_cells}</div>')}

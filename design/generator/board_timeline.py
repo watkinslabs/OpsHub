@@ -56,10 +56,10 @@ board = shell("Sheets","Cutover plan", chip("Board view","accent"),
 write('Board.dc.html', page(board, theme="light"))
 
 # ---------------- Timeline / Gantt ----------------
-BARS=[("Discovery",0,140,"var(--brand)",1,"PR",30),("Vendor security review",10,90,"#0e9aa7",2,"PR",30),
-      ("Data migration dry run",60,120,"#d6558f",2,"MW",120),("Build",150,220,"var(--brand)",1,"AD",210),
-      ("Cutover runbook draft",165,120,"#0e9aa7",2,"AD",210),("Pilot provisioning",160,80,"#5aa06b",2,"SO",70),
-      ("Harden",380,180,"var(--brand)",1,"MW",120),("Load test",390,110,"#e0930f",2,"MW",120),
+BARS=[("Discovery",0,140,"var(--brand)",1,"PR",30),("Vendor security review",10,90,ch.SER[1],2,"PR",30),
+      ("Data migration dry run",60,120,ch.SER[3],2,"MW",120),("Build",150,220,"var(--brand)",1,"AD",210),
+      ("Cutover runbook draft",165,120,ch.SER[1],2,"AD",210),("Pilot provisioning",160,80,ch.SER[4],2,"SO",70),
+      ("Harden",380,180,"var(--brand)",1,"MW",120),("Load test",390,110,ch.SER[2],2,"MW",120),
       ("Launch",570,120,"var(--brand)",1,"PR",30)]
 weeks=["Mar 02","Mar 09","Mar 16","Mar 23","Mar 30","Apr 06","Apr 13","Apr 20"]
 rows="".join(f'''<div style="display:flex;align-items:center;height:38px;border-bottom:1px solid var(--border-subtle);">
@@ -82,7 +82,7 @@ timeline = shell("Sheets","Cutover plan", chip("Timeline view","accent"),
     </div>
     {rows}
     <div style="padding:var(--space-4) var(--space-5);display:flex;gap:var(--space-4);">
-      {"".join(f'<span style="display:inline-flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--text-secondary);"><span style="width:14px;height:8px;border-radius:3px;background:{c};"></span>{n}</span>' for n,c in [("Phase","var(--brand)"),("On track","#0e9aa7"),("At risk","#e0930f"),("Blocked","#d6558f"),("Complete","#5aa06b")])}
+      {"".join(f'<span style="display:inline-flex;align-items:center;gap:6px;font-size:var(--text-xs);color:var(--text-secondary);"><span style="width:14px;height:8px;border-radius:3px;background:{c};"></span>{n}</span>' for n,c in [("Phase","var(--brand)"),("On track",ch.SER[1]),("At risk",ch.SER[2]),("Blocked",ch.SER[3]),("Complete",ch.SER[4])])}
     </div>
   </div>''')
 write('Timeline.dc.html', page(timeline, theme="dark"))

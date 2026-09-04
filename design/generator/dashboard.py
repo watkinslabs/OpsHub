@@ -52,9 +52,9 @@ body = topbar("Delivery overview") + f'''
         gap:var(--space-4);overflow:hidden;">
         <div style="display:grid;grid-template-columns:repeat(4, minmax(0,1fr));gap:var(--space-4);">
           {kpi("On-time delivery","94.2%","2.1 pts",True,[86,88,87,90,91,90,93,94])}
-          {kpi("Open risks","17","4",False,[9,11,10,13,14,15,16,17],"#e0930f")}
-          {kpi("Cycle time","6.4d","0.8d",True,[9,8.6,8.1,7.7,7.2,6.9,6.6,6.4],"#0e9aa7")}
-          {kpi("Utilization","87%","3 pts",True,[78,80,79,83,84,85,86,87],"#d6558f")}
+          {kpi("Open risks","17","4",False,[9,11,10,13,14,15,16,17],ch.SER[2])}
+          {kpi("Cycle time","6.4d","0.8d",True,[9,8.6,8.1,7.7,7.2,6.9,6.6,6.4],ch.SER[1])}
+          {kpi("Utilization","87%","3 pts",True,[78,80,79,83,84,85,86,87],ch.SER[3])}
         </div>
         <div style="display:grid;grid-template-columns:2fr 1fr;gap:var(--space-4);flex:1;min-height:0;">
           {widget("Burndown — Migration programme","Remaining effort vs. baseline, weeks 1–14",
@@ -63,14 +63,14 @@ body = topbar("Delivery overview") + f'''
           {widget("Work by status","1,284 rows across 6 sheets",
             f'<div style="display:flex;align-items:center;justify-content:center;padding:var(--space-2) 0;">'
             f'{ch.donut(150,[52,23,14,11],center="1,284")}</div>'
-            + legend([("Done","var(--brand)"),("In progress","#0e9aa7"),("Review","#e0930f"),("Blocked","#d6558f")]))}
+            + legend([("Done","var(--brand)"),("In progress",ch.SER[1]),("Review",ch.SER[2]),("Blocked",ch.SER[3])]))}
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--space-4);height:210px;">
           {widget("Throughput by phase","Rows completed per week",
             ch.stacked(300,120,[[8,5,3],[11,6,4],[9,8,5],[14,7,6],[12,9,7]],labels=["W10","W11","W12","W13","W14"])
-            + legend([("Discovery","var(--brand)"),("Build","#0e9aa7"),("Harden","#e0930f")]))}
+            + legend([("Discovery","var(--brand)"),("Build",ch.SER[1]),("Harden",ch.SER[2])]))}
           {widget("Approval SLA","Median hours to decision",
-            ch.bars(300,120,[14,11,9,12,7,6],labels=["Nov","Dec","Jan","Feb","Mar","Apr"],color="#0e9aa7"))}
+            ch.bars(300,120,[14,11,9,12,7,6],labels=["Nov","Dec","Jan","Feb","Mar","Apr"],color=ch.SER[1]))}
           {widget("Programme health","Weighted across 4 workstreams",
             f'<div style="display:flex;align-items:center;gap:var(--space-4);">{ch.gauge(150,78)}'
             f'<div style="display:flex;flex-direction:column;gap:8px;">'
