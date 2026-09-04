@@ -20,12 +20,13 @@ cargo run --quiet --manifest-path $M -- check-persistence
 cargo run --quiet --manifest-path $M -- check-roles
 cargo run --quiet --manifest-path $M -- check-design
 cargo run --quiet --manifest-path $M -- check-references
+cargo run --quiet --manifest-path $M -- check-order
 cargo run --quiet --manifest-path $M -- check-migrations
 cargo run --quiet --manifest-path $M -- test-all
 cargo run --quiet --manifest-path $M -- self-test
 ```
 
-All twelve pass on a clean clone. If one fails on a clone you have not touched, that is a bug in the
+All thirteen pass on a clean clone. If one fails on a clone you have not touched, that is a bug in the
 gate or the backlog, not something to work around — fix it or report it before continuing.
 
 Product code does not exist yet. F001 creates the Cargo and pnpm workspaces; until it is done there
@@ -74,8 +75,8 @@ The dependency graph is forward-only, but four features gate almost everything a
 4. **F002, F038, F003, F004** — tenants, authentication, authorization, runtime. Every later feature
    assumes these.
 
-Then take milestones in order from `docs/milestones/README.md`, and within a milestone take any
-feature whose dependencies are archived. Lanes run in parallel where `owned_paths` are disjoint,
+`docs/build-order.md` has the derived answer: 15 waves, the 112-point critical path, and the graph.
+Take the lowest wave with work left, and within it any feature whose dependencies are archived. Lanes run in parallel where `owned_paths` are disjoint,
 which is what F043 exists to arbitrate.
 
 ## Picking up work

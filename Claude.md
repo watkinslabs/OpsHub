@@ -201,6 +201,7 @@ Run before review and in CI. Each exists because something was wrong that a huma
 | `check-persistence` | Third normal form, no array columns, justified `jsonb`, one repository class per table-owning feature |
 | `check-roles` | Every role a ticket or catalog row authorizes against is defined in the authorization model |
 | `check-design` | Every ticket names an artboard that exists in `design/artboards/`, or states plainly that it has no user surface |
+| `check-order` | `docs/build-order.md` matches the order derived from the tickets, so the schedule cannot silently diverge from the dependency graph |
 | `check-references` | Every `FR-`/`NFR-`/`SR-` citation resolves to a requirement its owner actually declares, and every `docs/` or `design/artboards/` path a document points at exists |
 | `check-migrations` | Migration naming, ordering, reversibility and safety. The expand-migrate-contract staging in decisions section 2.2 is a review responsibility it cannot check |
 | `validate-tickets` | Ticket metadata, dependency references, owned paths, flags, required sections, file size and lifecycle timestamps. Run it: it catches the 500-line limit on files the other gates do not read |
