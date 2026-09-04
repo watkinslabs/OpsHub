@@ -10,6 +10,8 @@ Status: READY FOR IMPLEMENTATION. Specification, architecture and design are com
   and data-access rules in sections 2 and 2.1.
 - Product requirements: `docs/product-capability-spec.md`. Contract catalog: `docs/capability-contracts.md`.
 - Milestones and their exit criteria: `docs/milestones/README.md`.
+- Authorization vocabulary: `docs/authorization-model.md` — the permission catalogue, principal kinds
+  and every role, enforced by `check-roles`.
 - Delivery index: `work/plan.md`. Rules: the repository rules file at the root, and `MANIFEST.md`.
 - Visual source of truth: `docs/design-canvas.md` links the design canvas.
 

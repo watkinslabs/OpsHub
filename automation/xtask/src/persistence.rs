@@ -78,3 +78,33 @@ pub(crate) fn check_persistence() -> Result<(), String> {
     for error in &errors { eprintln!("BLOCKED: {error}"); }
     Err(format!("persistence audit failed: {} finding(s)", errors.len()))
 }
+
+/// Every role a catalog row or ticket authorizes against must be defined in the authorization model.
+/// Without this, 68 tickets each invent their own vocabulary and F003 has nothing to seed.
+pub(crate) fn check_roles() -> Result<(), String> {
+    let model = fs::read_to_string("docs/authorization-model.md")
+        .map_err(|e| format!("missing docs/authorization-model.md: {e}"))?;
+    let defined = |role: &str| model.contains(&format!("`{role}`"));
+    let mut errors = Vec::new();
+
+    let catalog = fs::read_to_string("docs/capability-contracts.md").map_err(|e| e.to_string())?;
+    let mut seen = 0usize;
+    for line in catalog.lines().filter(|l| l.starts_with("| F")) {
+        let cols = line.split('|').map(str::trim).collect::<Vec<_>>();
+        if cols.len() < 9 { continue; }
+        for role in cols[7].split([',', ';']).map(|r| r.trim().trim_matches('`')).filter(|r| !r.is_empty()) {
+            seen += 1;
+            if !defined(role) {
+                errors.push(format!("role.undefined {}: catalog row uses `{role}`, absent from the authorization model", cols[1]));
+            }
+        }
+    }
+    if errors.is_empty() {
+        println!("role checks passed: {seen} catalog role references, all defined");
+        return Ok(());
+    }
+    errors.sort();
+    errors.dedup();
+    for error in &errors { eprintln!("BLOCKED: {error}"); }
+    Err(format!("role audit failed: {} finding(s)", errors.len()))
+}

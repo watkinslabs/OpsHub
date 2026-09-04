@@ -43,7 +43,7 @@ As a tenant administrator, I want to define roles, bind them to users and groups
 
 ### Functional requirements
 
-- **FR-F003-01:** The migration seeds system roles `tenant-admin`, `owner`, `admin`, `editor`, `commenter`, `viewer`, and `form-submitter` per tenant with fixed permission sets (for example `viewer = [*:read]`, `commenter = viewer + [comment:create]`, `editor = commenter + [*:edit, *:create]`, `admin = editor + [acl:manage, *:delete]`, `owner = admin + [*:transfer]`, `tenant-admin = [*]`); system roles have `is_system = true` and cannot be deleted or have their slug changed.
+- **FR-F003-01:** The migration seeds the base resource roles of `docs/authorization-model.md` section 3.1 — `tenant-admin`, `owner`, `admin`, `editor`, `commenter`, `viewer`, and `form-submitter` — and the capability roles of section 3.2 per tenant with the permission sets that document fixes (for example `viewer = [*:read]`, `commenter = viewer + [comment:create]`, `editor = commenter + [*:edit, *:create]`, `admin = editor + [acl:manage, *:delete]`, `owner = admin + [*:transfer]`, `tenant-admin = [*]`); system roles have `is_system = true` and cannot be deleted or have their slug changed.
 - **FR-F003-02:** `GET /api/v1/roles` lists roles with cursor paging; `POST /api/v1/roles` (tenant-admin) creates a custom role with `slug` (3–40 chars, kebab, unique per tenant), `name`, and `permissions` drawn from the `Permission` catalogue and written as one `role_permissions` row per permission in the same transaction; `PATCH /api/v1/roles/{id}` with `If-Match` changes `name` and replaces the role's permission rows atomically, then emits `role.updated.v1` with the added and removed permissions in `changed_fields`; unknown permission strings return `400 invalid` with `field_errors.permissions`.
 - **FR-F003-03:** A role binding attaches a role to a `user` or `group` principal at a scope of kind `tenant|workspace|folder|sheet|report|dashboard|document` and is managed through the ACL routes (bindings are ACL entries with `effect = allow` referencing a role); at most 500 entries per resource.
 - **FR-F003-04:** `GET /api/v1/resources/{kind}/{id}/acl` returns the effective ACL for a resource: direct entries, inherited entries with `inherited_from { kind, id }`, and the resolved permission set for the caller; `PUT /api/v1/resources/{kind}/{id}/acl` (resource-owner or tenant-admin) replaces the direct entries and their `resource_acl_permissions` rows atomically with `If-Match` and emits `acl.updated.v1` with `added`, `removed`, and `changed` entries.
@@ -192,7 +192,7 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 - [ ] F002 and F038 accepted and archived; `testing/fixtures/{tenants.rs, auth.rs}` available
 - [ ] Requirement IDs above mapped to failing tests in `testing/features/F003/`
 - [ ] Migration file name and owned paths claimed
-- [ ] `Permission` catalogue agreed with F005–F010 owners and recorded in `crates/domain/src/authz/permissions.rs`
+- [ ] `Permission` catalogue and the role catalogue are taken from `docs/authorization-model.md`, which is the single vocabulary every feature authorizes against, and transcribed into `crates/domain/src/authz/permissions.rs` without additions; `cargo xtask check-roles` fails on any role a ticket or catalog row uses that the model does not define
 
 ## 9. Exit criteria — accepted and releasable
 
