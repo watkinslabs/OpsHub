@@ -4,7 +4,7 @@ Feature: design system and UI primitives. Flag `F062_FEATURE`. Every case maps t
 
 | Case | Requirement | Lane | Given / When / Then |
 |---|---|---|---|
-| `F062-REQ-001` | FR-F062-01 | accessibility | `tokens.css` declares the six scales with the specified values; a spacing step off the 4px base or a raw hex, px or ms literal in a component fails lint |
+| `F062-REQ-001` | FR-F062-01 | accessibility, frontend | `tokens.css` declares the six scales with the specified values; and the lint set of ticket section 4 rejects each of: a spacing step off the 4px base, a raw hex, px or ms literal, a stylesheet outside `design/`, a direct vendor or icon-package import, a duplicate component name in a feature, an `sx` colour or typography key in a feature, `dangerouslySetInnerHTML`, and `any` or a silencing cast |
 | `F062-REQ-002` | FR-F062-02 | accessibility, frontend | Plus Jakarta Sans and JetBrains Mono load from the repository with the documented fallbacks; the seven steps, four weights, `-0.02em` tracking above `--text-xl` and tabular numerals all match |
 | `F062-REQ-003` | FR-F062-03 | accessibility | every semantic token carries the specified hex in light and in dark, including all three intent families; a literal reference in a component fails lint |
 | `F062-REQ-004` | FR-F062-04 | e2e, accessibility | changing `--brand` from `#5b5bd6` to `#0e7c86` restyles every accent, selection and focus surface and nothing else; a hue breaking the contrast floor is refused with the failing pair named |

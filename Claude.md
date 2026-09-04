@@ -90,6 +90,16 @@ Rules:
 
 ## Rust backend rules
 
+`docs/engineering-standards.md` is the full standard and is binding. In particular:
+
+- **No SQL, pool or connection outside `crates/persistence`.** The domain depends on repository
+  traits; the base contract owns the tenant predicate, soft-delete filter, version check, audit row
+  and outbox enqueue, so a repository never re-implements them.
+- **No `unwrap`, `expect` or `panic!` on a request or job path.**
+- **Typed domain errors** with exactly one mapping per module onto `invalid`, `denied`, `not_found`,
+  `conflict`, `rate_limited`, `unavailable`. No handler invents a status code.
+- Every request and job runs in a tracing span carrying `tenant_id`, `actor_id`, `correlation_id` and
+  the entity id.
 - Use Rust 2024 stable, Axum/Tokio, SQLx, PostgreSQL, typed domain errors, migrations, tracing, and versioned OpenAPI contracts.
 - Enforce tenant isolation and authorization at service/API boundaries.
 - Use idempotency and optimistic concurrency for mutating operations.
@@ -112,11 +122,22 @@ Rules:
 
 ## React frontend rules
 
-- Use React + TypeScript with typed API clients and semantic HTML.
-- Use the shared design-token system for typography, color, spacing, radii, and elevation.
-- Use one documented font stack and a consistent SVG icon set; never use emoji as functional UI icons.
-- Provide loading, empty, error, permission-denied, and success states.
-- Preserve keyboard navigation, visible focus, screen-reader semantics, responsive behavior, and WCAG 2.2 AA.
+`docs/engineering-standards.md` is the full standard and is binding. The rules that get broken most:
+
+- **Tokens are the only source of visual values.** No hex, `rgb()`, raw `px` for spacing or type, or
+  raw `ms` anywhere under `apps/web/src/**`. No stylesheet outside `apps/web/src/design/`.
+- **One import surface.** Features import from `apps/web/src/ui`, never `@mui/material`, `@mui/x-*`,
+  `@tanstack/*` or an icon package directly, and never redefine a component the library exports.
+- **Variants are enumerated, not composed.** A button is one of the declared variants and sizes; a
+  feature that wants a new one opens a ticket against F062 rather than passing `sx` to invent it.
+  `className` is for layout only — never colour, typography, border or shadow.
+- **Icons come from `apps/web/src/ui/icons.ts`**, the only module allowed to import the icon package,
+  at 14, 16, 20 or 24px. Decorative icons are `aria-hidden`; meaningful ones require `title`. Never
+  emoji as functional UI.
+- **Every surface ships loading, empty, error with `correlation_id`, denied, stale, offline and
+  success states**, composed from the F062 patterns rather than hand-rolled.
+- Keyboard operability, visible `:focus-visible`, screen-reader semantics, responsive behaviour and
+  WCAG 2.2 AA are gates, and colour is never the only signal.
 
 ## Feature flags
 
@@ -153,6 +174,7 @@ and the other is corrected — never both edited to meet in the middle.
 | Permission catalogue, principal kinds, role definitions | `docs/authorization-model.md` |
 | What a milestone contains and when it is done | `docs/milestones/README.md` |
 | Threats, trust boundaries and their mitigations | `docs/threat-model.md` |
+| How code is written and styled | `docs/engineering-standards.md` |
 | Screens | `design/artboards/*.dc.html`, indexed by `design/canvas.json` |
 | Feature contract, scope, tests, ownership | its ticket in `work/` |
 | Which items exist and their dependencies | `work/plan.md` |

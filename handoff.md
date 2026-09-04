@@ -10,6 +10,8 @@ Status: READY FOR IMPLEMENTATION. Specification, architecture and design are com
   and data-access rules in sections 2 and 2.1.
 - Product requirements: `docs/product-capability-spec.md`. Contract catalog: `docs/capability-contracts.md`.
 - Milestones and their exit criteria: `docs/milestones/README.md`.
+- Engineering standards: `docs/engineering-standards.md` — styling, components, icons, Rust, tests,
+  with the enforcement mechanism named for every rule.
 - Threat model: `docs/threat-model.md` — required by Phase 0 before implementation.
 - Authorization vocabulary: `docs/authorization-model.md` — the permission catalogue, principal kinds
   and every role, enforced by `check-roles`.
