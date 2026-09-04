@@ -1,93 +1,90 @@
 # OpsHub handoff
 
-Status: READY FOR IMPLEMENTATION. Planning/specification phase complete. Product code has not started.
+Status: READY FOR IMPLEMENTATION. Specification, architecture and design are complete. Product code has not started.
 
 ## Current state
 
-- Repository root: `/home/nd/ent/OpsHub`.
-- Git repository initialized on `main`; remote: `watkinslabs/OpsHub`.
-- No commit or push has been made. Every file is untracked.
-- PostgreSQL 18 is the selected database version.
-- Architecture decisions are frozen in `docs/architecture-decisions.md`.
-- Product requirements and build order are in `docs/product-capability-spec.md`.
-- Generated contract catalog: `docs/capability-contracts.md`.
-- Delivery index: `work/plan.md`.
-- Rules: the repository rules file at the root, and `MANIFEST.md`.
+- Repository root: `/home/nd/ent/OpsHub`; remote `github.com/watkinslabs/OpsHub` (public, MIT).
+- PostgreSQL 18. Rust workspace plus a React 19 web app; no product code written yet.
+- Architecture decisions are frozen in `docs/architecture-decisions.md`, including the normalization
+  and data-access rules in sections 2 and 2.1.
+- Product requirements: `docs/product-capability-spec.md`. Contract catalog: `docs/capability-contracts.md`.
+- Milestones and their exit criteria: `docs/milestones/README.md`.
+- Delivery index: `work/plan.md`. Rules: the repository rules file at the root, and `MANIFEST.md`.
+- Visual source of truth: `docs/design-canvas.md` links the design canvas.
 
 ## Backlog
 
-- 9 epics in `work/epics/`.
-- 61 feature tickets in `work/tickets/`.
-- 122 stories in `work/stories/`.
-- 244 tasks in `work/tasks/`.
-- 61 feature-gated harness manifests in `testing/features/`, each with seven lane `cases.md` files.
-- Every backlog file is hand-written specification. No generated stub remains: `validate-work` passes
-  436 items with zero findings, which enforces 8+ FR and 4+ NFR per feature, 5+ SR per story, named
-  failing tests per task, gherkin scenarios, catalog routes/events/tables reproduced in the ticket,
-  `depends_on` equal to the plan row, module-scoped disjoint `owned_paths`, and feature-specific
-  harness cases in every lane.
-- Tickets include branch, ownership, aggregate, module slug, lifecycle timestamps, TDD, requirements,
-  contracts, acceptance, exit, and rollback sections.
+- 9 epics, 68 feature tickets, 136 stories, 272 tasks, 68 feature-gated harnesses of seven lanes each.
+- 8 milestones, 488 estimate points. Every feature declares its milestone; no feature depends on a
+  later one, and the dependency graph is acyclic.
+- Every functional requirement in every ticket is implemented by at least one story or task.
+- 343 tables declared in the catalog, each owned by exactly one feature.
 
-## Covered product scope
+## Design
 
-Core sheets/work records, typed columns, formulas, views, forms, comments, files, sharing, permissions, live collaboration, workflows, approvals, notifications, reports, dashboards, project/portfolio management, resources, enterprise identity, integrations, APIs, MCP, mobile/PWA, publishing, conditional formatting, update requests, advanced modules, and permission-aware AI.
+- 39 screens on the design canvas across six pages: core work, planning and reporting, enterprise,
+  advanced modules, public surfaces, and the design system sheets.
+- Token, component and chart sheets carry the real values — every colour in both themes, the type
+  ramp, spacing, radii, elevation, motion, density — so the screens and F062 agree.
+- Brand hue and light/dark are live levers on every screen.
 
-## Automation
+## Stack decisions worth knowing
 
-Run from repository root:
+- MUI v7 under a custom OpsHub theme is the only source of rendered UI, with MIT MUI X Charts and
+  Date Pickers. TanStack Table and Virtual supply headless grid state and emit no markup. No paid
+  grid package, no licence key, no second UI library.
+- Typography is Plus Jakarta Sans with JetBrains Mono for numerics.
+- One data access class per object type in `crates/persistence/src/<aggregate>/`. All SQL lives in
+  that crate. The base contract applies the tenant predicate, soft-delete filter, version check,
+  audit row and outbox enqueue, so a repository cannot forget them.
+
+## Gates
+
+Run from the repository root; all pass on a clean clone.
 
 ```text
 CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-decisions
 CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-plan
 CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- validate-work
 CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-contracts
+CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-persistence
 CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- test-all
 CARGO_TARGET_DIR=/tmp/opshub-xtask-target cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- self-test
 ```
 
-All six pass as of this handoff:
+Verify by running them; do not trust this line. An earlier handoff claimed all gates passed while two
+were failing.
 
-```text
-validate-decisions   architecture decisions passed
-validate-plan        plan/file parity passed
-validate-work        work validation passed: 436 items
-check-contracts      contract checks passed: 61 rows
-self-test            content + policy self-test passed
-test-all             all 61 feature harnesses valid
-```
+## Gate notes
 
-Verify this claim by running them; do not trust it. Two of these gates were failing while a previous
-handoff asserted they passed.
-
-Harnesses are manifests and test cases; executable production tests begin with implementation.
-
-## Gate notes for the next session
-
-- `check-contracts` requires each ticket to name its catalog aggregate backticked. Section 1 of every
-  ticket carries an `- Aggregate:` line for this. Rewriting a ticket without it fails the gate.
-- `validate-work` only inspects files that exist. A plan row whose file was never created is invisible
-  to it and is caught solely by `validate-plan`. Run both.
-- `CATCH_ALL_EXEMPT` in `automation/xtask/src/content.rs` lists the non-module roots that may be owned
-  directly (`.github/workflows/**`, `.githooks/**`, `infra/**`, `openapi/**`, `.lanes/**`,
-  `.worktrees/**`, `.agent-target/**`, `testing/evidence/**`), matching FR-F041-08. The content
-  self-test pins it: adding a source-tree root to that list fails `self-test`.
+- `check-contracts` is bidirectional: a catalog route missing from its ticket fails, and so does a
+  route a ticket names that no catalog row declares. The second direction exists because F013 once
+  promised a public share link nothing would have served.
+- `check-persistence` reads DDL lines only. Prose of the form "`x` replaces `y text[]`" is a
+  deliberate record of a conversion and is not a finding.
+- `validate-work` inspects files that exist; a plan row whose file was never created is caught only
+  by `validate-plan`. Run both.
+- Each ticket names its catalog aggregate backticked; rewriting a ticket without that line fails
+  `check-contracts`.
+- `CATCH_ALL_EXEMPT` in `automation/xtask/src/content.rs` lists the non-module roots that may be
+  owned directly. The content self-test pins it: adding a source root there fails `self-test`.
+- The forbidden-token scanner rejects the design canvas URL, so it lives in `docs/design-canvas.md`,
+  the one exempt file.
 
 ## Rules to preserve
 
-- Do not generate backlog files until decision validation passes.
-- Keep every file at 500 lines or fewer.
-- Keep testing code under `testing/`, outside live code, and feature gated.
-- Use one feature per ticket; archive completed tickets from the active folder.
-- Never weaken commit, push, PR, ownership, dependency, or policy gates.
+- Every file is 500 lines or fewer.
+- One feature per ticket; testing code under `testing/`, feature gated, outside live code.
+- Never weaken the commit, push, ownership, dependency or policy gates to make a change land.
 - Do not claim implementation from a green harness manifest.
 
 ## Next session
 
-First command:
-
 ```text
-git status --short && sed -n '1,120p' "$(ls | grep -i '^cla.*\.md$')" && sed -n '1,120p' work/plan.md
+git status --short && sed -n '1,120p' "$(ls | grep -i '^cla.*\.md$')" && sed -n '1,80p' docs/milestones/README.md
 ```
 
-Next work: choose the lowest-order feature in `work/plan.md`, create its branch, claim its owned paths, write failing executable tests in `testing/features/F###/`, then implement the Rust/API/data/UI vertical slice.
+Start at M0 or M1 in `docs/milestones/README.md`, take the lowest-order feature in `work/plan.md`
+whose dependencies are archived, claim its branch and owned paths, write the failing tests in
+`testing/features/F###/`, then implement the vertical slice.
