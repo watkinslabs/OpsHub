@@ -105,6 +105,200 @@ Excluded: tenant, user, group, and role writes themselves (F002, F003); login, s
 - Validation: email addr-spec ≤ 254, `company_name` 2–120, slug per F002 grammar and not in `reserved_slugs`, `timezone` an IANA identifier, `accepted_terms_version` equal to the deployment's current `terms_version`, `trial_days` 7–60 on invitations, `elapsed_ms` 2,000–3,600,000.
 - Error mapping: `SignupError::TokenExpired | TokenConsumed | TokenUnknown → 410 gone`, `::SlugTaken → 409 conflict`, `::SlugReserved | InvalidSlug | StaleTerms → 400 invalid`, `::TooManyAttempts | RateLimited → 429 rate_limited`, `::ProvisioningFailed → 503 unavailable`, `AuthzError::Denied → 403 denied`; every silently absorbed rejection maps to the FR-F065-02 `202` and a `signup_rejected_total` increment.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC. Unlisted request
+fields are rejected with `400 invalid` on the operator route and **absorbed** on the public routes
+under the rule below. `Page<T>`, `ListQuery`, the signed cursor, the error body and the six codes are
+F028's; `ActorContext` and the session cookie are F038's; the tenant, its slug grammar and
+`create_tenant` are F002's; the entitlement record and its `state` are F048's; the subscription is
+F064's.
+
+**Utm**: `{ source: string, medium: string, campaign: string }`, each 1–120 chars. All three are
+required when the object is present, which is what the `signup_request_utm` primary key and its
+not-null columns enforce.
+
+**`StartSignupRequest`** — `POST /public/signup`, unauthenticated
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `email` | string | yes | RFC 5322 addr-spec, ≤ 254 chars |
+| `company_name` | string | yes | 2–120 chars after trim |
+| `bot_token` | string | yes | the Turnstile response token, verified against `signup/turnstile_secret` |
+| `company_website` | string | yes | the honeypot; must be the empty string. A real browser never fills it because it is `aria-hidden` and out of the tab order |
+| `elapsed_ms` | integer | yes | 2,000–3,600,000 — the time between form render and submit |
+| `utm` | Utm? | no | |
+| `requested_slug` | string? | no | F002's grammar `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`, 3–63 chars |
+
+**`StartSignupResponse`** — the **only** body this route ever returns:
+`{ status: "pending_verification", expires_in_seconds: 86400 }` with `202`.
+
+**The identical-response rule.** This body, this status, these headers and this latency band are
+returned for **every** accepted shape, whatever the server then decides. Specifically, all of the
+following produce a byte-identical response:
+
+| Situation | Response | What actually differs |
+|---|---|---|
+| A brand-new address | `202`, the body above | F037 sends the verification mail with a token |
+| An address that already has an active user | `202`, the body above | F037 sends "you already have an account" with a sign-in link and **no token** |
+| A `requested_slug` already taken, reserved, or soft-reserved | `202`, the body above | the request is stored with `requested_slug = null` and a `slug_taken` flag row; the caller picks an address at completion |
+| A disposable domain, or a domain with no MX | `202`, the body above | no mail; a `disposable_domain` or `no_mx` flag row |
+| A failed bot token, a filled honeypot, or `elapsed_ms` out of range | `202`, the body above | no mail; one flag row per failed check |
+| Any rate-limit bucket exhausted | `202`, the body above | no mail, no row; `signup_rejected_total{reason="rate_limited"}` |
+| An unlisted or malformed field, or a body that fails validation | `202`, the body above | no mail, no row |
+
+There is no variation in status code, `field_errors`, header set, body length, or measurable
+latency — the handler pads to a fixed 250 ms floor (NFR-F065-01), so the timing channel is closed as
+well as the content one. A caller therefore cannot use this route to learn whether an email address,
+a user, a company or a tenant exists. Validation errors are surfaced to a real user by the client
+before submission, never by the server afterwards.
+
+**`AvailabilityResponse`** — `GET /public/signup/availability?slug=acme`, unauthenticated:
+`{ slug, available: bool }` and nothing else. `available` is `false` for a slug held by an existing
+tenant, listed in `reserved_slugs`, or soft-reserved by a live signup request, and **no field
+distinguishes the three** — no `reason`, no suggestion from the server, no `taken_by`. The route
+accepts exactly one parameter: no email, no listing, no prefix search, no `limit`, so the only fact
+a caller can extract is the answer to the single name they already typed. It is rate-limited to 60
+per minute per IP, which bounds how fast a name dictionary can be walked.
+
+**`SignupTokenResponse`** — `GET /public/signup/{token}`, unauthenticated
+
+| Field | Type | Notes |
+|---|---|---|
+| `email_masked` | string | `d***@acme.io`. The full address is never returned by any route in this feature, not even to the holder of the token — the mail already reached them, so echoing it only widens what a leaked link discloses |
+| `company_name` | string | as submitted, HTML-escaped by the client |
+| `requested_slug` | string? | `null` when the soft reservation was lost |
+| `slug_available` | bool | re-checked at read time, so a name taken since submission shows as unavailable |
+| `expires_at` | timestamp | |
+| `terms_version` | string | the version the caller must echo at completion |
+
+No `request_id`, `tenant_id`, `email_hash`, risk flag, IP or user agent appears. The first successful
+read is what proves the address: it moves `pending → verified` and publishes `signup.verified.v1`
+exactly once; later reads are idempotent and publish nothing.
+
+**`CompleteSignupRequest`** — `POST /public/signup/{token}/complete`, unauthenticated
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `slug` | string | yes | F002's grammar, 3–63 chars, not in `reserved_slugs`; taken at commit → `409 conflict` with `field_errors.slug = "taken"` and the token is **not** consumed, so the caller retries |
+| `admin_display_name` | string | yes | 1–120 chars after trim |
+| `timezone` | string | yes | an IANA identifier |
+| `accepted_terms_version` | string | yes | must equal the deployment's current `terms_version`, else `400 invalid` with `field_errors.accepted_terms_version` |
+
+**`CompleteSignupResponse`**: `{ tenant_id, slug, workspace_url, trial_ends_at }` with `201` and a
+`Set-Cookie: __Host-oh_session` minted by F038's `SessionIssuer`. This is the one public route that
+returns real identifiers, and it does so only after a single-use token was consumed in the same
+transaction that created the tenant.
+
+**Token failures.** `GET /public/signup/{token}` and the `complete` route return `410 gone` with
+`{ reason }` for a token that is `expired`, `consumed` or `abandoned` — **and a token that never
+existed returns the same `410 gone` with `reason: "expired"`** (FR-F065-08). A caller cannot tell an
+invented token from a real one that lapsed, so the 32-byte space cannot be probed for hits. Attempts
+are capped at 5 per token row and 10 per hour per IP.
+
+**`CreateInvitationRequest`** — `POST /api/v1/signup/invitations`, `platform-operator` only. This is
+the one authenticated route here, and it behaves like every other `/api/v1` route: real validation,
+real `field_errors`, real status codes.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `email` | string | yes | as above; the bot check and disposable-domain rejection are skipped |
+| `company_name` | string | yes | 2–120 chars |
+| `slug` | string? | no | pinned into `reserved_slugs` with `reason: "pinned"` until the token expires |
+| `trial_days` | integer | yes | 7–60 |
+| `note` | string? | no | ≤ 500 chars, operator-facing only |
+
+**`InvitationResponse`**: `{ request_id, email_masked, company_name, slug, trial_days, expires_at,
+status, created_at }` with `201`. The verification token is **not** returned: it reaches the prospect
+only through F037's mail, exactly as a self-serve token does, so an operator cannot mint a link and
+hand it around out of band.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `202` | — | `POST /public/signup`, always, for every accepted or absorbed request |
+| `201` | — | `POST /public/signup/{token}/complete` and `POST /api/v1/signup/invitations` |
+| `400` | `invalid` | on `POST /api/v1/signup/invitations` and `POST .../complete` only: an invalid slug, a reserved slug, a stale `accepted_terms_version`, `trial_days` outside 7–60, a non-IANA timezone, an unlisted field. **Never** on `POST /public/signup` |
+| `403` | `denied` | `POST /api/v1/signup/invitations` by anyone but a `platform-operator` — including an anonymous caller and a `tenant-admin` |
+| `404` | `not_found` | every public route while `F065_FEATURE` is off. `GET /public/signup/availability` never answers `404`: an unknown slug is `available: true` |
+| `409` | `conflict` | `slug` taken at commit time, with the token left unconsumed |
+| `410` | `gone` | an expired, consumed, abandoned or non-existent token, with `reason` in `expired \| consumed \| abandoned` and non-existent reported as `expired` |
+| `429` | `rate_limited` | the availability and token routes only, with `Retry-After`; a rate-limited `POST /public/signup` is absorbed as `202` |
+| `503` | `unavailable` | provisioning failed after the token was validated; nothing was written and the token stays unconsumed, so the caller retries |
+
+`410 gone` is the one status in this module outside F028's six-code table, and it is deliberate: a
+token is a resource that demonstrably existed and no longer does, which is exactly what `410`
+means, and collapsing "never existed" into it is what keeps the route non-enumerating. Its body is
+`{ reason }` plus the standard `correlation_id`, not the six-code envelope.
+
+### Use case signatures
+
+In `crates/domain/src/signup/`. Each takes `ctx: &Ctx` carrying correlation id — and, on the public
+routes, **no tenant and no actor**, since neither exists yet — depends on repository traits and the
+consumed ports rather than a pool, connection or HTTP client, and returns `DomainError`.
+
+```rust
+fn start_signup(ctx: &Ctx, uow: &mut UnitOfWork, bot: &dyn BotCheck, mx: &dyn MxResolver, limiter: &dyn RateLimiter, notify: &dyn NotificationSender, req: StartSignup) -> Result<StartAck, DomainError>;
+fn check_availability(ctx: &Ctx, requests: &dyn SignupRequestRepository, reserved: &dyn ReservedSlugRepository, tenants: &dyn TenantSlugReader, slug: &TenantSlug) -> Result<bool, DomainError>;
+fn read_signup(ctx: &Ctx, uow: &mut UnitOfWork, presented: &str, now: Timestamp) -> Result<SignupView, DomainError>;
+fn resend_verification(ctx: &Ctx, uow: &mut UnitOfWork, notify: &dyn NotificationSender, request: RequestId, now: Timestamp) -> Result<(), DomainError>;
+fn provision_tenant(ctx: &Ctx, uow: &mut UnitOfWork, tenants: &dyn TenantProvisioner, entitlements: &dyn EntitlementWriter, billing: &dyn SubscriptionStarter, sessions: &dyn SessionIssuer, presented: &str, req: CompleteSignup) -> Result<Provisioned, DomainError>;
+fn create_invitation(ctx: &Ctx, uow: &mut UnitOfWork, notify: &dyn NotificationSender, req: CreateInvitation) -> Result<SignupRequest, DomainError>;
+fn apply_trial_grant(ctx: &Ctx, uow: &mut UnitOfWork, entitlements: &dyn EntitlementWriter, grant: TrialGrant) -> Result<(), DomainError>;
+fn expire_trials(ctx: &Ctx, uow: &mut UnitOfWork, entitlements: &dyn EntitlementWriter, notify: &dyn NotificationSender, now: Timestamp, limit: u32) -> Result<usize, DomainError>;
+fn convert_trial(ctx: &Ctx, uow: &mut UnitOfWork, entitlements: &dyn EntitlementWriter, tenant: TenantId) -> Result<(), DomainError>;
+fn sweep_abandoned(ctx: &Ctx, uow: &mut UnitOfWork, now: Timestamp, batch: u32) -> Result<SweepCounts, DomainError>;
+
+fn normalize_email(raw: &str) -> Option<NormalizedEmail>;
+fn email_hash(pepper: &[u8], normalized: &NormalizedEmail) -> [u8; 32];
+fn evaluate_risk(bot: BotVerdict, domain: DomainVerdict, rate: RateVerdict, elapsed_ms: u32, honeypot: &str) -> RiskAssessment;
+fn mask_email(raw: &str) -> String;
+```
+
+`normalize_email`, `email_hash`, `evaluate_risk` and `mask_email` are pure. `evaluate_risk` returning
+a `RiskAssessment { flags: Vec<RiskFlag>, send_mail: MailKind }` rather than a `Result` is the
+mechanism behind the identical-response rule: the handler has **no** error branch to leak — it
+always answers `202` and only the `MailKind` differs, so a future contributor cannot accidentally
+add a distinguishing status code without rewriting the signature. `check_availability` returns a
+bare `bool` for the same reason: there is no variant in the type that could carry a reason.
+
+**Transaction boundaries.**
+
+- `start_signup` writes the `signup_requests` row, its `signup_request_risk_flags` rows, its
+  `signup_request_utm` row, the `signup_tokens` row, and the `signup.started.v1` outbox entry in one
+  `UnitOfWork`, with the F037 `NotificationService::create` call enlisting in that same transaction
+  (F037's stated expectation). The invariant: no mail exists for a request that did not commit, and
+  no token is deliverable before its request row and its soft slug reservation are visible — the
+  partial unique index on `lower(requested_slug)` is the reservation, so it must become effective in
+  the same commit that mints the link. A suppressed request writes nothing at all, not even a row.
+- `read_signup` moves `pending → verified` and publishes `signup.verified.v1` in one `UnitOfWork`
+  guarded by a conditional update on `verified_at is null`, so the "exactly once" of FR-F065-08 is
+  the zero-row result of that update rather than an application check, and concurrent reads of one
+  link publish one event.
+- `provision_tenant` is **one** `UnitOfWork` spanning: `SignupTokenRepository::consume` (a
+  conditional update on `consumed_at is null`), F002's `create_tenant` with its `tenants`, `users`
+  and `role_bindings` writes through F002's own repositories and F003's seed hook, the four F048
+  entitlement upserts, F064's `trialing` subscription create, `mark_provisioned`, the audit row and
+  the `tenant.provisioned.v1` entry. F038's session is minted **after** that commit returns, so a
+  rolled-back provisioning never hands out a cookie. Three invariants depend on this exact shape:
+  the token is consumed if and only if a tenant exists, which is what makes a replayed `complete`
+  answer `410 consumed` instead of creating a second tenant (NFR-F065-04); the F002 `SlugTaken`
+  error aborts the whole transaction leaving the token unconsumed, which is what lets the loser of a
+  slug race retry (FR-F065-07); and a tenant never exists without its trial entitlements and its
+  subscription, so there is no window in which a new tenant is silently on nothing.
+- `create_invitation` writes the request, its token, the pinned `reserved_slugs` row and the audit
+  row in one `UnitOfWork`, so a pinned address is reserved the instant the invitation is promised.
+- `sweep_abandoned` commits **one `UnitOfWork` per 1,000-row batch**, not one per run: abandon,
+  scrub and delete are each idempotent per request, so a crash mid-sweep leaves committed batches
+  done and the next run resumes. A single run-wide transaction over 100,000 rows would hold the
+  table for minutes and lose all progress on restart.
+- `check_availability` is a read and takes repositories, not a `UnitOfWork`. It writes nothing at
+  all — no probe counter, no request row — so it cannot be used to create state from the public
+  internet.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_signup_*.sql` creates `signup_requests(id uuid pk, source text not null default 'self_serve' check (source in ('self_serve','invitation')), email citext, email_normalized citext, email_hash bytea not null, company_name text, requested_slug text, status text not null default 'pending', ip inet, user_agent text, trial_days smallint not null default 14 check (trial_days between 7 and 60), terms_version text not null, tenant_id uuid references tenants(id) on delete restrict, resend_count smallint not null default 0, created_at timestamptz not null, verified_at timestamptz, provisioned_at timestamptz, scrubbed_at timestamptz)`, `signup_tokens(id uuid pk, request_id uuid not null references signup_requests(id) on delete cascade, token_hash bytea not null, expires_at timestamptz not null, consumed_at timestamptz, attempts smallint not null default 0, created_at timestamptz not null)`, and `reserved_slugs(slug citext pk, reason text not null check (reason in ('system','brand','routing','profanity','pinned')), pinned_request_id uuid references signup_requests(id) on delete set null, expires_at timestamptz, created_at timestamptz not null)`.

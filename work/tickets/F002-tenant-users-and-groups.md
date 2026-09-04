@@ -95,7 +95,19 @@ Excluded: login and sessions (F038), roles and ACLs (F003), SAML/SCIM provisioni
 - API endpoints (`services/api/src/tenants/`): `POST /api/v1/tenants`, `GET /api/v1/tenants/{id}`, `PATCH /api/v1/tenants/{id}`, `POST /api/v1/tenants/{id}/suspend`, `GET /api/v1/users`, `GET /api/v1/users/{id}`, `POST /api/v1/users`, `PATCH /api/v1/users/{id}`, `POST /api/v1/users/{id}/deactivate`, `GET /api/v1/groups`, `GET /api/v1/groups/{id}`, `POST /api/v1/groups`, `PATCH /api/v1/groups/{id}`, `PUT /api/v1/groups/{id}/members`. DTOs `CreateTenantRequest`, `UpdateTenantRequest`, `TenantResponse`, `CreateUserRequest`, `UpdateUserRequest`, `UserResponse`, `CreateGroupRequest`, `UpdateGroupRequest`, `ReplaceMembersRequest`, `GroupResponse`, `Page<UserResponse>`, `Page<GroupResponse>`.
 - Events: `tenant.created.v1`, `tenant.updated.v1`, `tenant.suspended.v1`, `user.created.v1`, `user.updated.v1`, `user.deactivated.v1`, `group.updated.v1`, enqueued with `crates/events` `enqueue(tx, OutboxEvent)` carrying `changed_fields`.
 - Authorization: `tenant-admin` for all mutations except tenant creation (`platform-operator`); `self` may `PATCH /users/{id}` `display_name`; reads of users and groups require an active membership in the tenant; a suspended tenant is checked by the `TenantGate` layer before routing.
-- Hooks consumed: `SessionRevoker` trait (F038) with a no-op default; `record_audit` (F003) with an in-memory sink default; both are injected through `TenantsState`.
+- Hooks consumed: `SessionRevoker` trait (F038) with a no-op default; `record_audit` (F003) with an in-memory sink default; `RoleAssignmentPort` trait (implemented by F003's `RoleBindingRepository`) with an in-memory default; all three are injected through `TenantsState`. `set_role` writes no table of this feature: role bindings are F003's `role_bindings`, so the bulk use case calls the port and this feature never issues SQL against a table it does not own.
+
+```rust
+// crates/domain/src/tenants/ports.rs — defined here, implemented by F003
+trait RoleAssignmentPort {
+    fn set_tenant_role(&self, uow: &mut UnitOfWork, tenant: TenantId, user: UserId, role: RoleName) -> Result<(), DomainError>;
+    fn active_admin_count(&self, uow: &mut UnitOfWork, tenant: TenantId) -> Result<u32, DomainError>;
+}
+```
+
+`active_admin_count` is what the `last_admin` guard of FR-F002-08 and FR-F002-15 counts, taken under
+the same `SELECT ... FOR UPDATE` on the tenant row, so the guard reads the same rows the assignment
+writes.
 - Validation: slug regex and length, email RFC 5322 addr-spec ≤ 254 chars, display_name 1–120, group name 1–120, `user_ids` ≤ 5,000 and deduplicated, `limit` 1–200. Idempotency rows live in `idempotency_keys(tenant_id, key, request_hash, response, expires_at)` for 24 hours and are written by the shared `IdempotencyKeyRepository` of the base contract, not by this feature's repositories.
 - Error mapping: `TenantError::SlugTaken | EmailTaken | NameTaken → 409 conflict`, `StaleVersion → 409 conflict`, `IllegalTransition | LastAdmin | ForeignMember → 400 invalid`, `NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `Suspended → 403 denied reason tenant_suspended`.
 
@@ -112,6 +124,7 @@ every later feature embeds; they are defined here once and referenced elsewhere 
 
 | Field | Type | Required | Constraint |
 |---|---|---|---|
+| 2026-09-04 | Interface review | `RoleAssignmentPort` defined and consumed for the `set_role` bulk action and the `last_admin` guard | `set_role` had no data-access class: `role_bindings` belongs to F003, and decision 2.1 forbids this feature writing a table it does not own |
 | `name` | string | yes | 1–200 chars after trim |
 | `slug` | string | yes | 3–63 chars, `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`, unique across all tenants; taken → `409 conflict` (FR-F002-02) |
 | `plan` | string | yes | `free` \| `team` \| `enterprise` |
@@ -191,7 +204,8 @@ every later feature embeds; they are defined here once and referenced elsewhere 
 `{ action: "deactivate" | "reactivate" | "set_role" | "add_to_group" | "remove_from_group",
 user_ids: uuid[], confirm_count: integer, role?: string, group_id?: uuid }` — `user_ids` 1–500 and
 deduplicated, `confirm_count` must equal `user_ids.length` or the request is `400 invalid`, `role` is
-required for `set_role` and must be defined in `docs/authorization-model.md`, `group_id` is required
+required for `set_role`, must name a tenant-scoped role of `docs/authorization-model.md`, and is
+applied through the `RoleAssignmentPort` above rather than by writing `role_bindings` here, `group_id` is required
 for the two group actions — and returns
 `{ results: [{ user_id, outcome: "applied" | "skipped" | "failed", code? }] }` where `code` is one of
 the six shared error codes and identifies why that one user was not changed (FR-F002-15).
@@ -373,7 +387,7 @@ Scenario: Deactivation revokes access
 - Blocks: F038, F003, F037, F026, F033, F048
 - Conflicts with: none (disjoint owned paths)
 - External dependencies: PostgreSQL `citext` extension available in the CI image
-- Risks and mitigations: `record_audit` and `SessionRevoker` are implemented by F003 and F038, which depend on this feature, so both are consumed through traits with in-memory defaults and replaced by real implementations behind their own flags; the atomic 5,000-member replace is a single `DELETE` plus bulk `INSERT` inside one transaction to avoid lock escalation; the `last_admin` guard uses `SELECT ... FOR UPDATE` on the tenant row to prevent two concurrent deactivations removing both admins.
+- Risks and mitigations: `record_audit`, `RoleAssignmentPort` and `SessionRevoker` are implemented by F003 and F038, which depend on this feature, so both are consumed through traits with in-memory defaults and replaced by real implementations behind their own flags; the atomic 5,000-member replace is a single `DELETE` plus bulk `INSERT` inside one transaction to avoid lock escalation; the `last_admin` guard uses `SELECT ... FOR UPDATE` on the tenant row to prevent two concurrent deactivations removing both admins.
 - Open questions: none
 
 ## 7.1 Amendments

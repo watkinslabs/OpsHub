@@ -96,6 +96,198 @@ Excluded: REST list, filter, error, and rate-limit conventions and the OpenAPI d
 - Validation: `uri` matches `^opshub://(workspace|document|folder|project|task|ticket|dashboard|workflow|audit)/[0-9a-f-]{36}$`; `limit` 1–100 for resources and 1–50 for `search_records`; `query` 1–256 chars; tool arguments validated against the manifest schema before authorization so schema errors never reveal existence; batch size ≤ 10; SSE `Last-Event-Id` must be a UUIDv7 within 60 seconds.
 - Error mapping: `McpError::UnsupportedProtocol → -32602 invalid`, `::UnknownMethod → -32601`, `::Unauthenticated → -32001 denied`, `::ScopeMissing → -32001 denied`, `::UriInvalid → -32602 invalid`, `::NotVisible → -32002 not_found`, `::ConfirmationRequired → tools/call isError with structuredContent`, `::ConfirmationState → -32003 conflict`, `::ArgumentsChanged → -32602 invalid`, `::RateLimited → -32004 rate_limited`, `::AdapterUnavailable → -32005 unavailable`.
 
+### Interface
+
+The caller here is an assistant that cannot ask for clarification, so every method's `params` and
+`result` are given exactly. `T?` is nullable; an absent optional field and an explicit `null` mean
+the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC. Unlisted members of any
+`params` object are rejected with `-32602`. `Page<T>`, the signed cursor and the REST error body
+with its six codes are F028's; `ActorContext` and the `Bearer oh_...` token are F038's; `CellValue`
+is F007's; `ShareRole` and the guest principal kinds are F036's.
+
+**Transport.** `POST /mcp/v1` carries one JSON-RPC 2.0 request object, or an array of at most 10;
+an array of 11 or more is rejected with `-32602`. Every response is HTTP `200`; protocol
+and authorization outcomes travel in the JSON-RPC `error` member, never in the HTTP status, so a
+client never branches on both. Malformed JSON is `-32700`; a method outside the five below is
+`-32601`.
+
+**`initialize`** (FR-F047-01)
+
+| `params` field | Type | Required | Constraint |
+|---|---|---|---|
+| `protocolVersion` | string | yes | must be `"2025-06-18"`; anything else → `-32602` with `data.supported: ["2025-06-18"]` |
+| `clientInfo` | `{ name, version }` | no | recorded on the `mcp_audit` row's `arguments_digest` only |
+
+`result`: `{ protocolVersion: "2025-06-18", serverInfo: { name: "opshub", version: <build> },
+capabilities: { resources: { subscribe: true, listChanged: true }, tools: { listChanged: true },
+logging: {} } }`.
+
+**`resources/list`** (FR-F047-03)
+
+| `params` field | Type | Required | Constraint |
+|---|---|---|---|
+| `cursor` | string? | no | F028's signed cursor; malformed, expired or issued for a different `kind` → `-32602` |
+| `kind` | enum? | no | one of the nine `mcp_resource_kinds` rows; an unknown kind → `-32602` |
+
+`result`: `{ resources: ResourceDescriptor[], nextCursor?: string }`, at most 100 descriptors per
+page, each candidate admitted only after a positive `authz::check(actor, <kind>:read, resource)`, so
+two actors see different counts for the same call.
+
+**`ResourceDescriptor`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `uri` | string | `opshub://<kind>/<uuid>`, matching `^opshub://(workspace\|document\|folder\|project\|task\|ticket\|dashboard\|workflow\|audit)/[0-9a-f-]{36}$` |
+| `name` | string | the resource's own title |
+| `mimeType` | string | joined from `mcp_resource_kinds.mime_type`: `text/markdown` for `document`, `application/json` for the other eight |
+| `description` | string | one line, never a field value the actor cannot read |
+| `annotations.lastModified` | timestamp | |
+
+**`resources/read`** (FR-F047-04, FR-F047-05)
+
+| `params` field | Type | Required | Constraint |
+|---|---|---|---|
+| `uri` | string | yes | the pattern above; a malformed URI → `-32602` `invalid`; an unreadable or absent resource → `-32002` `not_found`, so existence never leaks |
+| `cursor` | string? | no | continues a truncated body |
+
+`result`: `{ contents: [{ uri, mimeType, text }] }` with the per-kind payload the adapters build:
+`document` the current revision body plus `revision` and `updated_at`; `project`, `task` and
+`ticket` the typed record with resolved column values; `dashboard` the widget definitions with their
+last computed values; `workflow` the definition and its last 10 runs; `audit` the F003 audit page for
+the referenced resource. Every content object additionally carries `annotations.redactedFields`
+(string array of attributes removed because the actor lacks `field:read`, plus the unconditional
+F027 secret list), `annotations.truncated` (bool) and `annotations.nextCursor` when the payload
+exceeded 256 KB and was cut at a record boundary.
+
+**`tools/list`** (FR-F047-06)
+
+`params` is `{}`. `result`: `{ tools: ToolDefinition[] }` from the build-time manifest, with any tool
+whose `required_scope` is absent from the token omitted rather than returned and refused.
+
+**`ToolDefinition`**: `{ name, description, inputSchema (JSON Schema draft 2020-12, generated from
+the same typed DTOs the OpenAPI document uses), annotations: { readOnlyHint: bool } }`.
+
+**`tools/call`** (FR-F047-07, FR-F047-08, FR-F047-10)
+
+| `params` field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | a tool in the manifest and in the token's scope; otherwise `-32001` `denied` |
+| `arguments` | object | yes | validated against the tool's `inputSchema` *before* authorization, so a schema error never reveals existence |
+| `confirmation_id` | uuid? | no | mutating tools only; required on the executing retry |
+
+`result` for a read tool: `{ content: [{ type: "text", text: <json> }], isError: false }`. `result`
+for a mutating tool's first call: `{ content: [...summary...], isError: true, structuredContent: {
+code: "confirmation_required", confirmation_id, expires_at, summary } }` and no write. `result` for
+an approved retry: the read shape above carrying the resulting record.
+
+**Tool arguments** — the manifest's ten tools. `workspace_id`, `sheet_id`, `record_id` and the like
+are always uuids in the caller's tenant; a foreign or unreadable id is `-32002` `not_found`.
+
+| Tool | Required scope | `arguments` | Result |
+|---|---|---|---|
+| `search_records` | `records:read` | `query` (1–256 chars), `kinds?` (subset of `project`, `task`, `ticket`), `workspace_id?`, `limit?` (1–50, default 20) | matches ranked descending: `{ uri, title, snippet, score }`; identical arguments within one second return identical results and nothing is cached across actors |
+| `get_record` | `records:read` | `uri` | the typed record with resolved column values |
+| `list_children` | `records:read` or `documents:read` | `uri` (a `workspace`, `folder` or `document` URI), `cursor?`, `limit?` (1–100, default 50) | `{ items: ResourceDescriptor[], nextCursor? }` |
+| `get_report` | `records:read` | `uri` (a `dashboard` URI), `widget_id?` | widget definitions with last computed values |
+| `get_workflow_runs` | `records:read` | `uri` (a `workflow` URI), `limit?` (1–10, default 10) | the definition and that many most recent runs |
+| `create_record` | `records:write` | `kind` (`project`, `task`, `ticket`), `sheet_id`, `cells` (map of `column_id` to `CellValue`) | confirmation gate, then the created record |
+| `update_record` | `records:write` | `uri`, `cells` (map of `column_id` to `CellValue`) | confirmation gate, then the updated record |
+| `add_comment` | `records:write` | `uri`, `body` (1–10,000 chars) | confirmation gate, then the created comment |
+| `assign_record` | `records:write` | `uri`, `assignee_id` | confirmation gate, then the updated record |
+| `run_workflow` | `workflows:run` | `uri` (a `workflow` URI), `input?` | confirmation gate, then the enqueued run |
+
+**`ChangeSummary`** — the `structuredContent.summary` object, and the same object
+`ConfirmationResponse.summary` returns. It is what the human approves at `/admin/mcp`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `resource_uri` | string? | recomposed as `opshub://<resource_kind>/<resource_id>`; null for a create whose target does not exist yet |
+| `operation` | `"create" \| "update" \| "comment" \| "assign" \| "run"` | read from its own column, not from the summary payload |
+| `changes` | `{ field, before, after }` array | one entry per changed attribute for an update, or the full proposed record with `before` absent for a create; `before`/`after` are F007 `CellValue`s |
+
+**`arguments_hash`** is the SHA-256 of the canonical JSON of `arguments` with `confirmation_id`
+removed and object keys sorted. The retry recomputes it; any difference is `-32602` with
+`data.code: "invalid"` and `reason: "arguments_changed"` (FR-F047-10).
+
+**JSON-RPC error mapping** — the whole set this server emits
+
+| Code | `data.code` | Produced by |
+|---|---|---|
+| `-32700` | — | malformed JSON |
+| `-32601` | — | a method outside the five |
+| `-32602` | `invalid` | an unsupported `protocolVersion`, a batch over 10, an unlisted `params` member, a schema failure, a malformed `opshub://` URI, an unknown `kind`, a bad cursor, `arguments_changed` |
+| `-32001` | `denied` | missing, revoked, expired or `mcp:access`-less token (`reason: "invalid_token"`), or a tool outside the token's scopes |
+| `-32002` | `not_found` | a resource that does not exist, is in another tenant, or the actor may not read — the same code for all three |
+| `-32003` | `conflict` | a `confirmation_id` that is `pending`, `expired` or already `consumed` |
+| `-32004` | `rate_limited` | a `calls`, `mutations` or `search` bucket exhausted; `data.retry_after_seconds` |
+| `-32005` | `unavailable` | an adapter's underlying service is down |
+
+**REST routes.** `POST /api/v1/mcp/confirmations/{id}/approve` (FR-F047-09) is session-authenticated,
+requires `Idempotency-Key`, takes an empty body, and returns `ConfirmationResponse { id, tool,
+operation, resource_uri, summary, status, expires_at, approved_by, approved_at, version }`. Only the
+actor owning the proposing token or a `tenant-admin` may call it; an expired, already-approved or
+consumed row returns `409 conflict`, a foreign-tenant id `404 not_found`, and any other actor
+`403 denied`.
+
+`GET /api/v1/mcp/audit` (FR-F047-14) returns `Page<McpAuditResponse>` sorted by `occurred_at`
+descending with `id` as tiebreak, `limit` 1–200 (default 50), filters `actor_id`, `method`, `tool`,
+`decision`, `outcome`, `resource_uri`, `correlation_id`, `occurred_from` and `occurred_to`. The
+`resource_uri` filter keeps its `opshub://<kind>/<id>` form and is parsed into the
+`resource_kind`/`resource_id` pair before the query; an unknown kind is `400 invalid`, and a
+cross-tenant id returns an empty page rather than an error.
+
+**`McpAuditResponse`**: `{ id, actor_id, token_prefix, method, tool?, resource_uri?, decision
+("allowed" | "denied" | "confirmation_required"), outcome ("ok" | "error"), error_code?, duration_ms,
+redacted_field_count, confirmation_id?, correlation_id, occurred_at }`. Arguments never appear —
+only `arguments_digest` exists, and it is not returned.
+
+`GET /mcp/v1/sse` (FR-F047-13) is bound to the same bearer token, emits
+`notifications/resources/updated` (data `{ uri }`) for document and record events on resources the
+actor may still read, `notifications/resources/list_changed` (data `{}`) when a workspace grant
+changes, and a `:heartbeat` comment every 15 seconds. `Last-Event-Id` must be a UUIDv7 within the
+60-second replay window; beyond it the server sends `list_changed` instead of replaying. The stream
+closes with `denied` on token revocation or tenant suspension, and caps at 3 concurrent streams per
+token.
+
+### Use case signatures
+
+In `crates/domain/src/mcp/`. Every use case takes `ctx` — the `ActorContext` the F038 bearer path
+resolved, carrying tenant, actor, scopes, token id and correlation id — and a `UnitOfWork` for writes
+or a repository trait for reads, never a pool or a connection, and returns the shared `DomainError`
+that `jsonrpc.rs` maps to the codes above and `services/api` maps to HTTP.
+
+```rust
+fn initialize(ctx: &Ctx, manifest: &Manifest, requested: ProtocolVersion) -> Result<InitializeResult, DomainError>;
+fn list_resources(ctx: &Ctx, adapters: &AdapterSet, kind: Option<ResourceKind>, page: Cursor) -> Result<Page<ResourceDescriptor>, DomainError>;
+fn read_resource(ctx: &Ctx, adapters: &AdapterSet, uri: ResourceUri, page: Option<Cursor>) -> Result<ResourceContents, DomainError>;
+fn list_tools(ctx: &Ctx, manifest: &Manifest) -> Result<Vec<ToolDefinition>, DomainError>;
+fn call_tool(ctx: &Ctx, uow: &mut UnitOfWork, handlers: &ToolSet, name: ToolName, args: Json, confirmation: Option<ConfirmationId>) -> Result<ToolOutcome, DomainError>;
+fn propose_mutation(ctx: &Ctx, uow: &mut UnitOfWork, handler: &dyn ToolHandler, args: Json) -> Result<Confirmation, DomainError>;
+fn approve_confirmation(ctx: &Ctx, uow: &mut UnitOfWork, id: ConfirmationId) -> Result<Confirmation, DomainError>;
+fn consume_confirmation(ctx: &Ctx, uow: &mut UnitOfWork, id: ConfirmationId, hash: ArgumentsHash) -> Result<Confirmation, DomainError>;
+fn list_audit(ctx: &Ctx, repo: &dyn McpAuditRepository, filter: AuditFilter, page: Cursor) -> Result<Page<McpAuditEntry>, DomainError>;
+fn subscribe_stream(ctx: &Ctx, repo: &dyn ConfirmationRepository, last_event: Option<EventId>) -> Result<EventStream, DomainError>;
+fn check_rate_limit(ctx: &Ctx, uow: &mut UnitOfWork, bucket: RateBucketKind) -> Result<(), DomainError>;
+```
+
+`ToolOutcome` is `Executed(Json)` or `ConfirmationRequired(Confirmation)`, so the gate is a value the
+transport must handle rather than an error a handler could swallow; every `ToolHandler` whose
+`read_only` is false takes the confirmation as a required typed argument, so no mutating path exists
+that omits it.
+
+Transaction boundaries. The executing retry holds one `UnitOfWork` over
+`consume_confirmation` (the conditional `approved → consumed` update), the underlying domain write
+through that feature's own repository, the `mcp_audit` append and the `mcp.tool-called.v1` enqueue —
+that single boundary is what makes an approval unlock exactly one execution: a second retry finds the
+row already `consumed` and gets `-32003`, and a failed write rolls the consumption back rather than
+burning the approval. `propose_mutation` writes the `mcp_confirmations` row, the `mcp_audit` row with
+`decision: confirmation_required` and the `mcp.mutation-proposed.v1` enqueue in one `UnitOfWork`, so
+a proposal is never unlogged. `approve_confirmation` writes the status change, the F003 audit row and
+`mcp.mutation-confirmed.v1` in one `UnitOfWork`. Every read method writes its one `mcp_audit` row in
+the same request transaction as the read, so FR-F047-11's "exactly one row per method call" holds
+even when the adapter fails. `check_rate_limit` refills and consumes the bucket in one `UnitOfWork`
+joined to `mcp_rate_limit_buckets`, so two concurrent calls cannot both spend the last token.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_mcp_*.sql` creates `mcp_confirmations(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, actor_id uuid not null references users(id) on delete restrict, token_id uuid not null references api_tokens(id) on delete cascade, tool text not null, operation text not null check (operation in ('create','update','comment','assign','run')), resource_kind text references mcp_resource_kinds(kind) on delete restrict, resource_id uuid, arguments_hash bytea not null, summary jsonb not null, status text not null default 'pending' check (status in ('pending','approved','consumed','expired','rejected')), approved_by uuid references users(id) on delete restrict, approved_at timestamptz, expires_at timestamptz not null, consumed_at timestamptz, version bigint not null default 1, created_at timestamptz not null, correlation_id uuid not null)`, `mcp_audit(id uuid, tenant_id uuid not null references tenants(id) on delete restrict, actor_id uuid not null references users(id) on delete restrict, token_prefix text not null, method text not null check (method in ('initialize','resources/list','resources/read','tools/list','tools/call')), tool text, resource_kind text references mcp_resource_kinds(kind) on delete restrict, resource_id uuid, arguments_digest bytea, decision text not null check (decision in ('allowed','denied','confirmation_required')), outcome text not null check (outcome in ('ok','error')), error_code text, duration_ms int not null, redacted_field_count int not null default 0, confirmation_id uuid, correlation_id uuid not null, occurred_at timestamptz not null, primary key (id, occurred_at))`, and `mcp_rate_limits(tenant_id uuid not null references tenants(id) on delete restrict, token_id uuid not null references api_tokens(id) on delete cascade, bucket text not null references mcp_rate_limit_buckets(bucket) on delete restrict, tokens numeric not null, refilled_at timestamptz not null, primary key (tenant_id, token_id, bucket))`. `mcp_audit.confirmation_id` deliberately carries no foreign key: audit partitions are retained 400 days while `mcp_confirmations` rows are purged after 30, and the `audit_immutable` trigger forbids the `UPDATE` a `set null` action would need.

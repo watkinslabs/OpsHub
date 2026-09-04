@@ -102,6 +102,199 @@ Excluded: the AI provider abstraction, model selection, redaction rules, and the
 - Authorization: `resource-viewer` plus the F048 `ai_insights` entitlement for scan and reads; `workflow-editor` for propose, confirm, and reject; confirm additionally requires `PrincipalKind::User`; cross-tenant ids map to `not_found`.
 - Error mapping: `InsightError::ScopeTooLarge → 400 invalid`, `::ActionKindNotAllowed → 400 invalid`, `::TargetNotInEvidence → 400 invalid`, `::PreviewStale → 409 conflict`, `::ProposalExpired → 409 conflict`, `::VersionMismatch → 409 conflict`, `::ScanRateLimited → 429 rate_limited`, `::BudgetExceeded → 429 rate_limited`, `::CircuitOpen → 503 unavailable`, `::ProviderFailed → 503 unavailable`, `AuthzError::Denied → 403 denied`, `::NotFound → 404 not_found`.
 
+### Interface
+
+Exact shapes for every route above, plus the two structures the safety properties rest on: the
+evidence record that ties a statement to real rows, and the preview a human confirms. `T?` is
+nullable; an absent optional field and an explicit `null` mean the same thing. Ids are UUIDv7
+strings, timestamps are RFC 3339 UTC, `version` increments by one per write. Unlisted request fields
+are rejected with `400 invalid` naming the field in `field_errors`. `Page<T>`, the signed cursor and
+the error body with its six codes are F028's; `ActorContext` and `PrincipalKind` are F038's;
+`CellValue` is F007's; `DiffOp`, the `AiProvider` boundary, `Budget`, `Completion` and the
+permission-filtered retrieval reader are F039's and are used unchanged. All model text on every
+shape below is plain text: HTML and markdown link syntax are escaped at persistence, and the only
+clickable target is a server-generated `deep_link` (FR-F040-16).
+
+**`ScanRequest`** — `POST /api/v1/ai/insights/scan` (FR-F040-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `scope` | object | yes | exactly one of `{ workspace_id }` or `{ sheet_ids }`; both or neither → `400 invalid` with `field_errors.scope` |
+| `scope.workspace_id` | uuid | conditional | caller holds `resource-viewer` on it |
+| `scope.sheet_ids` | uuid array | conditional | 1–50 readable sheets; each becomes one `ai_scan_scope_sheets` row |
+| `detectors` | string array? | no | subset of the six detector names; absent means all six; an unknown name → `400 invalid` with `field_errors.detectors` |
+| `since` | timestamp? | no | lower bound on record activity; must be in the past |
+
+An estimated scope above 20,000 records returns `400 invalid` with `field_errors.scope =
+"scope_too_large"`. `ScanResponse` is `202 { scan_id, status: "queued", detectors, estimated_records }`,
+where `detectors` is reassembled from the `ai_scan_detectors` rows.
+
+**`InsightSummaryResponse`** — `Page<T>.items` of `GET /api/v1/ai/insights` (FR-F040-06)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `kind` | enum | one of the six detector kinds |
+| `severity` | `"low" \| "medium" \| "high"` | text plus icon in the UI; never colour alone |
+| `status` | `"open" \| "dismissed" \| "expired" \| "superseded"` | |
+| `title` | string | |
+| `scope_kind` / `scope_id` | enum / uuid | `workspace` or `sheet` |
+| `evidence_count` | integer | always greater than zero (FR-F040-03) |
+| `occurrence_count` | integer | incremented when a later scan reproduces the fingerprint |
+| `confidence` | number | 0.00–1.00 |
+| `first_seen_at` / `last_seen_at` / `computed_at` | timestamp | |
+| `version` | integer | pass as `If-Match` on dismiss |
+
+An insight the caller cannot read every evidence record of is omitted from the page entirely, never
+partially redacted, so absence and denial are indistinguishable to the reader.
+
+**`InsightDetailResponse`** — `GET /api/v1/ai/insights/{id}` (FR-F040-07): every field above plus
+`summary`, `uncertainty_note`, `detector_version`, `model`, `prompt_version`, `input_tokens`,
+`output_tokens`, `cost_micros`, `scan_id`, `suppressed_until`, and `evidence` as an ordered
+`EvidenceResponse` array.
+
+**`EvidenceResponse`** — the citation. Every statement in `summary` is backed by one of these rows;
+a model may select them only by index into the detector's candidate set (FR-F040-04).
+
+| Field | Type | Notes |
+|---|---|---|
+| `source_kind` | enum | `row`, `comment`, `approval`, `workflow_run`, `allocation`, `metric_point` |
+| `source_id` | uuid | the cited record |
+| `sheet_id` | uuid? | present for `row` and `comment` sources |
+| `column_id` | uuid? | present when the finding is about one field |
+| `source_version` | integer? | the record version the observation was made at |
+| `observed_value` | `CellValue` | F007's typed value snapshot, rendered as-is |
+| `observed_at` | timestamp | |
+| `deep_link` | string | server-generated from the ids above; the only clickable target |
+| `position` | integer | display order within the insight |
+
+**`DismissRequest`** — `POST /api/v1/ai/insights/{id}/dismiss` (FR-F040-08), `If-Match` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `reason` | string | yes | 1–500 chars |
+| `scope` | `"this" \| "kind_for_scope"` | yes | `kind_for_scope` sets `suppressed_until = now + 30 days` for that fingerprint |
+
+**`ProposeActionRequest`** — `POST /api/v1/ai/actions` (FR-F040-09, FR-F040-10). This call never
+mutates anything; it only renders and stores a preview.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `insight_id` | uuid | yes | an insight the caller can read; foreign tenant → `404 not_found` |
+| `action_kind` | enum | yes | `set_field`, `assign_owner`, `shift_dates`, `create_workflow_draft`, `request_approval`, `notify_owner`; anything else → `400 invalid` with `field_errors.action_kind = "not_allowed"` |
+| `parameters` | object | yes | carries `targets`, `target_column_id` and the kind-specific value payload, and nothing else |
+| `parameters.targets` | `{ target_kind, target_id }` array | yes | 1–25 entries, persisted as `ai_action_targets` rows; each must join to an `ai_insight_evidence` row of the parent insight on `(source_kind, source_id)`, else `400 invalid` with `field_errors.parameters = "target_not_in_evidence"`; over 25 → `400 invalid` |
+| `parameters.target_column_id` | uuid? | conditional | required for `set_field`, persisted as the typed `ai_actions.target_column_id`; a column of the evidence's sheet |
+| `parameters.value` | varies | conditional | the kind-specific payload the residual `parameters` retains: a `CellValue` for `set_field`, an integer day offset for `shift_dates`, a user or group reference for `assign_owner` and `notify_owner`, absent for `create_workflow_draft` and `request_approval`; validated against the type of `target_column_id` where one applies |
+
+**`ActionResponse`** — the proposal, returned by propose, confirm and reject
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `insight_id` | uuid | |
+| `action_kind` | enum | |
+| `risk_class` | `"low" \| "high"` | `high` for `create_workflow_draft`, `request_approval`, or `target_count > 5` (FR-F040-12) |
+| `status` | enum | `pending`, `awaiting_approval`, `confirmed`, `running`, `applied`, `rejected`, `expired`, `failed` |
+| `target_count` | integer | 1–25, derived from `ai_action_targets` |
+| `preview` | `ActionPreview` | the diff below |
+| `preview_hash` | string | lowercase hex SHA-256 of the canonical `preview`; the client echoes it and never recomputes it |
+| `approval_id` | uuid? | present once a `high` proposal has been escalated to F020 |
+| `proposed_by` / `proposed_at` | uuid / timestamp | |
+| `confirmed_by` / `confirmed_at` | uuid? / timestamp? | |
+| `rejected_by` / `rejected_at` / `reject_reason` | uuid? / timestamp? / string? | |
+| `expires_at` | timestamp | proposal time plus 24 hours |
+| `version` | integer | pass as `If-Match` on confirm and reject |
+
+**`ActionPreview`** — what a person approves. It is unambiguous about what will change: one entry
+per target, each naming the record, the version the preview was rendered from, and the exact field
+changes.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `targets` | `PreviewTarget` array | yes | exactly `target_count` entries, ordered by `ai_action_targets.position` |
+
+**`PreviewTarget`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `target_kind` | `"row" \| "approval" \| "workflow_run"` | |
+| `target_id` | uuid | |
+| `sheet_id` | uuid? | present for `row` targets |
+| `preview_version` | integer | the target's version when the preview was rendered; the run re-reads it and a moved version fails the run rather than overwriting |
+| `changes` | `DiffOp` array | F039's shape, reused unchanged; `path` is the `column_id` for a cell change, `before` the current `CellValue`, `after` the proposed one; an `add` op has no `before`, a `remove` op no `after` |
+
+Applying every `DiffOp` of every `PreviewTarget` is the whole of what confirmation authorizes:
+nothing outside this document is written, and a target absent from it cannot be touched.
+
+**`ConfirmRequest`** — `POST /api/v1/ai/actions/{id}/confirm` (FR-F040-11), the only path to
+execution. `Idempotency-Key` and `If-Match: <version>` are required, and the caller's principal kind
+must be `user`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `preview_hash` | string | yes | must equal the stored hash → otherwise `409 conflict` carrying the re-rendered `preview` and its new hash |
+
+**`RejectRequest`** — `POST /api/v1/ai/actions/{id}/reject` (FR-F040-14): `{ reason: string }`,
+1–500 chars.
+
+**List parameters** — `GET /api/v1/ai/insights` returns `Page<InsightSummaryResponse>` sorted by
+`severity` descending then `last_seen_at` descending with `id` as tiebreak, `limit` 1–200
+(default 50), filters `kind`, `severity`, `status` (default `open`), `sheet_id`, `scan_id`, and
+`since`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, a scope over 20,000 records, a disallowed `action_kind`, a target outside the evidence set, more than 25 targets |
+| `403` | `denied` | no F048 `ai_insights` entitlement or `insights_enabled` false; a viewer proposing, confirming or rejecting without `workflow-editor`; a non-`user` principal confirming (`reason: human_confirmation_required`) |
+| `404` | `not_found` | unknown or foreign-tenant insight, action or scan id, and any insight with an evidence record the caller cannot read |
+| `409` | `conflict` | `preview_hash` mismatch, a proposal past `expires_at` (`reason: proposal_expired`), a stale `If-Match`, or rejecting an already `applied` action |
+| `429` | `rate_limited` | more than 4 scans per tenant per hour, a repeat of the same scope within 15 minutes, or the tenant monthly budget exhausted before the first provider call; carries `retry_after_seconds` |
+| `503` | `unavailable` | the 15-minute circuit breaker is open, or the F039 provider boundary failed |
+
+### Use case signatures
+
+In `crates/domain/src/ai-insights/`. Every use case takes `ctx` carrying tenant, actor, principal
+kind and correlation id, and a `UnitOfWork` for writes or a repository trait for reads — never a pool
+or a connection — and returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn request_scan(ctx: &Ctx, uow: &mut UnitOfWork, req: ScanRequest) -> Result<Scan, DomainError>;
+fn run_scan(ctx: &Ctx, uow: &mut UnitOfWork, provider: &dyn AiProvider, retrieval: &dyn RetrievalReader, id: ScanId) -> Result<ScanOutcome, DomainError>;
+fn persist_insight(ctx: &Ctx, uow: &mut UnitOfWork, candidate: Candidate, narration: Narration) -> Result<Insight, DomainError>;
+fn list_insights(ctx: &Ctx, repo: &dyn InsightRepository, filter: InsightFilter, page: Cursor) -> Result<Page<Insight>, DomainError>;
+fn get_insight(ctx: &Ctx, repo: &dyn InsightRepository, id: InsightId) -> Result<InsightWithEvidence, DomainError>;
+fn dismiss_insight(ctx: &Ctx, uow: &mut UnitOfWork, id: InsightId, expected: Version, req: Dismiss) -> Result<Insight, DomainError>;
+fn propose_action(ctx: &Ctx, uow: &mut UnitOfWork, req: ProposeAction) -> Result<AiAction, DomainError>;
+fn render_preview(ctx: &Ctx, repo: &dyn InsightRepository, action: &AiAction) -> Result<(ActionPreview, PreviewHash), DomainError>;
+fn confirm_action(ctx: &Ctx, uow: &mut UnitOfWork, id: ActionId, expected: Version, hash: PreviewHash) -> Result<AiAction, DomainError>;
+fn reject_action(ctx: &Ctx, uow: &mut UnitOfWork, id: ActionId, expected: Version, reason: String) -> Result<AiAction, DomainError>;
+fn execute_action_run(ctx: &Ctx, uow: &mut UnitOfWork, id: ActionId, key: IdempotencyKey) -> Result<ActionRun, DomainError>;
+fn apply_approval_decision(ctx: &Ctx, uow: &mut UnitOfWork, approval: ApprovalId, decision: Decision) -> Result<AiAction, DomainError>;
+```
+
+`confirm_action` takes the principal kind from `ctx` and is the only constructor of the `confirmed`
+status; `AiAction::confirm` is private to the domain module so no handler, job or test can reach the
+state another way (exit criteria section 9).
+
+Transaction boundaries. `persist_insight` holds one `UnitOfWork` over the `ai_insights` row, every
+`ai_insight_evidence` row, the derived `evidence_count` and the `ai-insight.generated.v1` enqueue —
+that boundary is what makes FR-F040-03's "an insight with no evidence cannot exist" true under
+concurrency, and a rejected evidence index aborts the transaction before any row is written.
+`propose_action` holds one `UnitOfWork` over the `ai_actions` row, its `ai_action_targets` rows, the
+`preview_hash` and the `ai-action.proposed.v1` enqueue, so `target_count` and the hashed preview can
+never describe a different target set from the stored rows. `confirm_action` holds one `UnitOfWork`
+over the version check, the status change, the audit row and the outbox entry, and for a `high`
+proposal the F020 approval creation joins that same transaction, so an escalated action is never
+`confirmed` without its approval. `execute_action_run` opens one `UnitOfWork` shared with the F008,
+F018, F020 and F037 repositories it writes through, covering the `ai_action_runs` attempt row, every
+`ai_action_run_targets` row and every target write: a permission lost since confirmation aborts the
+whole transaction, which is what makes FR-F040-13's "no partial writes" hold. `request_scan` writes
+the scan, its scope-sheet rows and its detector rows in one `UnitOfWork`; each detector's checkpoint
+is its own `UnitOfWork` so a restart resumes from the last committed detector.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_ai-insights_*.sql` creates `ai_scans(id uuid pk, tenant_id uuid not null, scope_kind text not null check (scope_kind in ('workspace','sheet_set')), workspace_id uuid references workspaces(id) on delete restrict, status text not null default 'queued' check (status in ('queued','running','succeeded','partial','failed')), estimated_records int not null, requested_by uuid not null references users(id) on delete restrict, requested_at timestamptz not null, started_at timestamptz, finished_at timestamptz, version bigint not null default 1, audit fields)`, `ai_insights(id uuid pk, tenant_id uuid not null, kind text not null check (kind in ('schedule_risk','stalled_work','overallocation','missing_data','throughput_trend','approval_bottleneck')), severity text not null check (severity in ('low','medium','high')), title text not null, summary text not null, fingerprint text not null, status text not null default 'open' check (status in ('open','dismissed','expired','superseded')), confidence numeric(3,2) not null check (confidence >= 0 and confidence <= 1), uncertainty_note text not null, scope_kind text not null check (scope_kind in ('workspace','sheet')), scope_id uuid not null, detector_version int not null, model text not null, prompt_version text not null, evidence_count int not null check (evidence_count > 0), occurrence_count int not null default 1, first_seen_at timestamptz not null, last_seen_at timestamptz not null, computed_at timestamptz not null, expires_at timestamptz not null, suppressed_until timestamptz, scan_id uuid not null references ai_scans(id) on delete restrict, input_tokens int not null default 0, output_tokens int not null default 0, cost_micros bigint not null default 0, dismissed_at timestamptz, dismissed_by uuid references users(id) on delete restrict, dismiss_reason text, version bigint not null default 1, audit fields, deleted_at timestamptz)`, `ai_insight_evidence(id uuid pk, tenant_id uuid not null, insight_id uuid not null references ai_insights(id) on delete cascade, source_kind text not null check (source_kind in ('row','comment','approval','workflow_run','allocation','metric_point')), source_id uuid not null, sheet_id uuid references sheets(id) on delete restrict, column_id uuid references columns(id) on delete restrict, source_version bigint, observed_value jsonb not null, observed_at timestamptz not null, deep_link text not null, position int not null)`, `ai_actions(id uuid pk, tenant_id uuid not null, insight_id uuid not null references ai_insights(id) on delete restrict, action_kind text not null check (action_kind in ('set_field','assign_owner','shift_dates','create_workflow_draft','request_approval','notify_owner')), risk_class text not null check (risk_class in ('low','high')), target_column_id uuid references columns(id) on delete restrict, parameters jsonb not null, preview jsonb not null, preview_hash bytea not null, target_count int not null check (target_count between 1 and 25), status text not null default 'pending' check (status in ('pending','awaiting_approval','confirmed','running','applied','rejected','expired','failed')), approval_id uuid references approvals(id) on delete restrict, proposed_by uuid not null references users(id) on delete restrict, proposed_at timestamptz not null, expires_at timestamptz not null, confirmed_by uuid references users(id) on delete restrict, confirmed_at timestamptz, rejected_by uuid references users(id) on delete restrict, rejected_at timestamptz, reject_reason text, version bigint not null default 1, audit fields)`, `ai_action_runs(id uuid pk, tenant_id uuid not null, action_id uuid not null references ai_actions(id) on delete cascade, attempt smallint not null, status text not null check (status in ('queued','running','succeeded','failed','denied')), started_at timestamptz, finished_at timestamptz, error_class text check (error_class in ('denied','timeout','conflict','target_missing','provider_failed','internal')), error_detail jsonb, correlation_id uuid not null, idempotency_key text not null)`.

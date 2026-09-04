@@ -84,6 +84,7 @@ Excluded: charts over pivot outputs (F024), export of outputs (F025), calculated
 ### Rust backend
 
 - Data access (decision section 2.1): `crates/persistence/src/pivots/` holds `PivotRepository` (owns `pivots`, `pivot_row_dimensions`, `pivot_column_dimensions`, `pivot_measures`, `pivot_filters`) and `PivotOutputRepository` (owns `pivot_outputs`, `pivot_output_source_versions`); the definition child tables belong to the pivot object type and the source-version rows to the output object type, so no two classes write one table. Named queries — `PivotRepository`: `find_with_definition`, `list_for_workspace`, `find_by_source`, `replace_row_dimensions`, `replace_column_dimensions`, `replace_measures`, `replace_filters`, `list_due_for_refresh`, `claim_name`; `PivotOutputRepository`: `insert_queued_output`, `find_active_output`, `mark_running`, `mark_terminal`, `list_recent_outputs`, `prune_outputs_beyond_limit`, `record_source_versions`, `list_stale_output_ids`, `load_cells`. There is no generic query method on either. Every use case below depends on these two traits and contains no SQL; the API handlers, the `pivots.compute` worker job, the scheduler, and the materialize path call repositories only. A create, an update, a compute transition, and an output insert with pruning each run in one `UnitOfWork` that also carries the audit row and the outbox enqueue; materialize shares one `UnitOfWork` with the F006 sheet repositories. The compute path composes `PivotRepository::find_with_definition` with the F021 permission-aware row query under the requesting actor's context and never assembles a SQL string in a handler, job, or the aggregation engine.
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `contains`, `not_contains`, `in`, `between`, `is_empty`, `is_not_empty` — a pivot is computed once for everyone who opens it, so it takes no `is_me`.
 - Canonical contract: aggregate `pivot`; module `pivots`; routes `GET /api/v1/pivots`, `POST /api/v1/pivots`, `PATCH /api/v1/pivots/{id}`, `DELETE /api/v1/pivots/{id}`, `POST /api/v1/pivots/{id}/compute`, `GET /api/v1/pivots/{id}/outputs`, `POST /api/v1/pivots/{id}/outputs/{output_id}/materialize`; events `pivot.updated.v1`, `pivot.computed.v1`; tables `pivots`, `pivot_outputs`; mutation role `report-editor`.
 - Domain entities in `crates/domain/src/pivots/`: `Pivot { id, tenant_id, workspace_id, name, source: PivotSource, row_dimensions: Vec<Dimension>, column_dimensions: Vec<Dimension>, measures: Vec<Measure>, filters: FilterSet, refresh_policy: RefreshPolicy, version, audit fields, deleted_at }`, `Dimension { column_id, bucket: Option<DateBucket> }`, `Measure { column_id, aggregate: Aggregate, format: Option<NumberFormat> }`, `PivotOutput { id, pivot_id, status: OutputStatus, cells: Vec<OutputCell>, row_count, source_versions: BTreeMap<Uuid, i64>, computed_at, duration_ms, error_code }`. The `Vec` and `BTreeMap` fields are in-memory projections the repositories assemble from the child tables; the domain crate declares no SQLx type and holds no query.
 - Use cases: `create_pivot`, `update_pivot`, `delete_pivot`, `list_pivots`, `request_compute`, `run_compute` (worker), `list_outputs`, `materialize_output`, `schedule_due_pivots` (worker cron), `validate_definition` (type checks against F007 column metadata).
@@ -94,6 +95,191 @@ Excluded: charts over pivot outputs (F024), export of outputs (F025), calculated
 - Worker: `services/worker/src/pivots/compute_job.rs` consumes `pivots.compute` with payload `{ tenant_id, pivot_id, output_id, actor_id, correlation_id }` and reaches the database only through `PivotRepository` and `PivotOutputRepository`; `services/worker/src/pivots/scheduler.rs` enqueues due pivots from `PivotRepository::list_due_for_refresh` and skips those with `PivotOutputRepository::find_active_output`. Neither file holds a `sqlx::query*` call or opens a connection.
 - Authorization: `report-editor` on the source for create/update/delete/compute/materialize; `report-viewer` on the source for list and outputs; `authz::require_entitlement(tenant, "pivot")` before any role check; explicit deny wins.
 - Error mapping: `PivotError::TypeMismatch → 400 invalid`, `PivotError::TooManyDimensions → 400 invalid`, `PivotError::EntitlementMissing → 403 denied`, `PivotError::NotFound → 404 not_found`, `PivotError::StaleVersion → 409 conflict`, `PivotError::ComputeInFlight → 409 conflict`, `PivotError::SourceTooLarge → 400 invalid`.
+
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid`. `Page<T>`,
+`ListQuery`, the signed cursor, the error body and the six codes are F028's; `CellValue` is F007's;
+`ActorContext` is F038's.
+
+**`PivotSource`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"sheet" \| "report"` | yes | stored as `pivots.source_kind`; any other value → `400 invalid` |
+| `id` | uuid | yes | an F006 sheet or an F021 report of this tenant that the caller may read as `report-editor`. Polymorphic and therefore unconstrained by a foreign key, so an id the caller cannot read is `404 not_found` on the whole request, never a per-field error that would confirm the id exists |
+
+**`Dimension`** — an element of `row_dimensions` (1–3) or `column_dimensions` (0–2). Array index is
+the stored `position` and read order equals request order.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid | yes | a live column of the source; not repeated within the same axis (`unique (pivot_id, column_id)`), else `400 invalid` with `field_errors.row_dimensions[n].column_id = "duplicate"` |
+| `bucket` | `"day" \| "week" \| "month" \| "quarter" \| "year"`? | no | permitted only when the column is `date` or `datetime`; otherwise `400 invalid` with `field_errors.row_dimensions[n].bucket = "not_a_date_column"` (FR-F056-02). Bucketing truncates in the tenant timezone from F049, not UTC |
+
+**`Measure`** — an element of `measures`, 1–10 entries, index is `position`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid | yes | a live column of the source |
+| `aggregate` | `"sum" \| "count" \| "avg" \| "min" \| "max" \| "count_distinct"` | yes | `sum`, `avg`, `min`, `max` require a `number`, `currency` or `duration` column, else `400 invalid` with `field_errors.measures[n].aggregate = "type_mismatch"`; `(column_id, aggregate)` is unique per pivot, so sum and avg of one column are legal and two sums are not |
+| `format` | `"number" \| "currency" \| "percent" \| "duration"`? | no | display only; never changes the stored value or the aggregation |
+
+**`FilterClause`** — an element of `filters.clauses`, 0–50 entries, index is `position`. This is **not**
+F013's `FilterNode`: a pivot filter is a flat, non-nested clause list with a single match mode, so it
+borrows neither the `and`/`or` tree nor F013's operator-per-column-type table, and F013 owns nothing
+here. The two vocabularies overlap but are not the same set — `not_contains`, `is_not_empty`, `ne`,
+`lte` and `gte` exist here and not in F013, and F013's `is_me` does not exist here.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid | yes | a live column of the source |
+| `operator` | enum | yes | one of `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `contains`, `not_contains`, `in`, `between`, `is_empty`, `is_not_empty` — exactly the `pivot_filters.operator` check constraint |
+| `value` | CellValue \| CellValue[] | conditional | required for every operator except `is_empty` and `is_not_empty`, which reject a present `value`; an array of 1–100 for `in`, a two-element `[from, to]` with `from <= to` for `between`, one scalar otherwise. Stored as `pivot_filters.value` jsonb in F007's cell encoding |
+
+**`FilterSet`**: `{ match: "all" | "any", clauses: FilterClause[] }`. `match` defaults to `"all"` and
+is stored on `pivots.filter_match`, not on a clause row.
+
+**`CreatePivotRequest`** — `POST /api/v1/pivots`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | the workspace the pivot lives in; must contain the source |
+| `name` | string | yes | 1–200 chars after trim, unique per workspace among live pivots (case-insensitive) → else `409 conflict` with `field_errors.name` |
+| `source` | PivotSource | yes | |
+| `row_dimensions` | Dimension[] | yes | 1–3 entries; an empty array is `400 invalid` with `field_errors.row_dimensions` |
+| `column_dimensions` | Dimension[] | no | 0–2 entries, default `[]` |
+| `measures` | Measure[] | yes | 1–10 entries; an empty array is `400 invalid` with `field_errors.measures` |
+| `filters` | FilterSet? | no | default `{ match: "all", clauses: [] }` |
+| `refresh_policy` | `"manual" \| "hourly" \| "daily"` | no | default `"manual"` |
+
+**`UpdatePivotRequest`** — `PATCH /api/v1/pivots/{id}`, `If-Match` required, at least one field
+present: `name`, `refresh_policy`, `row_dimensions`, `column_dimensions`, `measures`, `filters`. Each
+supplied array **replaces** its child set wholesale — positions absent from the array are deleted —
+and is validated by the same rules as create. `source` is not patchable: changing the source changes
+what every stored output means, so it is a new pivot. Sending it is `400 invalid` as an unlisted
+field.
+
+**`PivotResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` | uuid | |
+| `name` | string | |
+| `source` | PivotSource | |
+| `row_dimensions` / `column_dimensions` / `measures` | arrays as above | reassembled from the child tables in `position` order |
+| `filters` | FilterSet | always present, defaults materialised |
+| `refresh_policy` | enum | |
+| `latest_output` | OutputSummary? | `{ output_id, status, computed_at, stale }`; present only when the pivot has at least one output |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted pivot |
+
+**`OutputCell`** — an element of `OutputResponse.cells`
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_key` | string[] | one entry per row dimension, in `position` order; the bucketed display key for a date dimension |
+| `column_key` | string[] | one entry per column dimension, `position` order; `[]` when there are none |
+| `values` | (number \| string \| null)[] | one entry per measure, `position` order; `null` where the group had no contributing visible row. Never a hidden value and never an unfiltered total |
+
+**`OutputResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `output_id` | uuid | |
+| `status` | `"queued" \| "running" \| "succeeded" \| "failed"` | |
+| `row_count` | integer? | visible source rows folded into this output; `null` until terminal. Visible-only, so two actors can legitimately see different counts (FR-F056-06) |
+| `duration_ms` | integer? | `null` until terminal |
+| `error_code` | `"timeout" \| "source_deleted" \| "source_too_large" \| "permission_lost"`? | present only when `status` is `failed`; carries no detail beyond the code, so a failure never leaks what the actor could not read |
+| `source_versions` | map<uuid, integer> | assembled from `pivot_output_source_versions`; source id to the version folded |
+| `stale` | bool | computed on read by joining each `source_versions` entry against the source's current version; never stored (FR-F056-09) |
+| `cells` | OutputCell[] | present only when `status` is `succeeded`; `[]` otherwise |
+| `computed_at` | timestamp? | `null` until terminal |
+| `requested_by` | uuid | |
+
+**`ComputeResponse`** — `POST /api/v1/pivots/{id}/compute`: `{ output_id, status }` where `status` is
+always `"queued"`. The route acknowledges within 2 s and never blocks on the job (FR-F056-05); a
+pivot that already has a `queued` or `running` output returns `409 conflict`, which is what the
+partial unique index enforces.
+
+**`MaterializeResponse`** — `POST /api/v1/pivots/{id}/outputs/{output_id}/materialize`:
+`{ sheet_id, version }`. Idempotent per `Idempotency-Key`: a replay returns the original
+`sheet_id` and writes no second sheet. Materializing an output that is not `succeeded` is
+`409 conflict`.
+
+**List routes.** `GET /api/v1/pivots` takes F028's `ListQuery` and returns `Page<PivotResponse>`;
+sort key `updated_at` descending with `id` as tiebreak, or `name` ascending; filters `workspace_id`
+(uuid), `name` (case-insensitive prefix), `refresh_policy` (enum), `deleted` (bool, default `false`).
+`GET /api/v1/pivots/{id}/outputs` returns `Page<OutputResponse>` sorted by `computed_at` descending
+with `output_id` as tiebreak and is capped at the newest 20 outputs the pivot retains, so a cursor
+past that boundary returns an empty page rather than pruned history.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any field-table constraint: a fourth row dimension, a third column dimension, an eleventh measure, a fifty-first clause, `bucket` on a non-date column, `sum` on a text column, a duplicate column on one axis, a duplicate `(column_id, aggregate)`, an empty `row_dimensions` or `measures`, an unlisted field |
+| `403` | `denied` | the tenant lacks the `pivot` entitlement or `F056_FEATURE` is off (`field_errors.entitlement = "pivot"`, FR-F056-04), or the caller holds only `report-viewer` and called a mutation. The entitlement check runs before the role check, so a viewer in an unentitled tenant sees the entitlement reason |
+| `404` | `not_found` | a pivot, output or source id belonging to another tenant or invisible to the caller; a `source.id` the caller may not read. Never `denied`, so ids do not leak existence |
+| `409` | `conflict` | stale `If-Match` (body carries `current_version`), duplicate pivot name, `compute` while an output is `queued` or `running`, `materialize` of a non-`succeeded` output, `Idempotency-Key` replayed with a different body |
+| `503` | `unavailable` | JetStream unreachable, so `compute` cannot enqueue; no `pivot_outputs` row is written in that case |
+
+`source_too_large` and `timeout` are **not** HTTP statuses: they are terminal `error_code` values on
+an output that was accepted with `202`-equivalent semantics. The compute route's success is the
+enqueue, not the result.
+
+### Use case signatures
+
+In `crates/domain/src/pivots/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits rather than a pool or connection, and returns `DomainError`.
+
+```rust
+fn create_pivot(ctx: &Ctx, uow: &mut UnitOfWork, req: CreatePivot) -> Result<Pivot, DomainError>;
+fn update_pivot(ctx: &Ctx, uow: &mut UnitOfWork, id: PivotId, expected: Version, req: UpdatePivot) -> Result<Pivot, DomainError>;
+fn delete_pivot(ctx: &Ctx, uow: &mut UnitOfWork, id: PivotId, expected: Version) -> Result<(), DomainError>;
+fn list_pivots(ctx: &Ctx, repo: &dyn PivotRepository, filter: PivotFilter, page: Cursor) -> Result<Page<Pivot>, DomainError>;
+fn request_compute(ctx: &Ctx, uow: &mut UnitOfWork, id: PivotId) -> Result<PivotOutput, DomainError>;
+fn run_compute(ctx: &Ctx, uow: &mut UnitOfWork, rows: &dyn ReportRowSource, output: OutputId) -> Result<PivotOutput, DomainError>;
+fn list_outputs(ctx: &Ctx, repo: &dyn PivotOutputRepository, id: PivotId, page: Cursor) -> Result<Page<PivotOutput>, DomainError>;
+fn materialize_output(ctx: &Ctx, uow: &mut UnitOfWork, id: PivotId, output: OutputId) -> Result<MaterializedSheet, DomainError>;
+fn schedule_due_pivots(ctx: &Ctx, repo: &dyn PivotRepository, now: Timestamp) -> Result<Vec<PivotId>, DomainError>;
+fn validate_definition(columns: &ColumnCatalog, req: &PivotDefinition) -> Result<(), DefinitionErrors>;
+fn aggregate(def: &PivotDefinition, rows: impl Iterator<Item = SourceRow>, tz: &Tz) -> Result<Vec<OutputCell>, AggregateError>;
+```
+
+`validate_definition` and `aggregate` are pure over already-loaded column metadata and an iterator of
+already permission-filtered rows: no `ctx`, no repository, no connection. That is what keeps the
+bucketing and decimal-fold unit tests in section 5 free of a database, and it is why the ACL check
+cannot be forgotten — `aggregate` is only ever handed rows the F021 permission-aware query produced.
+
+**Transaction boundaries.**
+
+- `create_pivot` and `update_pivot` write the `pivots` row and **all four** definition child sets
+  (`pivot_row_dimensions`, `pivot_column_dimensions`, `pivot_measures`, `pivot_filters`) plus the
+  audit row and the `pivot.updated.v1` outbox entry in one `UnitOfWork`. The invariant: a definition
+  is never readable with a partially replaced axis — the "at least one row dimension and at least one
+  measure" rule and the dense-`position` primary keys are both only true of a whole committed set.
+- `request_compute` inserts the `queued` `pivot_outputs` row and enqueues the JetStream job in the
+  same `UnitOfWork` through the outbox, so a job never exists without its output row and the partial
+  unique index on `(pivot_id) where status in ('queued','running')` is the single arbiter of
+  concurrent compute requests.
+- `run_compute` opens one `UnitOfWork` per state transition, not one for the whole job: `mark_running`
+  commits before aggregation starts so a crashed worker leaves an observable state, and the terminal
+  transition writes `pivot_outputs` (status, `cells`, `row_count`, `duration_ms`, `error_code`), the
+  `pivot_output_source_versions` rows, the prune of outputs beyond 20 with their cascading version
+  rows, the audit row and the `pivot.computed.v1` entry together. The invariant: an output is never
+  `succeeded` without the source versions that make `stale` computable, and pruning never removes an
+  output a concurrent reader is paging through in the same transaction.
+- `materialize_output` shares **one** `UnitOfWork` with the F006 `SheetRepository`, `RowRepository`
+  and `CellRepository`, so a materialized sheet is created whole with its columns, rows and cells or
+  not at all; a half-built sheet with the pivot's name would be indistinguishable from a real one.
+- `list_pivots`, `list_outputs` and `schedule_due_pivots` are reads and take repositories, not a
+  `UnitOfWork`.
 
 ### PostgreSQL/SQLx
 
@@ -178,6 +364,14 @@ Scenario: Output becomes stale after a source edit
 - Risks and mitigations: large sources can exhaust worker memory, so aggregation streams pages of 5,000 rows and caps groups at 50,000 cells before failing with `source_too_large`; DST boundaries shift week/month buckets, so bucketing uses the tenant timezone with fixture cases on both transitions; scheduled pivots can pile up, so the scheduler skips pivots with an active output.
 - Rollout: enable `F056_FEATURE` for the pilot tenant first, grant the `pivot` entitlement per tenant, and watch `pivot_compute_failures_total` for 48 hours before wider rollout.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset declared; `not_contains` promoted into `docs/filter-vocabulary.md` rather than left as a private operator of `pivot_filters` | `not_contains` existed only in this ticket's DDL, so no other filtering feature could express it and no reader could tell whether it was intentional |
 
 ## 7.1 Agent handoff
 

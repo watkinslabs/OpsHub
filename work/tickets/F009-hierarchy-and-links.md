@@ -94,6 +94,7 @@ Canonical contract: `docs/capability-contracts.md` row F009.
 - Domain entities in `crates/domain/src/links/`: `RowHierarchy { tenant_id, row_id, sheet_id, parent_row_id: Option<RowId>, depth: u8, path: String, child_position: FracIndex, version }`, `CellLink { id, tenant_id, source_row_id, source_column_id, target_sheet_id, target_row_id, target_column_id, link_type: LinkType, sync_direction: SyncDirection, status: LinkStatus, version, created/updated actor+time, deleted_at }`, `RollupRule { id, tenant_id, column_id, function: RollupFunction, source_column_id, weight_column_id: Option<ColumnId>, status_priority: Vec<OptionId>, filter: Option<RollupFilter>, version }` with the priority list and the filter loaded from their child tables.
 - Modules: `hierarchy.rs` (path maintenance, subtree moves, depth check), `hierarchy_service.rs`, `link.rs`, `link_service.rs`, `rollup.rs` (functions and type compatibility), `rollup_service.rs`, `consumer.rs` (outbox subscriptions for roll-up recompute, pull sync, broken-link detection), `errors.rs`.
 - Data access (decision 2.1): `RowHierarchyRepository` (`row_hierarchy`), `CellLinkRepository` (`cell_links`), and `RollupRuleRepository` (`rollup_rules`, `rollup_rule_status_priorities`, `rollup_rule_filters`) in `crates/persistence/src/links/`; recomputed cells are written through the F006 `CellRepository` and their validation rows through the F007 `CellValidationStateRepository`, so no table gains a second writer. The use cases below, the outbox consumers in `consumer.rs`, and the recompute job depend on those repository traits and the shared `UnitOfWork` and hold no SQL; subtree scans, reverse link lookups, and ancestor resolution are named repository queries (`subtree_by_path`, `links_to_target`, `ancestors_of`).
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `contains`, `is_empty`, `is_not_empty` — one flat predicate per roll-up rule, so no set membership and no `is_me`: a recompute runs in a background job with no calling actor.
 - Use cases: `indent_row`, `outdent_row`, `list_children`, `cascade_delete_subtree`, `cascade_restore_subtree`, `create_link`, `update_link`, `delete_link`, `list_links`, `set_rollup_rule`, `recompute_rollups(sheet_id, changed_row_ids, column_ids)`, `handle_change_event`.
 - API endpoints (`services/api/src/links/`): `POST /api/v1/rows/{id}/indent`, `POST /api/v1/rows/{id}/outdent`, `GET /api/v1/rows/{id}/children`, `GET /api/v1/links`, `POST /api/v1/links`, `PATCH /api/v1/links/{id}`, `DELETE /api/v1/links/{id}`, `PUT /api/v1/columns/{id}/rollup`. DTOs `ReparentResponse { row_id, parent_row_id, depth, path, version }`, `ChildrenQuery { cursor?, limit?, depth? }`, `Page<ChildRowResponse>`, `CreateLinkRequest`, `UpdateLinkRequest`, `LinkResponse { ..., target_sheet_name, target_primary_value, target_redacted, status }`, `SetRollupRequest`, `RollupRuleResponse`.
 - Events: `row.reparented.v1` (aggregate `row_id`), `link.created.v1`, `link.updated.v1`, `link.deleted.v1` (aggregate `link_id`), `rollup.recomputed.v1` (aggregate `column_id`, `cell_count`, `duration_ms`); contract envelope through the outbox. F035 subscribes to `row.reparented.v1`, `link.updated.v1`, and `rollup.recomputed.v1`, and its `CHILDREN`/`PARENT` functions read `row_hierarchy` through `HierarchyReader`.
@@ -117,6 +118,7 @@ which is what makes it replay-safe. The constraints below are evaluated against 
 
 | Input | Type | Required | Constraint |
 |---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset of `docs/filter-vocabulary.md` declared in section 4 and the operator names aligned to it | `rollup_rule_filters.operator` is now a declared subset of the shared vocabulary rather than an independent list that happened to overlap |
 | `id` (path) | uuid | yes | a live row the actor may edit; unknown, soft-deleted or foreign-tenant → `404 not_found` |
 | `If-Match` (header) | integer | yes | the row `version`; stale → `409 conflict` carrying the current version |
 | resolved parent (indent) | row | derived | the previous visible sibling in the same group; none → `400 invalid`, `field_errors.row_id = "no_previous_sibling"` |
@@ -347,6 +349,14 @@ Scenario: Cross-tenant target does not leak
 - External dependencies: none
 - Risks and mitigations: path rewrites on a large subtree move are bounded by chunked updates of 5,000 rows per statement inside one transaction; roll-up storms from bulk edits are coalesced per `(sheet_id, column_id)` with a 250 ms debounce in the consumer; push sync into a target sheet the actor cannot edit is rejected before any write so partial sync cannot occur.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F007 FR-F007-18 | `accepted_types` is now a defined set owned by F007 (`column_link_accepted_types`), not an undefined settings field; FR-F009-09 reads it and rejects a target type outside it with `field_errors.target_column_id = "unsupported_target"` | This ticket depended on a field that F007 did not define or store |
 
 ## 7.1 Agent handoff
 

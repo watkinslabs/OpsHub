@@ -86,6 +86,7 @@ Excluded: formula parsing and recalculation itself (F035), saved-view definition
 ### Rust backend
 
 - Data access (decision section 2.1): `crates/persistence/src/formatting/` holds `FormattingRuleRepository` (owns `formatting_rules`, `formatting_rule_conditions`, `formatting_rule_target_columns`, `formatting_rule_text_styles`) and `FormattingStateRepository` (owns `formatting_states`). `sheets.formatting_rules_version` belongs to the F006 `SheetRepository`; the rule use cases bump it through `SheetRepository::bump_formatting_rules_version`, so no two classes write the same table. Named queries: `list_rules_for_sheet`, `load_compiled_rule_set`, `find_rule_for_update`, `count_active_rules_for_sheet`, `next_position_in_scope`, `reposition_within_scope`, `rebalance_scope_positions`, `replace_condition_tree`, `replace_target_columns`, `replace_text_styles`, `list_rules_referencing_column`, `disable_rules_referencing_column`, `detach_purged_column`, `soft_delete_rules_for_view`, and on states `list_states_for_rows`, `upsert_state_batch`, `delete_states_for_rule`, `list_stale_rows`, `count_stale_states`. There is no generic query entry point. Every use case, the compiler, the evaluator, the `services/api/src/formatting` handlers, the read hook called from the F006, F008, and F013 grid handlers, and the worker jobs depend on these traits and contain no SQL; a rule create, update, reorder, or delete writes the rule row, its condition tree, its target columns, its text styles, the audit row, the outbox row, and the `sheets` version bump inside one `UnitOfWork`, and a materialization batch of 500 upserts runs in one `UnitOfWork` per batch.
+- Filter operators: `docs/filter-vocabulary.md`, subset all — a formatting rule is a predicate over one row, and it is the only consumer that reaches `is_error`.
 - Domain entities in `crates/domain/src/formatting/`: `FormattingRule { id, tenant_id, sheet_id, view_id: Option<ViewId>, name, position: FracIndex, enabled, stop_if_true, materialized, condition: Condition, target: Target, format: FormatSpec, rules_version_at_write, version, created/updated actor+time, deleted_at }`, `Condition::{ And(Vec<Condition>), Or(Vec<Condition>), Leaf { column_id, op: FormatOp, value }, Formula { expression, ast_node_count } }`, `Target::{ Row, Cells(Vec<ColumnId>) }`, `FormatSpec { fill: ColorToken, text_color: ColorToken, text_style: TextStyleSet, icon: Option<FormatIcon>, badge_text: Option<String> }`, `FormatState { fill, text_color, text_style, icon, badge_text, winners: BTreeMap<Property, RuleId> }`, `RowFormatting { row: FormatState, cells: BTreeMap<ColumnId, FormatState>, applied_rule_ids: Vec<RuleId>, hidden_inputs: Vec<RuleId>, degraded: bool }`.
 - Use cases: `create_rule`, `update_rule`, `delete_rule`, `reorder_rule`, `list_rules`, `compile_rule_set`, `evaluate_rows`, `evaluate_draft`, `explain_row`, `materialize_rule`, `repair_stale_states`.
 - `compile.rs` takes the rows returned by `FormattingRuleRepository::load_compiled_rule_set` (rule rows joined to their condition, target-column and text-style children, ordered by scope then `position` then `parent_id, position`) and turns that rule set into a `CompiledRuleSet { rules_version, ordered: Vec<CompiledRule>, referenced_columns: HashSet<ColumnId>, formula_programs }` cached in a per-process `moka` cache keyed `(tenant_id, sheet_id, rules_version)` with a 5-minute idle expiry and invalidated by `formatting-rule.updated.v1` and `formatting-rule.deleted.v1`.
@@ -98,10 +99,230 @@ Excluded: formula parsing and recalculation itself (F035), saved-view definition
 - Validation: name 1–120 chars, 100 rules per sheet, 20 leaves, depth 4, 50 target columns, 200 formula AST nodes, badge text 12 chars, tokens from the fixed enum, `view_id` belonging to `sheet_id`.
 - Error mapping: `FormattingError::RuleLimit → 400 invalid`, `::UnknownColumn → 400 invalid`, `::OperatorTypeMismatch → 400 invalid`, `::ColorOnlyFormat → 400 invalid`, `::ScopeMismatch → 400 invalid`, `::NonBooleanFormula → 400 invalid`, `::StaleVersion → 409 conflict`, `::NotFound → 404 not_found`, `::BudgetExceeded → 503 unavailable`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments
+by one per write. Unlisted request fields are rejected with `400 invalid`. `Page<T>`, `ListQuery`, the
+signed cursor, the error body and the six codes are F028's; `CellValue` is F007's; `ActorContext` is
+F038's; the saved view is F013's.
+
+**What this feature reuses from F013, and what it does not.** The operator vocabulary is F013's:
+`FilterOp`, and F013's table of which operators each `columns.type` accepts, are the single
+definition, F013 owns them, and F060 defines no second one. Two operators exist here that F013's
+table does not list, and they are additions to the shared vocabulary that F060 declares rather than a
+fork of it: `is_not_empty` (the negation F013 omits because a saved view expresses it by inverting a
+branch) and `is_error` (F035 result status, meaningless in a view filter). Everything else about
+F013's filter is **not** reused and must not be assumed:
+
+| F013 shape | Reused here? |
+|---|---|
+| `FilterOp` and the operator-per-column-type table | Yes — F013's, cited, not restated |
+| `FilterValue` encoding per operator | Yes — the `value` of a leaf follows F013's table exactly |
+| `FilterNode` the tree type | **No.** F060's `Condition` adds a fourth node kind, `formula`, which F013 has no equivalent of, so it is a different type with a different discriminator set |
+| The tree limits (50 leaves, depth 8) | **No.** F060 allows 20 leaves and depth 4, because this tree is evaluated per row per read rather than compiled once into a query |
+| `ViewSettings`, `SortSpec`, and every other F013 shape | **No.** A formatting rule has no sort, no grouping and no column visibility |
+
+**`Condition`** — the rule AST. One of four shapes, discriminated by `type`; any other `type` is
+`400 invalid` with `field_errors.condition` naming the offending leaf index.
+
+Branch node — `type` is `"and"` or `"or"`:
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | `"and" \| "or"` | yes | |
+| `children` | Condition[] | yes | 1–20 entries; an empty array is invalid |
+
+Leaf node — `type` is `"leaf"`:
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | `"leaf"` | yes | |
+| `column_id` | uuid | yes | a live column of `sheet_id`; unknown or foreign → `400 invalid` with `field_errors.condition[i].column_id` |
+| `op` | FilterOp | yes | F013's operator set plus `is_not_empty` and `is_error`, and must appear in F013's row for that column's type; a `formula` column takes the row of its `result_type` |
+| `value` | FilterValue | conditional | F013's encoding per operator; absent for `is_empty`, `is_not_empty`, `is_me` and `is_error`, which reject a present `value` |
+
+Formula node — `type` is `"formula"`:
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | `"formula"` | yes | |
+| `expression` | string | yes | parsed by the F035 parser; `result_type` must be `boolean`, else `400 invalid` with `field_errors.condition[i].expression = "not_boolean"`; at most 200 AST nodes. A rule containing one is always `materialized` |
+
+Whole-tree limits, all checked before evaluation and all `400 invalid` with `field_errors.condition`:
+at most 20 `leaf` plus `formula` nodes, at most 4 levels of nesting, exactly one root.
+
+**`Target`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"row" \| "cells"` | yes | |
+| `column_ids` | uuid[] | conditional | required and 1–50 entries when `kind` is `"cells"`, rejected when `"row"`; live columns of `sheet_id`, distinct; array order round-trips as the picker order |
+
+**`FormatSpec`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `fill` | ColorToken | no | default `"format.none"` |
+| `text_color` | ColorToken | no | default `"format.none"` |
+| `text_style` | (`"bold" \| "italic" \| "strikethrough"`)[] | no | distinct, 0–3 entries |
+| `icon` | `"alert-triangle" \| "check-circle" \| "clock" \| "flag" \| "circle-dot" \| "octagon-x"`? | no | |
+| `badge_text` | string? | no | 1–12 chars |
+
+`ColorToken` is the closed set `format.red`, `format.amber`, `format.green`, `format.blue`,
+`format.violet`, `format.slate`, `format.none` — token names from F062's `tokens.css`, never a hex
+value. An unknown token is `400 invalid` with `field_errors.format.fill`. **The non-colour-signal
+rule:** when `fill` or `text_color` is anything but `format.none`, at least one of `text_style`,
+`icon` or `badge_text` must be set, else `400 invalid` with
+`field_errors.format = "needs_non_color_signal"` and nothing is written (FR-F060-04, NFR-F060-03).
+
+**`CreateRuleRequest`** — `POST /api/v1/formatting-rules`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `sheet-editor`; a sheet already holding 100 non-deleted rules across both scopes → `400 invalid` with `field_errors.sheet_id = "rule_limit"` |
+| `view_id` | uuid? | no | `null` (default) makes the rule sheet-scoped; a view id must belong to `sheet_id`, else `400 invalid` with `field_errors.view_id` |
+| `name` | string | yes | 1–120 chars after trim |
+| `condition` | Condition | yes | |
+| `target` | Target | yes | |
+| `format` | FormatSpec | yes | |
+| `stop_if_true` | bool | no | default `false` |
+| `enabled` | bool | no | default `true` |
+
+**`UpdateRuleRequest`** — `PATCH /api/v1/formatting-rules/{id}`, `If-Match` required, at least one
+field present: `name`, `condition`, `target`, `format`, `enabled`, `stop_if_true`. `sheet_id` and
+`view_id` are not patchable — changing scope changes precedence for every other rule — and are
+rejected as unlisted fields.
+
+**`ReorderRuleRequest`** — `POST /api/v1/formatting-rules/{id}/reorder`: `{ after_rule_id: uuid? }`.
+`null` moves the rule to the head of **its own scope**. A rule id in the other scope is
+`400 invalid` with `field_errors.after_rule_id = "scope_mismatch"` (FR-F060-06).
+
+**`RuleResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `sheet_id` | uuid | |
+| `view_id` | uuid? | `null` for sheet scope |
+| `name` | string | |
+| `position` | string | the fractional index as a string, so a client never does float arithmetic on it |
+| `condition` / `target` / `format` | as the request | reassembled from the child tables |
+| `enabled` / `stop_if_true` | bool | |
+| `materialized` | bool | server-decided, never sent by a client: `true` when the condition holds a `formula` node or references a `formula` column, or the sheet exceeds 20,000 rows (FR-F060-10) |
+| `last_evaluated_at` | timestamp? | `null` until first evaluated |
+| `field_errors` | map<string, string>? | present on a rule the server disabled itself, e.g. `{"condition": "missing_column"}` after `column.deleted.v1`; the rule stays editable so the owner can repair it |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` / `deleted_at?` | | |
+
+**List route.** `GET /api/v1/sheets/{sheet_id}/formatting-rules` returns `Page<RuleResponse>`. Sort
+key is fixed and is not a `ListQuery` `sort` parameter: scope rank (sheet-scoped first, then
+view-scoped) then ascending `position`, with `id` as tiebreak — the evaluation order itself, so a
+client that renders the page in order renders precedence correctly. Filters: `view_id` (uuid, or the
+literal `none` for sheet-scoped only), `enabled` (bool). `limit` follows F028's `ListQuery`.
+
+**`FormatState`** — the resolved visual state of a row or of one cell
+
+| Field | Type | Notes |
+|---|---|---|
+| `fill` / `text_color` | ColorToken | `format.none` when no rule set it |
+| `text_style` | string[] | union of the styles the winning rules set |
+| `icon` | string? | |
+| `badge_text` | string? | |
+| `winners` | map<string, uuid> | property name (`fill`, `text_color`, `icon`, `badge_text`, each `text_style` member) to the id of the rule that last wrote it. This is what makes FR-F060-07 checkable rather than asserted |
+
+**`RowFormatting`** — the object attached per row when a read carries `include=formatting`
+
+| Field | Type | Notes |
+|---|---|---|
+| `row` | FormatState | from row-target rules |
+| `cells` | map<uuid, FormatState> | column id to state, from cell-target rules; a cell state overrides the row state per property regardless of rule order |
+| `applied_rule_ids` | uuid[] | matching rules in application order, truncated at a `stop_if_true` rule inclusive |
+| `hidden_inputs` | uuid[] | rules skipped because a leaf referenced a column this actor cannot read. Ids only — never the column, never the value — so formatting cannot become a read oracle (FR-F060-13) |
+| `degraded` | bool | `true` when the page hit the 150 ms budget |
+| `reason` | `"budget"`? | present only when `degraded` |
+
+**`EvaluateRequest`** — `POST /api/v1/sheets/{sheet_id}/formatting/evaluate`, persists nothing
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `row_ids` | uuid[]? | no | 1–200 rows of this sheet the caller may read; absent means the first `limit` rows in position order |
+| `rule` | CreateRuleRequest-without-`sheet_id`? | no | an unsaved draft, validated by every create rule above; evaluated last, after all saved rules, and reported under the id `"draft"` |
+| `view_id` | uuid? | no | evaluate as if reading through that view, so view-scoped rules participate |
+| `limit` | integer | no | 1–200, default 50 |
+| `explain` | bool | no | default `false` |
+
+**`EvaluateResponse`**: `{ rows: [{ row_id, formatting: RowFormatting }], explain: RuleExplain[]? }`
+where `RuleExplain` is `{ rule_id: uuid | "draft", matched: bool, leaf_results: [{ index, matched }],
+skipped_reason: "disabled" | "stopped" | "hidden_input" | "scope" | null }`. `explain` is present
+only when `explain: true` was sent. `leaf_results` reports match outcomes by leaf index and never the
+compared value, so the explanation is safe to show to any reader of the row.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | 101st rule, a 21st leaf, depth over 4, an unknown column, an operator outside F013's row for the column type, a non-boolean or over-size formula, a colour-only format, a 51st target column, a duplicate target column, `column_ids` on a `row` target, a cross-scope `after_rule_id`, a `view_id` outside `sheet_id`, `limit` outside 1–200, an unlisted field |
+| `403` | `denied` | a `sheet-viewer` calling create, update, delete or reorder |
+| `404` | `not_found` | a rule, sheet, view or column id of another tenant or invisible to the caller. Never `denied`, so ids do not leak existence |
+| `409` | `conflict` | stale `If-Match` carrying `current_version`; `Idempotency-Key` replayed with a different body |
+| `503` | `unavailable` | the 150 ms evaluation budget was exceeded on `POST /formatting/evaluate` (FR-F060-13). A row **read** never fails this way: it returns `200` with `degraded: true` |
+
+### Use case signatures
+
+In `crates/domain/src/formatting/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits rather than a pool or connection, and returns `DomainError`.
+
+```rust
+fn create_rule(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateRule) -> Result<FormattingRule, DomainError>;
+fn update_rule(ctx: &Ctx, uow: &mut UnitOfWork, id: RuleId, expected: Version, req: UpdateRule) -> Result<FormattingRule, DomainError>;
+fn delete_rule(ctx: &Ctx, uow: &mut UnitOfWork, id: RuleId, expected: Version) -> Result<(), DomainError>;
+fn reorder_rule(ctx: &Ctx, uow: &mut UnitOfWork, id: RuleId, expected: Version, after: Option<RuleId>) -> Result<FormattingRule, DomainError>;
+fn list_rules(ctx: &Ctx, repo: &dyn FormattingRuleRepository, sheet: SheetId, filter: RuleFilter, page: Cursor) -> Result<Page<FormattingRule>, DomainError>;
+fn compile_rule_set(rules: Vec<FormattingRule>, rules_version: i64) -> Result<CompiledRuleSet, CompileError>;
+fn evaluate_rows(set: &CompiledRuleSet, rows: &[RowCells], perms: &CellVisibility, states: &StateIndex, budget: Duration, clock: Timestamp) -> Vec<RowFormatting>;
+fn evaluate_draft(ctx: &Ctx, repo: &dyn FormattingRuleRepository, rows: &dyn RowRepository, req: Evaluate) -> Result<EvaluateView, DomainError>;
+fn explain_row(set: &CompiledRuleSet, row: &RowCells, perms: &CellVisibility) -> Vec<RuleExplain>;
+fn materialize_rule(ctx: &Ctx, uow: &mut UnitOfWork, rule: RuleId, rows: &[RowId], change_version: i64) -> Result<usize, DomainError>;
+fn repair_stale_states(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, limit: u32) -> Result<usize, DomainError>;
+```
+
+`compile_rule_set`, `evaluate_rows` and `explain_row` are pure — a rule set, already
+permission-filtered cells, a visibility mask and a clock, in; states out. No `ctx`, no repository, no
+connection, and no I/O even for formula leaves, which run in F035's pure evaluator with an injected
+clock. This is exactly what makes FR-F060-11 provable: the inline read path and the worker's
+materialization call the *same* `evaluate_rows` over the same compiled set, so the 5,000-row
+equivalence test in section 9 compares two invocations of one function rather than two
+implementations.
+
+**Transaction boundaries.**
+
+- `create_rule`, `update_rule` and `delete_rule` each write the `formatting_rules` row, **all** its
+  `formatting_rule_conditions` nodes, its `formatting_rule_target_columns` rows, its
+  `formatting_rule_text_styles` rows, the audit row, the `formatting-rule.updated.v1` or
+  `.deleted.v1` outbox entry, and the `sheets.formatting_rules_version` bump (through F006's
+  `SheetRepository::bump_formatting_rules_version` — this feature never writes `sheets` itself) in
+  **one** `UnitOfWork`. Two invariants depend on it: a condition tree is never readable half-written,
+  which would evaluate as a different rule; and `rules_version` is the compiled-cache key, so a
+  version that committed before the rows it describes would let every process serve a cache built
+  from the old tree while believing it fresh.
+- `reorder_rule` writes the new fractional `position` and the version bump in one `UnitOfWork`, under
+  a row lock on the scope taken by `next_position_in_scope`, so two concurrent reorders cannot
+  produce two rules at one position — the unique index per `(sheet_id, coalesce(view_id, …))`
+  would otherwise reject the second write after the first had already renumbered.
+- `materialize_rule` upserts `formatting_states` in batches of 500, one `UnitOfWork` per batch rather
+  than one per job. A batch is idempotent per `(rule_id, row_id, source_change_version)`, so a crash
+  mid-job leaves committed batches valid and the next run resumes; a single job-wide transaction
+  would instead hold 100,000 row locks and lose all progress on restart.
+- `repair_stale_states` runs one `UnitOfWork` per sheet with per-sheet concurrency 1.
+- `list_rules`, `evaluate_rows`, `evaluate_draft` and `explain_row` write nothing. `evaluate_draft`
+  in particular takes no `UnitOfWork` at all, which is the enforcement of "persists nothing" in
+  FR-F060-12 — a draft rule cannot reach a table because the code path has no transaction to write in.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_formatting_*.sql` creates `formatting_rules(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, view_id uuid null references views(id) on delete cascade, name text not null check (length(name) between 1 and 120), position text not null, enabled bool not null default true, stop_if_true bool not null default false, materialized bool not null default false, target_kind text not null check (target_kind in ('row','cells')), fill_token text not null default 'format.none' check (fill_token in ('format.red','format.amber','format.green','format.blue','format.violet','format.slate','format.none')), text_color_token text not null default 'format.none' check (text_color_token in ('format.red','format.amber','format.green','format.blue','format.violet','format.slate','format.none')), icon text null check (icon in ('alert-triangle','check-circle','clock','flag','circle-dot','octagon-x')), badge_text text null check (length(badge_text) between 1 and 12), last_evaluated_at timestamptz, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)` and `formatting_states(tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete cascade, rule_id uuid not null references formatting_rules(id) on delete cascade, row_id uuid not null references rows(id) on delete cascade, matched bool not null, source_change_version bigint not null, evaluated_at timestamptz not null, primary key (rule_id, row_id))`, and adds `sheets.formatting_rules_version bigint not null default 0` through an additive `alter table`.
-- Normalized sets (decision section 2, no array or AST-in-`jsonb` columns): `formatting_rule_conditions(id uuid pk, tenant_id uuid not null, rule_id uuid not null references formatting_rules(id) on delete cascade, parent_id uuid null references formatting_rule_conditions(id) on delete cascade, position smallint not null, node_kind text not null check (node_kind in ('and','or','leaf','formula')), column_id uuid null references columns(id) on delete restrict, op text null check (op in ('eq','neq','contains','in','is_empty','is_not_empty','gt','lt','between','before','after','is_me','is_error')), operand jsonb null, formula_expression text null, formula_ast_node_count smallint null, unique nulls not distinct (rule_id, parent_id, position), check ((node_kind in ('and','or') and column_id is null and op is null and formula_expression is null) or (node_kind = 'leaf' and column_id is not null and op is not null) or (node_kind = 'formula' and formula_expression is not null and formula_ast_node_count is not null)))` replaces `condition jsonb`: one row per AST node, `parent_id` for the enclosing group, `position` for the ordered repeating group, exactly one root row per rule with `parent_id is null`. `formatting_rule_target_columns(rule_id uuid not null references formatting_rules(id) on delete cascade, tenant_id uuid not null, column_id uuid not null references columns(id) on delete restrict, position smallint not null, primary key (rule_id, column_id), unique (rule_id, position))` replaces `target.column_ids` and keeps the picker order. `formatting_rule_text_styles(rule_id uuid not null references formatting_rules(id) on delete cascade, tenant_id uuid not null, style text not null check (style in ('bold','italic','strikethrough')), primary key (rule_id, style))` replaces the `text_style` set inside `format jsonb`. `CreateRuleRequest`, `UpdateRuleRequest`, `RuleResponse`, and the evaluate DTOs keep the nested `condition` AST, the `target.column_ids` array, and the `format` object with its `text_style` array, so no externally visible shape changes; `FormattingRuleRepository` fans a saved rule out to rows (delete of removed rows, then `insert ... on conflict do update`) and reassembles the JSON on read, inside the rule's `UnitOfWork` transaction. Rule precedence and reorder semantics are unchanged: order still comes from scope rank then the fractional `position` on `formatting_rules`, never from a child table.
+- Normalized sets (decision section 2, no array or AST-in-`jsonb` columns): `formatting_rule_conditions(id uuid pk, tenant_id uuid not null, rule_id uuid not null references formatting_rules(id) on delete cascade, parent_id uuid null references formatting_rule_conditions(id) on delete cascade, position smallint not null, node_kind text not null check (node_kind in ('and','or','leaf','formula')), column_id uuid null references columns(id) on delete restrict, op text null check (op in ('eq','ne','contains','not_contains','starts_with','in','not_in','is_empty','is_not_empty','gt','gte','lt','lte','between','is_me','is_error')), operand jsonb null, formula_expression text null, formula_ast_node_count smallint null, unique nulls not distinct (rule_id, parent_id, position), check ((node_kind in ('and','or') and column_id is null and op is null and formula_expression is null) or (node_kind = 'leaf' and column_id is not null and op is not null) or (node_kind = 'formula' and formula_expression is not null and formula_ast_node_count is not null)))` replaces `condition jsonb`: one row per AST node, `parent_id` for the enclosing group, `position` for the ordered repeating group, exactly one root row per rule with `parent_id is null`. `formatting_rule_target_columns(rule_id uuid not null references formatting_rules(id) on delete cascade, tenant_id uuid not null, column_id uuid not null references columns(id) on delete restrict, position smallint not null, primary key (rule_id, column_id), unique (rule_id, position))` replaces `target.column_ids` and keeps the picker order. `formatting_rule_text_styles(rule_id uuid not null references formatting_rules(id) on delete cascade, tenant_id uuid not null, style text not null check (style in ('bold','italic','strikethrough')), primary key (rule_id, style))` replaces the `text_style` set inside `format jsonb`. `CreateRuleRequest`, `UpdateRuleRequest`, `RuleResponse`, and the evaluate DTOs keep the nested `condition` AST, the `target.column_ids` array, and the `format` object with its `text_style` array, so no externally visible shape changes; `FormattingRuleRepository` fans a saved rule out to rows (delete of removed rows, then `insert ... on conflict do update`) and reassembles the JSON on read, inside the rule's `UnitOfWork` transaction. Rule precedence and reorder semantics are unchanged: order still comes from scope rank then the fractional `position` on `formatting_rules`, never from a child table.
 - `jsonb` audit: `formatting_rule_conditions.operand` stays `jsonb` — it is one typed F007 cell value (select option, date, person, currency, or a `between` pair) compared by the evaluator against the cell's own `raw` payload, never filtered, joined, sorted, or constrained on by the product; a check requires it non-null exactly for the operators that take an operand. `formatting_rules.condition`, `target`, and `format` are gone: the product parses, validates, orders, and evaluates all three and joins conditions and targets to `columns`, so they are tables and typed columns. `formatting_states.state` is gone: a matched rule's painted properties are its own typed format columns, so caching a second copy would let the cache disagree with the rule. `formatting_states` itself remains the only derived, rebuildable structure in the module — it serves `FormattingStateRepository::list_states_for_rows`, the batched read behind `include=formatting` for materialized rules on sheets over 20,000 rows, and it is rebuilt by the `formatting.materialize` worker from the FR-F060-10 events, by `formatting.repair` from `list_stale_rows`, and, for any row it is missing or stale for, by inline evaluation on the read request itself, so no read ever depends on it. No other `jsonb` column exists in this module.
 - Invariants: `position` is a fractional index ordered under collation `C` and unique per `(sheet_id, coalesce(view_id, '00000000-0000-0000-0000-000000000000'))` among non-deleted rules; `count_active_rules_for_sheet` caps a sheet at 100 non-deleted rules under the rule row lock taken by the `UnitOfWork`; `name` non-empty by check; `target_kind = 'cells'` requires between 1 and 50 `formatting_rule_target_columns` rows and `target_kind = 'row'` requires none, asserted by `FormattingRuleRepository::replace_target_columns`; `formatting_rule_conditions` holds exactly one root per rule, at most 20 rows with `node_kind in ('leaf','formula')`, and at most 4 levels of nesting, with the depth and leaf counts enforced by the repository as it writes the tree; a colour-carrying rule needs at least one `formatting_rule_text_styles` row, a non-null `icon`, or a non-null `badge_text`; every child row carries the parent's `tenant_id`; `sheets.formatting_rules_version` increments once per rule mutation inside the write transaction and is the cache key.
 - Indexes: `formatting_rules(tenant_id, sheet_id, position) where deleted_at is null`, `formatting_rules(view_id) where view_id is not null and deleted_at is null`, `formatting_rule_conditions(rule_id, parent_id, position)` for tree reassembly in evaluation order, `formatting_rule_conditions(column_id) where column_id is not null` and `formatting_rule_target_columns(column_id)` for the F007 column-deletion lookup — these replace the GIN index on the former `condition jsonb`, `formatting_rule_text_styles(rule_id)`, `formatting_states(sheet_id, row_id)`, `formatting_states(rule_id, source_change_version)`.
@@ -188,6 +409,14 @@ Scenario: Viewer cannot change rules
 - External dependencies: none
 - Risks and mitigations: per-row evaluation could slow every sheet read, mitigated by the compiled cached rule set, the 150 ms page budget with a degraded response, and the p95 gate in the performance lane; materialized states could drift from live data, mitigated by `source_change_version` staleness checks, inline fallback, the repair queue, and an equivalence test asserting inline and materialized states match over 5,000 rows; colour-coded meaning could be invisible to colour-blind and screen-reader users, mitigated by the server-side non-colour-signal constraint, the contrast token test, `aria-describedby`, and `Icon only` mode; rules referencing a deleted column could break reads, mitigated by disabling those rules on `column.deleted.v1` and surfacing a repair message.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset declared; `formatting_rule_conditions.op` aligned — `neq` renamed `ne`, `before`/`after` dropped for `lt`/`gt`, `gte`/`lte`/`not_in`/`not_contains`/`starts_with` gained; `is_error` promoted into `docs/filter-vocabulary.md` as a formula-only operator rather than a local addition | The rule condition was a fork of F013's operator set, not a subset of it, so a filter could not move between a view and a formatting rule |
 
 ## 7.1 Agent handoff
 

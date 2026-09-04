@@ -7,7 +7,7 @@ owner: platform
 estimate: 8
 target_milestone: M3
 parent_epic: E004
-depends_on: [F006, F004]
+depends_on: [F006, F004, F007]
 blocks: [F045, F057]
 conflicts_with: []
 parallel_safe: true
@@ -39,7 +39,7 @@ As a sheet editor, I want to attach a file to a row, know it has been virus-scan
 
 ### Functional requirements
 
-- **FR-F017-01:** An actor with `resource-editor` on the target can `POST /api/v1/files/uploads` with `{ target_kind, target_id, file_name, mime_type, size_bytes, sha256 }` where `target_kind` is `row`, `sheet`, `comment`, or `document`; the response returns `{ upload_id, put_url, expires_at, max_size_bytes }` with a presigned S3 PUT URL valid for 15 minutes.
+- **FR-F017-01:** An actor with `resource-editor` on the target can `POST /api/v1/files/uploads` with `{ target_kind, target_id, column_id?, file_name, mime_type, size_bytes, sha256 }` where `target_kind` is `row`, `sheet`, `comment`, or `document`; `column_id` is accepted only with `target_kind = "row"` and only for a column of type `file`, otherwise `400 invalid` with `field_errors.column_id = "not_applicable"`; the response returns `{ upload_id, put_url, expires_at, max_size_bytes }` with a presigned S3 PUT URL valid for 15 minutes.
 - **FR-F017-02:** The tenant MIME allowlist defaults to `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `application/pdf`, `text/csv`, `text/plain`, the Office document, spreadsheet, and presentation types, and `application/zip`; a MIME outside the allowlist or `size_bytes` above the tenant limit (default 250 MB, hard cap 2 GB) returns `400 invalid` with `field_errors.mime_type = "not_allowed"` or `field_errors.size_bytes = "too_large"`.
 - **FR-F017-03:** `PUT /api/v1/files/uploads/{id}/complete` verifies the object exists in S3 with the declared size, records `files` and `file_versions` rows with `scan_state = pending` and the declared `sha256`, publishes `file.uploaded.v1`, and returns the file with version 1; a missing object returns `409 conflict` with code `conflict` and `field_errors.upload = "object_missing"`; an expired upload returns `410`-equivalent `not_found`.
 - **FR-F017-04:** The worker job `scan_file` streams the object through ClamAV, recomputes SHA-256, and on a clean result with a matching checksum sets `scan_state = clean` and publishes `file.scanned.v1`; on a detection or checksum mismatch it sets `scan_state = quarantined`, moves the object to the `quarantine/` prefix, records `file_scans.signature`, and publishes `file.quarantined.v1`.
@@ -54,6 +54,7 @@ As a sheet editor, I want to attach a file to a row, know it has been virus-scan
 - **FR-F017-13:** Uploading a new version to a file with an `open` proof closes that proof as `superseded` and publishes `proof.decided.v1` with `outcome = superseded`.
 - **FR-F017-14:** The web app renders a `FileList` on the row drawer and sheet header with upload drop zone and progress, scan state badges, preview thumbnails, a version history drawer, and a proof panel where reviewers decide; download and preview controls are disabled until the scan is clean.
 - **FR-F017-15:** Every mutation requires `Idempotency-Key`, writes an `audit_events` row, and publishes the matching `file.*.v1` or `proof.*.v1` event through the outbox; cross-tenant IDs return `404 not_found` and a viewer's mutation returns `403 denied`.
+- **FR-F017-16:** When `column_id` is present, the upload is additionally checked against that column's F007 settings (FR-F007-19): `size_bytes` above `column_settings.max_file_bytes` returns `400 invalid` with `field_errors.size_bytes = "too_large"`, a `mime_type` outside a non-empty `column_file_accepted_media_types` set returns `400 invalid` with `field_errors.mime_type = "not_allowed"`, and a cell already holding `column_settings.max_files` files returns `400 invalid` with `field_errors.column_id = "max_files"`. The column check runs before the presigned URL is issued, so a file the column would refuse is never stored. Without `column_id` only the tenant allowlist and ceiling of FR-F017-02 apply.
 
 ### Non-functional requirements
 
@@ -352,6 +353,14 @@ Scenario: Proof approved by all reviewers
 - External dependencies: S3-compatible object storage (MinIO locally), ClamAV `clamd` container with daily signature refresh
 - Risks and mitigations: ClamAV is slow on large archives, so scans stream with a 120 s timeout and dead-letter leaves the file `pending` rather than serving it; presigned URL leakage is bounded by the 15-minute expiry and single-object binding; client-side checksum lies are caught by the worker recomputation; preview rendering of malformed PDFs runs in a sandboxed worker process with a 30 s timeout and reports `failed` without blocking download.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F007 FR-F007-19 | Uploads into a `file` column are checked against that column's `column_settings.max_file_bytes` and `column_file_accepted_media_types` before the object is stored, in addition to the tenant ceiling | The per-column limits had no owner; F007 now owns them and this ticket enforces them at upload so a refused file is never written |
 
 ## 7.1 Agent handoff
 

@@ -94,6 +94,183 @@ Canonical contract: `docs/capability-contracts.md` row F055 (aggregate `calendar
 - Validation: name 1–120; sources 1–20; window ≤ 366 days; `tz` valid IANA; `expires_in_days` 1–30; token lookup constant-time on the hash; rate limit 60/min/token in `rate_limit_buckets` (F038).
 - Error mapping: `CalendarError::TooManySources → 400 invalid`, `CalendarError::LimitExceeded → 409 conflict` with `field_errors.limit`, `CalendarError::WindowTooLarge → 400 invalid`, `CalendarError::BadTimezone → 400 invalid`, `PublicationError::Expired|Revoked|Unknown → 404 not_found`, `PublicationError::RateLimited → 429 rate_limited`, `StaleVersion → 409 conflict`, `AuthzError::Denied → 403 denied`, `NotFound → 404`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339, `version` increments by
+one per write. Unlisted request fields are rejected with `400 invalid`. `Page<T>`, `ListQuery`, the
+opaque signed cursor, the error body and the six codes are F028's; `ActorContext` is F038's;
+`CellValue` is F007's and never appears on this surface — a calendar returns rendered event fields,
+not cells.
+
+**`CreateCalendarRequest`** — `POST /api/v1/calendars`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `calendar-editor` on it, else `403 denied`; another tenant's id → `404 not_found` |
+| `name` | string | yes | 1–120 chars after trim, unique per workspace among live calendars (case-insensitive), else `409 conflict` with `field_errors.name` |
+| `description` | string? | no | ≤ 2,000 chars |
+| `default_timezone` | string | no | IANA zone; defaults to the F049 tenant timezone; unknown zone → `400 invalid` with `field_errors.default_timezone` |
+| `week_start` | `"monday" \| "sunday"` | no | defaults to the F049 tenant `first_day_of_week` when that is one of the two, otherwise `"monday"` |
+
+Exceeding the entitlement's `max_calendars` is `409 conflict` with `field_errors.limit`, not `400`:
+the request is well formed and the tenant's plan is what refuses it (FR-F055-01).
+
+**`UpdateCalendarRequest`** — `PATCH /api/v1/calendars/{id}`, `If-Match` required, at least one field
+present: `name`, `description`, `default_timezone`, `week_start`, each constrained as above.
+
+**`CalendarSourceSpec`** — one entry of `ReplaceSourcesRequest.sources` and of
+`CalendarResponse.sources`. The wire shape is flat; the repository fans it out to one
+`calendar_sources` row plus its `calendar_source_column_maps` rows and reassembles it on read.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"sheet" \| "view"` | yes | decides which of the next two fields is required |
+| `sheet_id` | uuid? | conditional | required when `kind` is `"sheet"`, rejected otherwise; the caller must be able to read the sheet, else `400 invalid` with `field_errors.sources[i].sheet_id` — not `403`, because the failure is one entry of a batch |
+| `view_id` | uuid? | conditional | required when `kind` is `"view"`, rejected otherwise; F013 view the caller may read |
+| `start_column_id` | uuid | yes | a live `date` or `datetime` column of the source sheet; any other type → `400 invalid` with `field_errors.sources[i].start_column_id` |
+| `end_column_id` | uuid? | no | `date`/`datetime` of the same sheet; mutually exclusive with `duration_column_id` |
+| `duration_column_id` | uuid? | no | a `duration` or `number` column read as hours; mutually exclusive with `end_column_id` |
+| `title_column_id` | uuid | yes | a live column of the source sheet; its display value becomes `title` |
+| `color_column_id` | uuid? | no | a `select` column; mutually exclusive with `color` |
+| `color` | string? | no | a design-token colour name from F062's palette, not a hex value; mutually exclusive with `color_column_id` |
+| `all_day_rule` | `"column_type" \| "always" \| "never"` | no | defaults `"column_type"`: a `date` start is all-day, a `datetime` start is not |
+| `timezone_source` | string | no | `"tenant"`, `"column:<column_id>"`, or `"fixed:<iana zone>"`; defaults `"tenant"`. Stored decomposed as `timezone_source_kind` plus `timezone_column_id` or `timezone_fixed_zone`, never as this string |
+
+**`ReplaceSourcesRequest`** — `PUT /api/v1/calendars/{id}/sources`, `If-Match` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sources` | CalendarSourceSpec[] | yes | 1–20 entries; array order becomes `position`. A 21st entry is `400 invalid` with `field_errors.sources`; exceeding the entitlement's `max_sources_per_calendar` is `409 conflict` with `field_errors.limit` |
+
+This is a replace, not a merge: sources absent from the array are deleted with their column-map rows.
+Per-entry errors are reported at `field_errors.sources[i].<field>` with `i` the request array index,
+so a client can mark the offending row without guessing.
+
+**`EventsQuery`** — `GET /api/v1/calendars/{id}/events`, query string, not `ListQuery`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `from` | timestamp | yes | window start, inclusive |
+| `to` | timestamp | yes | window end, exclusive; `to > from` and `to - from <= 366 days`, else `400 invalid` with `field_errors.to` |
+| `tz` | string? | no | IANA zone the response renders in; defaults to `calendars.default_timezone`; unknown → `400 invalid` |
+
+The window is the paging mechanism, so this route takes no `cursor`, `limit` or `sort` and returns no
+`Page<T>`. Events come back ordered by `start` ascending, then `source_id`, then `row_id`, which is a
+total order.
+
+**`CalendarEventResponse`** — an element of `EventsResponse.events`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | `<source_id>:<row_id>`; stable across requests, not a stored row id |
+| `source_id` | uuid | the `calendar_sources` row it came from |
+| `row_id` | uuid | the F006 row; what the client passes to the F011 reschedule route |
+| `row_version` | integer | the row's current `version`; the client sends it as `If-Match` on reschedule (FR-F055-06) |
+| `start` | string | RFC 3339 with the offset of `tz`, or `YYYY-MM-DD` when `all_day` |
+| `end` | string? | same encoding; `null` when the source maps neither end nor duration |
+| `all_day` | bool | decided by `all_day_rule` |
+| `title` | string | the display value of `title_column_id`, ≤ 500 chars, truncated with an ellipsis beyond that |
+| `color` | string? | the source's fixed `color`, or the mapped select option's colour; `null` when neither is set |
+| `can_edit` | bool | `false` unless the viewer holds `sheet-editor` on the source sheet; the client hides drag handles on `false` |
+
+**`EventsResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `events` | CalendarEventResponse[] | |
+| `tz` | string | the zone actually applied, echoed so a client never guesses |
+| `hidden_sources` | integer | count of configured sources the viewer may not read at all. A count only: no id, name, sheet id or type, because naming them would make the calendar a discovery oracle for sheets the viewer cannot see (FR-F055-04) |
+| `truncated_sources` | integer | count of sources that hit the 10,000-row per-source cap, so the client can say the window is incomplete rather than silently under-reporting |
+
+**`PublishRequest`** — `POST /api/v1/calendars/{id}/publish`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `expires_in_days` | integer | no | 1–30, default 30; outside → `400 invalid` with `field_errors.expires_in_days` |
+| `include_details` | bool | no | default `true`; `false` publishes every `SUMMARY` as `Busy` |
+| `revoke` | bool | no | default `false`; `true` revokes the current publication and issues no new token, and every other field is then rejected |
+
+**`PublishResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `publication_id` | uuid | |
+| `feed_url` | string? | the absolute `.ics` URL including the plaintext token. Returned **exactly once**, on the response that creates the publication; the token is stored only as a SHA-256 hash, so no later read can reproduce it and `GET`/`PATCH` on the calendar never carry it. `null` when `revoke` was `true` |
+| `expires_at` | timestamp | |
+| `include_details` | bool | |
+| `revoked` | bool | `true` on a revoke call; matches the `calendar.published.v1` payload field |
+
+**`CalendarResponse`**: `{ id, workspace_id, name, description, default_timezone, week_start, owner_id, sources: CalendarSourceSpec[], active_publication: { publication_id, expires_at, include_details }?, version, created_at, created_by, updated_at, updated_by, deleted_at? }`. `sources` is ordered by `position`. `active_publication` is present only when an unrevoked, unexpired publication exists, and never carries the token.
+
+**List route.** `GET /api/v1/calendars` takes F028's `ListQuery` and returns
+`Page<CalendarResponse>`. Sort key: `updated_at` descending with `id` as tiebreak, the order the
+cursor signs; `name` ascending is the only other accepted `sort`. Filters: `workspace_id` (uuid,
+equality), `name` (string, case-insensitive prefix), `deleted` (bool, default `false`).
+
+**`GET /public/calendars/{token}.ics`** takes no body and no session. The only input is the path
+token; there is no tenant slug, no calendar id and no query parameter, so an anonymous caller cannot
+enumerate tenants or calendars. The response is `text/calendar` — never JSON, and never the error
+body — with a strong `ETag` derived from the newest contributing row version and `Cache-Control:
+private, max-age=300`. Unknown, expired, revoked, module-disabled and deleted-calendar tokens all
+return the same bare `404`, so the status does not distinguish "never existed" from "existed and was
+revoked".
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any field-table constraint: non-date `start_column_id`, both `end_column_id` and `duration_column_id`, both `color` and `color_column_id`, a 21st source, a window over 366 days or `to <= from`, an unknown IANA zone, `expires_in_days` outside 1–30, an unlisted field |
+| `403` | `denied` | a viewer calling any mutation, a non-editor publishing, or any `/api/v1/calendars*` route while the tenant has no active `calendar-app` entitlement (`field_errors.module`, FR-F055-12) |
+| `404` | `not_found` | a calendar id of another tenant or one the caller may not read; an unknown, expired, revoked or entitlement-disabled ICS token. Invisible resources are never `denied` |
+| `409` | `conflict` | stale `If-Match` on the calendar or on a rescheduled row, duplicate calendar name, `max_calendars` or `max_sources_per_calendar` exceeded, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | more than 60 ICS fetches per minute per token, carrying `Retry-After` |
+| `503` | `unavailable` | a source sheet's read path is down; the events route fails whole rather than returning a partial calendar as if it were complete |
+
+### Use case signatures
+
+In `crates/domain/src/calendar-app/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation
+id, depends on repository traits rather than a pool or connection, and returns `DomainError` mapped
+by the table above.
+
+```rust
+fn create_calendar(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateCalendar) -> Result<Calendar, DomainError>;
+fn update_calendar(ctx: &Ctx, uow: &mut UnitOfWork, id: CalendarId, expected: Version, req: UpdateCalendar) -> Result<Calendar, DomainError>;
+fn list_calendars(ctx: &Ctx, repo: &dyn CalendarRepository, filter: CalendarFilter, page: Cursor) -> Result<Page<Calendar>, DomainError>;
+fn replace_sources(ctx: &Ctx, uow: &mut UnitOfWork, id: CalendarId, expected: Version, req: ReplaceSources) -> Result<Vec<CalendarSource>, DomainError>;
+fn list_events(ctx: &Ctx, sources: &dyn CalendarSourceRepository, rows: &dyn RowRepository, views: &dyn ViewRepository, id: CalendarId, window: EventWindow, tz: &Tz) -> Result<EventsView, DomainError>;
+fn publish_calendar(ctx: &Ctx, uow: &mut UnitOfWork, id: CalendarId, req: Publish) -> Result<PublishedFeed, DomainError>;
+fn revoke_publication(ctx: &Ctx, uow: &mut UnitOfWork, id: CalendarId) -> Result<(), DomainError>;
+fn render_ics(ctx: &Ctx, sources: &dyn CalendarSourceRepository, rows: &dyn RowRepository, publication: &CalendarPublication, now: Timestamp) -> Result<IcsDocument, DomainError>;
+
+fn normalize_event(values: &SourceRowValues, source: &CalendarSource, tz: &Tz) -> Option<CalendarEvent>;
+fn encode_ics(events: &[CalendarEvent], zones: &[Tz], name: &str) -> String;
+```
+
+`normalize_event` and `encode_ics` are pure: no `ctx`, no repository, no clock, which is what makes
+the DST fixtures in section 5 unit tests rather than integration tests. `PublishedFeed` carries the
+plaintext token that `PublishResponse.feed_url` embeds and is the only value in the module that ever
+holds it; it is not a stored type and is dropped after the response is serialised.
+
+**Transaction boundaries.**
+
+- `create_calendar` and `update_calendar` each write the `calendars` row, its audit row and the
+  `calendar.updated.v1` outbox entry in one `UnitOfWork`, so no consumer sees an event for a version
+  that did not commit.
+- `replace_sources` deletes the calendar's `calendar_sources` rows and their
+  `calendar_source_column_maps` children, inserts the new ones, bumps `calendars.version` under the
+  `If-Match` check, and writes the audit row and outbox entry — all in one `UnitOfWork`. The
+  invariant: the aggregator never loads a source that has no `start` or no `title` role row, which is
+  exactly what a partially committed replace would produce.
+- `publish_calendar` inserts the new `calendar_publications` row and sets `revoked_at` on the prior
+  active one in the same `UnitOfWork`, which is what the partial unique index on
+  `(calendar_id) where revoked_at is null` requires: two active publications must never both exist,
+  not even briefly.
+- `list_events` and `render_ics` are reads taking repositories, not a `UnitOfWork`. Reschedule opens
+  no transaction here at all — it is the F011 route, called by the client, and this feature's only
+  role is supplying `row_id` and `row_version`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_calendar-app_*.sql` creates `calendars(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, workspace_id uuid not null references workspaces(id) on delete restrict, name text not null, description text, default_timezone text not null, week_start text not null check (week_start in ('monday','sunday')), owner_id uuid not null references users(id) on delete restrict, version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null, updated_by uuid references users(id) on delete restrict, updated_at timestamptz not null, deleted_at timestamptz)`, `calendar_sources(id uuid pk, tenant_id uuid not null, calendar_id uuid not null references calendars(id) on delete cascade, kind text not null check (kind in ('sheet','view')), sheet_id uuid references sheets(id) on delete restrict, view_id uuid references views(id) on delete restrict, color text, all_day_rule text not null check (all_day_rule in ('column_type','always','never')), timezone_source_kind text not null check (timezone_source_kind in ('tenant','column','fixed')), timezone_column_id uuid references columns(id) on delete restrict, timezone_fixed_zone text, position int not null, created_at, updated_at)`, `calendar_publications(id uuid pk, tenant_id uuid not null, calendar_id uuid not null references calendars(id) on delete cascade, token_hash bytea not null, expires_at timestamptz not null, include_details bool not null default true, revoked_at timestamptz, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null)`.

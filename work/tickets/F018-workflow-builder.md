@@ -86,11 +86,188 @@ Excluded: queueing and executing runs, retries, dead letters, inbound webhook to
 - Domain entities in `crates/domain/src/workflows/`: `Workflow { id, tenant_id, workspace_id, sheet_id, name, state: WorkflowState, draft: WorkflowDefinition, published_version_id: Option<Uuid>, version, audit fields, deleted_at }`, `WorkflowVersion { id, tenant_id, workflow_id, version_no, definition: WorkflowDefinition, definition_hash, published_by, published_at }`, `WorkflowStep { id, version_id, index, kind: ActionKind, params: serde_json::Value, continue_on_error }`, `WorkflowStepColumnRef { version_id, tenant_id, step_id: Option<Uuid>, column_id, usage: ColumnRefUsage }`, `WorkflowDefinition { trigger: Trigger, condition: Option<ConditionNode>, actions: Vec<ActionSpec> }`, `Trigger` enum, `ConditionNode::{All(Vec), Any(Vec), Compare, Changed, ActorIn, Exists, Formula}`, `ActionSpec`, `WorkflowState::{Draft, Published, Disabled}`.
 - Use cases: `create_workflow`, `update_workflow`, `publish_workflow`, `disable_workflow`, `test_workflow`, `delete_workflow`, `get_workflow`, `list_workflows`, `validate_definition`, `evaluate_condition`, `resolve_placeholders`; `evaluate_condition` and `resolve_placeholders` are exported for F019.
 - Persistence (`crates/persistence/src/workflows/`): `WorkflowRepository` owns `workflows`; `WorkflowVersionRepository` owns `workflow_versions`, `workflow_steps`, and `workflow_step_column_refs`. Each implements the shared `Repository` contract (`get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, `purge`) and adds named queries `list_for_sheet(sheet_id, state, cursor)`, `next_version_no(workflow_id)`, `publish(workflow_id, definition)`, `load_published(workflow_id)`, `load_version(version_id)`, `list_workflows_using_column(column_id)`, `find_by_definition_hash(workflow_id, hash)`; the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the base contract. Publishing — freezing the draft, inserting the `workflow_versions` row, its `workflow_steps`, its `workflow_step_column_refs`, and repointing `workflows.published_version_id` — runs in one `UnitOfWork` that owns the transaction. `validate_definition`, `evaluate_condition`, and `resolve_placeholders` run over values already loaded and hold no SQL; `POST /api/v1/workflows/{id}/test` evaluates against a loaded fixture row and writes nothing. Per decision 2.1 the use cases above depend on these repository traits and contain no SQL: no SQL string, `sqlx::query*` call, or connection exists in `crates/domain/src/workflows` or `services/api/src/workflows`.
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `contains`, `starts_with`, `in`, `between` — a condition tests a value it already holds; emptiness is the separate `exists` leaf and actor membership the separate `actor_in` leaf.
 - API endpoints (`services/api/src/workflows/`): `GET /api/v1/workflows`, `POST /api/v1/workflows`, `GET /api/v1/workflows/{id}`, `PATCH /api/v1/workflows/{id}`, `POST /api/v1/workflows/{id}/publish`, `POST /api/v1/workflows/{id}/disable`, `POST /api/v1/workflows/{id}/test`, `DELETE /api/v1/workflows/{id}`. DTOs: `CreateWorkflowRequest`, `UpdateWorkflowRequest`, `TestWorkflowRequest`, `WorkflowResponse`, `WorkflowVersionSummary`, `TestWorkflowResponse`, `Page<WorkflowResponse>`.
 - Events: `workflow.published.v1`, `workflow.disabled.v1`, `workflow.updated.v1` with `changed_fields` and `version_no` for publish.
 - Authorization: `workflow-editor` on the workspace for every mutation and `test`; reads follow the sheet ACL; explicit deny wins; foreign tenant or missing access maps to `not_found`.
 - Validation: name 1–120 chars; actions 1–25; condition depth ≤ 4 and ≤ 200 leaves; cron minimum interval 5 minutes; placeholders resolved against F007 column metadata; formula leaves parsed by F035 with the 10,000 AST node limit. Idempotency stored in `idempotency_keys` for 24 hours.
 - Error mapping: `WorkflowError::Invalid(field_errors) → 400 invalid`, `WorkflowError::StaleVersion → 409 conflict`, `WorkflowError::LimitExceeded → 409 conflict`, `WorkflowError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `WorkflowError::FormulaTimeout → 400 invalid` with `field_errors.condition`.
+
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and `ListQuery`
+are F028's; the error body `{ code, message, field_errors, correlation_id }` and the six codes are
+the shared ones; `CellValue` and `columns.type` are F007's; `ActorContext` is F038's.
+
+**`WorkflowDefinition`** — the shape F018 owns, F019 executes verbatim from the immutable
+`workflow_versions.definition`, F054 extends with connector actions and F040 proposes edits to. It is
+the `draft` on create and update, and the frozen body of a published version.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `trigger` | Trigger | yes | exactly one, per the trigger table below |
+| `condition` | ConditionNode? | no | absent or `null` means "always"; an empty group is `400 invalid` |
+| `actions` | ActionSpec[] | yes | 1–25 entries, executed in array order (FR-F018-01); 0 or 26 → `400 invalid` with `field_errors.actions` |
+
+**`Trigger`** — discriminated by `kind` (FR-F018-02). Any other `kind` is `400 invalid` with
+`field_errors.trigger.kind`. A parameter listed for one kind and sent on another is `400 invalid`.
+
+| `kind` | Parameters | Constraint |
+|---|---|---|
+| `row_created` | none | fires on `row.created.v1` for the workflow's `sheet_id` |
+| `row_updated` | none | fires on `row.updated.v1` for that sheet |
+| `field_changed` | `column_id` (uuid, required) | a live column of the sheet; recorded in `workflow_step_column_refs` with `usage = 'trigger'` at publish |
+| `form_submitted` | `form_id` (uuid, required) | an F014 form bound to the same sheet |
+| `schedule` | `cron` (string, required), `timezone` (string, required) | 5-field cron; two consecutive fire times at least 5 minutes apart, else `field_errors.trigger.cron`; `timezone` an IANA name |
+| `date_reached` | `column_id` (uuid, required), `offset_minutes` (integer, required) | column type `date` or `datetime`; `offset_minutes` −43,200..43,200; recorded as a `trigger` column ref |
+| `webhook_received` | none | the token and secret are F019's `inbound_webhooks` row, never part of the definition |
+| `approval_decided` | `outcome` (`"approved" \| "rejected" \| "any"`, required) | matches F020's `approval.decided.v1` outcome |
+
+**`ConditionNode`** — F018's own condition tree, not F013's `FilterNode`: its leaves are five typed
+tests rather than one column predicate, and F019 evaluates it through this feature's exported
+`evaluate_condition`. Discriminated by `kind`; every failure is `400 invalid` with
+`field_errors.condition[<path>]` where `<path>` is the node's position, e.g. `all[0].any[2]`.
+
+| `kind` | Fields | Constraint |
+|---|---|---|
+| `all`, `any` | `children` (ConditionNode[], required) | 1–20 children; an empty array is invalid; nesting depth ≤ 4 counting the root, whole tree ≤ 200 leaves |
+| `compare` | `column_id` (uuid), `op` (ConditionOp), `value` (conditional) | `op` must be legal for that column's `columns.type` (F007); `value` required for every `op` except none — all ten operators take one; `in` takes an array of 1–100 scalars, `between` takes `{ from, to }` with `from <= to`, every other operator one scalar of the column's type |
+| `changed` | `column_id` (uuid) | true only when the triggering event's `changed_fields` names that column; on a `schedule` or `webhook_received` trigger it is always false, not an error |
+| `actor_in` | `user_ids` (uuid[]), `group_ids` (uuid[]) | at least one array non-empty, ≤ 100 entries each; matched against the triggering `ActorContext.actor_id` and its group memberships |
+| `exists` | `column_id` (uuid) | true when the cell's `CellValue.raw` is non-null; `""` counts as present |
+| `formula` | `expression` (string) | an F035 expression whose result type is boolean, parsed at save under F035's 10,000 AST node limit; a non-boolean result or a parse failure is `400 invalid`, and exceeding the 2-second budget is `field_errors.condition` per the error map |
+
+`ConditionOp` is exactly `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `contains`, `starts_with`, `in`,
+`between` (FR-F018-03). It is this feature's set and deliberately not F013's `FilterOp`: F013 owns
+the view filter vocabulary and carries members F018 has no trigger for (`is_me`, `before`, `after`).
+Every `column_id` in the tree is projected into `workflow_step_column_refs` with `usage = 'condition'`
+at publish.
+
+**`ActionSpec`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | ActionKind | yes | one of the twelve below; any other value → `400 invalid` with `field_errors.actions[<index>].kind` |
+| `params` | object | yes | validated per `kind` by the table below; an unlisted key → `400 invalid` with `field_errors.actions[<index>].params` |
+| `continue_on_error` | bool | no | default `false`; `true` makes F019 record the step `skipped_error` and continue (FR-F019-05) |
+
+**Action `params` per `kind`** (FR-F018-04). Where a parameter set belongs to another feature this
+names the owner rather than restating it. Every string value may carry the placeholders of
+FR-F018-05 — `{{row.<column_id>}}`, `{{event.<field>}}`, `{{actor.<field>}}` — and an unknown column
+id in any placeholder is `400 invalid` with `field_errors.actions[<index>].params`.
+
+| `kind` | `params` | Constraint |
+|---|---|---|
+| `update_fields` | `{ cells: map<uuid, RawValue> }` | keys are live columns of the workflow's sheet; each value is F007's `RawValue` for that column type, the same unwrapped form F006 accepts on write; an unknown or foreign column → `invalid` |
+| `create_row` | `{ sheet_id?, group_id?, after_row_id?, cells }` | F006's `CreateRowRequest` fields; `sheet_id` defaults to the workflow's sheet and must be readable by the publishing editor |
+| `move_row` | `{ group_id?, after_row_id? }` | F006's `MoveRowRequest`; at least one present |
+| `copy_row` | `{ target_sheet_id, group_id? }` | `target_sheet_id` a live sheet in the same workspace; the copy carries the cells of columns present on both sheets |
+| `assign` | `{ column_id, user_ids }` | `column_id` must be a `person` column (F007), else `invalid`; 1–20 user ids of the tenant |
+| `comment` | `{ body }` | F016's `CreateCommentRequest.body` rules — Markdown 1–10,000 chars, ≤ 50 mention tokens; the target is the triggering row |
+| `request_approval` | `{ approvers, quorum, due_at?, policy_id?, context }` | F020's `CreateApprovalRequest` fields with the same limits; `target` is not carried here because F019 supplies the triggering row |
+| `send_email`, `send_in_app`, `send_push` | `{ recipients, title, body, link? }` | F037's `NotificationRequest` fields (`title` 1–200, `body` 1–2,000, `link` a relative path starting `/`); the action `kind` selects the channel and `recipients` is 1–50 user or group references fanned out one notification per member |
+| `call_webhook` | `{ url, method, headers?, body?, secret_ref }` | `url` must be `https` and resolve outside private address space, else `field_errors.actions[<index>].params.url`; `method` one of `POST`, `PUT`, `PATCH`; `headers` ≤ 20 entries; `secret_ref` an F029 vault reference — an inline secret in any field is `400 invalid` (NFR-F018-02) |
+| `invoke_integration` | `{ connection_id, operation, payload? }` | `connection_id` an F029 `integration_connections` id and `operation` a name that connection's provider declares; until F029 ships only the reference format is validated, per section 7 |
+
+**`CreateWorkflowRequest`** — `POST /api/v1/workflows`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per `(tenant_id, sheet_id)` among live workflows, else `409 conflict` with `field_errors.name` |
+| `sheet_id` | uuid | yes | a live sheet the caller holds `workflow-editor` on through its workspace, else `403 denied`; invisible → `404 not_found` |
+| `trigger` | Trigger | yes | as above |
+| `condition` | ConditionNode? | no | as above |
+| `actions` | ActionSpec[] | yes | 1–25 |
+
+**`UpdateWorkflowRequest`** — `PATCH /api/v1/workflows/{id}`, `If-Match` required, every field
+optional and at least one present. `name` as above; `trigger`, `condition` and `actions` each replace
+their part of the draft whole, never merged. Patching while `state` is `published` writes only the
+draft and leaves `published_version_id` untouched (FR-F018-06); patching a `disabled` workflow is
+`409 conflict`.
+
+**`TestWorkflowRequest`** — `POST /api/v1/workflows/{id}/test`: exactly one of `row_id` (uuid, a live
+row of the workflow's sheet the caller may read) or `sample_event` (object, the trigger payload shape
+of the definition's `trigger.kind`, ≤ 64 KB). Both present or neither is `400 invalid`.
+
+**`TestWorkflowResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `trigger_matched` | bool | whether the input satisfies the trigger, evaluated without side effects |
+| `condition_result` | bool | `true` when `condition` is absent; only meaningful when `trigger_matched` |
+| `action_plan` | array of `{ index, kind, resolved_params }` | present only when `trigger_matched` and `condition_result` are both true; `resolved_params` is `params` with every placeholder substituted and every secret reference left unresolved |
+| `evaluated_at` | timestamp | |
+
+**`WorkflowResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `workspace_id`, `sheet_id` | uuid | |
+| `name` | string | |
+| `state` | `"draft" \| "published" \| "disabled"` | |
+| `draft` | WorkflowDefinition | the editable definition; always present |
+| `published_version` | WorkflowVersionSummary? | `null` until the first publish; the pinned version F019 runs |
+| `has_unpublished_changes` | bool | `true` when `draft` differs from `published_version.definition_hash` |
+| `last_run_at` | timestamp? | supplied by F019 when that feature is enabled, otherwise absent (FR-F018-10) |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted workflow |
+
+**`WorkflowVersionSummary`** `{ id, version_no, definition_hash (hex string), published_by, published_at }`.
+`POST /publish` returns the full `WorkflowResponse` with the new summary; `POST /disable` returns it
+with `state: "disabled"`; `DELETE` returns `204`.
+
+**List route.** `GET /api/v1/workflows` returns `Page<WorkflowResponse>` in F028's envelope
+`{ items, next_cursor, has_more, total? }`, sorted by `sort` = `name` or `updated_at` (default
+`-updated_at`), `limit` 1–200 (F028's cap; this route documents none higher), and filters
+`sheet_id` (uuid), `state` (the three members), `trigger_kind` (the eight members) and `deleted`
+(bool, default `false`). A filter value outside its set is `400 invalid` with `field_errors.filter`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, an unlisted field, a formula leaf that fails to parse or exceeds its budget, an inline secret |
+| `403` | `denied` | a caller who may read the sheet but lacks `workflow-editor` on its workspace, on every mutation and on `test` |
+| `404` | `not_found` | unknown, foreign-tenant, or invisible workflow or sheet id, and every route on a soft-deleted workflow except F019's history reads (FR-F018-11) |
+| `409` | `conflict` | stale `If-Match`, duplicate `name` in the sheet, `Idempotency-Key` replayed with a different body, `PATCH` on a `disabled` workflow, 101st published workflow on a sheet or 5,001st in a tenant with `field_errors.limit` (FR-F018-12) |
+| `429` | `rate_limited` | the calling application's F028 token bucket is exhausted |
+| `503` | `unavailable` | the outbox or F035 evaluator is unreachable; safe to retry |
+
+### Use case signatures
+
+In `crates/domain/src/workflows/`. Every one takes `ctx: &ActorContext` carrying tenant, actor and
+correlation id, takes a `UnitOfWork` for writes or a repository trait for reads — never a pool or a
+connection — and returns the shared `DomainError` whose HTTP mapping is the table above.
+
+```rust
+fn create_workflow(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateWorkflow) -> Result<Workflow, DomainError>;
+fn update_workflow(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkflowId, expected: Version, req: UpdateWorkflow) -> Result<Workflow, DomainError>;
+fn publish_workflow(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkflowId, expected: Version) -> Result<WorkflowVersion, DomainError>;
+fn disable_workflow(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkflowId, expected: Version) -> Result<Workflow, DomainError>;
+fn delete_workflow(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkflowId, expected: Version) -> Result<(), DomainError>;
+fn get_workflow(ctx: &ActorContext, repo: &dyn WorkflowRepository, id: WorkflowId) -> Result<Workflow, DomainError>;
+fn list_workflows(ctx: &ActorContext, repo: &dyn WorkflowRepository, filter: WorkflowFilter, page: Cursor) -> Result<Page<Workflow>, DomainError>;
+fn test_workflow(ctx: &ActorContext, repo: &dyn WorkflowRepository, rows: &dyn RowRepository, id: WorkflowId, req: TestWorkflow) -> Result<TestOutcome, DomainError>;
+fn validate_definition(ctx: &ActorContext, columns: &ColumnMetadata, def: &WorkflowDefinition) -> Result<ValidatedDefinition, FieldErrors>;
+fn evaluate_condition(ctx: &ActorContext, node: &ConditionNode, scope: &RowScope) -> Result<bool, DomainError>;
+fn resolve_placeholders(ctx: &ActorContext, params: &Json, scope: &RowScope) -> Result<Json, DomainError>;
+```
+
+**Transaction boundaries.** `publish_workflow` is one `UnitOfWork` covering the draft freeze, the
+`workflow_versions` insert, its ordered `workflow_steps`, its `workflow_step_column_refs`, the
+repoint of `workflows.published_version_id`, the audit row and the `workflow.published.v1` outbox
+entry. That boundary is what makes a published version immutable *and* complete: F019 pins
+`workflow_version_id` and replays the steps, so a version whose steps or column refs committed
+separately could be executed with half its actions, and the `on delete restrict` guard F007 relies on
+would be missing for a column the definition already names. `create_workflow`, `update_workflow`,
+`disable_workflow` and `delete_workflow` each take one `UnitOfWork` covering the row write under the
+expected version, the audit row and the outbox entry. `validate_definition`, `evaluate_condition`,
+`resolve_placeholders` and `test_workflow` write nothing and open no transaction.
 
 ### PostgreSQL/SQLx
 
@@ -181,6 +358,14 @@ Scenario: Dry run does not execute actions
 - External dependencies: none; F029 vault references are optional until F029 ships (validation accepts the reference format only)
 - Risks and mitigations: condition semantics could drift between builder and runtime, so `evaluate_condition` lives in `crates/domain/src/workflows/` and is the only implementation used by F019; formula leaves could be slow, so the 2-second budget is enforced per evaluation and surfaced as `invalid` at publish time.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset of `docs/filter-vocabulary.md` declared in section 4 and the operator names aligned to it | `ConditionOp` is now a declared subset; `exists` and `actor_in` stay separate leaf kinds rather than becoming operators |
 
 ## 7.1 Agent handoff
 

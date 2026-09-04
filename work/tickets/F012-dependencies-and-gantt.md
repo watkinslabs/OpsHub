@@ -101,6 +101,168 @@ Excluded: working calendars and schedule settings themselves (F011), row hierarc
 - Validation: `lag` within ±3,650 days or ±87,600 hours; `delta_days` within ±3,650; exactly one of `row_id` or `anchor_date`; `limit` 1–1,000; dependency count per sheet ≤ 20,000 checked inside the insert `UnitOfWork` after `SheetScheduleSettingsRepository::lock_for_schedule(sheet_id)` has taken the sheet's row lock, counting through `RowDependencyRepository::list_for_sheet`.
 - Error mapping: `DependencyError::Cycle { path } → 400 invalid`, `DependencyError::Duplicate { existing_id } → 409 conflict`, `DependencyError::SelfLink | DifferentSheet | ParentRow | LagOutOfRange | SheetLimit → 400 invalid`, `ScheduleError::NoScheduleSettings → 400 invalid (field_errors.sheet_id = "unscheduled")`, `ScheduleError::Budget → 503 unavailable`, `StaleVersion → 409 conflict`, `NotFound → 404`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Timestamps are RFC 3339 UTC, dates are `YYYY-MM-DD`, ids are UUIDv7 strings, `version`
+increments by one per write. `T?` marks nullable, and an absent optional field and an explicit `null`
+mean the same thing. Unlisted fields are rejected with `400 invalid`. All six routes require the
+gateway tenant context; mutations require `Idempotency-Key`, and `PATCH`/`DELETE` require
+`If-Match: <version>`.
+
+**`CreateDependencyRequest`** — `POST /api/v1/dependencies`. The sheet is derived from
+`predecessor_row_id`, never sent, so a client cannot name a sheet the rows do not belong to.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `predecessor_row_id` | uuid | yes | live row the caller may read; `parent_row` when it has children; unreadable or foreign-tenant → `404 not_found` |
+| `successor_row_id` | uuid | yes | live row in the same sheet as the predecessor; `self` when equal to it; `different_sheet` when not; `parent_row` when it has children |
+| `kind` | `"FS" \| "SS" \| "FF" \| "SF"` | yes | any other member → `400 invalid`, `field_errors.kind = "enum"` |
+| `lag` | integer | no | default `0`; signed; `−3650..=3650` when `lag_unit` is `days`, `−87600..=87600` when `hours`; outside → `field_errors.lag = "range"` |
+| `lag_unit` | `"days" \| "hours"` | no | default `"days"`; `days` counts working days of the sheet calendar, `hours` counts working hours of its daily window (F011 owns both) |
+
+Cross-field rules, each evaluated after the field rules above and before any write:
+
+| Rule | Failure |
+|---|---|
+| The candidate edge must not close a cycle in the sheet graph | `400 invalid`, `field_errors.successor_row_id = "cycle"`, `details.cycle_path` = row ids in traversal order, first id repeated last |
+| `(predecessor_row_id, successor_row_id)` must not already exist | `409 conflict`, `field_errors.successor_row_id = "duplicate"`, `details.existing_id` |
+| The sheet must hold fewer than 20,000 dependencies | `400 invalid`, `field_errors.sheet_id = "limit"` |
+| The sheet must have F011 schedule settings | `400 invalid`, `field_errors.sheet_id = "unscheduled"` |
+
+**`UpdateDependencyRequest`** — `PATCH /api/v1/dependencies/{id}`. Every field optional, at least one
+present, else `400 invalid` with `field_errors.body = "empty"`. Endpoints of a link are immutable:
+re-pointing one is a delete plus a create.
+
+| Field | Type | Constraint |
+|---|---|---|
+| `kind` | `"FS" \| "SS" \| "FF" \| "SF"` | as above; a change re-runs cycle detection because reversing constraint direction can close a cycle |
+| `lag` | integer | as above, re-validated against the effective `lag_unit` |
+| `lag_unit` | `"days" \| "hours"` | as above; changing the unit re-checks `lag` against the new bound |
+
+**`DependencyResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `sheet_id` | uuid | derived at create, never client-supplied |
+| `predecessor_row_id` / `successor_row_id` | uuid | |
+| `kind` | DependencyKind | |
+| `lag` | integer | signed |
+| `lag_unit` | `"days" \| "hours"` | |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+
+`DELETE /api/v1/dependencies/{id}` returns `204` with no body; the row is hard-deleted, so there is no
+`deleted_at` and no restore route.
+
+**`GET /api/v1/sheets/{sheet_id}/dependencies`** returns F028's `Page<DependencyResponse>` — F012
+restates nothing about that envelope or its opaque cursor. Sort key is the composite
+`(predecessor_row_id, successor_row_id)` ascending and is not client-selectable, because the cursor is
+built from it.
+
+| Parameter | Type | Constraint |
+|---|---|---|
+| `cursor` | string? | F028's opaque signed cursor; a cursor minted for different filters → `400 invalid` |
+| `limit` | integer? | 1–1,000, default 100 |
+| `row_id` | uuid? | matches the link on either side |
+| `kind` | DependencyKind? | repeatable; multiple values are an OR set |
+| `include_total` | bool? | F028's flag; populates `total` |
+
+**`ScheduleResult`** — the per-row schedule record, one row of `schedule_results`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | |
+| `early_start` / `early_finish` | date? | null when the row has no start or duration value |
+| `late_start` / `late_finish` | date? | null under the same condition |
+| `total_float_days` | integer? | working days between `late_start` and `early_start`; null when dates are null |
+| `is_critical` | bool | `total_float_days == 0` |
+| `is_milestone` | bool | duration column value is 0 |
+| `is_parent` | bool | rolled up from descendants rather than computed from links |
+
+**`CriticalPathResponse`** — `GET /api/v1/sheets/{sheet_id}/critical-path`
+
+| Field | Type | Notes |
+|---|---|---|
+| `schedule_version` | integer | pass as `If-Match` on a committed shift |
+| `computed_at` | timestamp | when the cached results were last rebuilt |
+| `rows` | ScheduleResult[] | every scheduled row of the sheet, in row `position` order; unscheduled rows are omitted |
+
+**`ShiftRequest`** — `POST /api/v1/sheets/{sheet_id}/schedule/shift`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `row_id` | uuid? | no | exactly one of `row_id` or `anchor_date` present, else `400 invalid` with `field_errors.row_id = "exclusive"`; row must be live and in `{sheet_id}` |
+| `delta_days` | integer? | no | required with `row_id`, rejected with `anchor_date`; signed working days, `−3650..=3650` |
+| `anchor_date` | date? | no | re-anchors the sheet so its earliest `early_start` lands here |
+| `preview` | bool | yes | `true` computes and writes nothing; `false` commits |
+
+**`RowShift`**: `{ row_id, old_start: date?, old_finish: date?, new_start: date?, new_finish: date? }`.
+
+**`ShiftResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `schedule_version` | integer | unchanged when `committed` is false |
+| `affected` | RowShift[] | every row whose dates move, including the anchor row |
+| `committed` | bool | mirrors `!preview` |
+| `truncated` | bool | true only when the plan hit the 10,000-row bound, in which case the call returns `503` instead |
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | successful read, `PATCH`, preview shift, committed shift |
+| `201` | `POST /api/v1/dependencies` |
+| `204` | `DELETE /api/v1/dependencies/{id}` |
+| `400 invalid` | enum, range, `self`, `different_sheet`, `parent_row`, `cycle`, `limit`, `unscheduled`, `exclusive`, empty `PATCH` body, unlisted field, `limit` above 1,000 |
+| `403 denied` | `sheet-viewer` attempting create, update, delete or a committed shift on a sheet they can read |
+| `404 not_found` | dependency, sheet or row id in another tenant, or one the caller may not read — existence is never disclosed |
+| `409 conflict` | duplicate pair, stale `If-Match` on a dependency or on `schedule_version`, replayed `Idempotency-Key` with a different body |
+| `429 rate_limited` | tenant shift-and-recompute quota exceeded |
+| `503 unavailable` | `details.reason = "shift_budget"` when the plan exceeds 10,000 rows or 2 s of evaluation; nothing is written |
+
+There is no `502` on these routes: F012 calls no external service.
+
+### Use case signatures
+
+In `crates/domain/src/dependencies/`. `Ctx` is F038's `ActorContext` carrying tenant, actor, roles and
+correlation id; `DomainError` is the shared error whose mapping is in the error table above.
+
+```rust
+fn create_dependency(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateDependency) -> Result<Dependency, DomainError>;
+fn update_dependency(ctx: &Ctx, uow: &mut UnitOfWork, id: DependencyId, expected: Version, req: UpdateDependency) -> Result<Dependency, DomainError>;
+fn delete_dependency(ctx: &Ctx, uow: &mut UnitOfWork, id: DependencyId, expected: Version) -> Result<(), DomainError>;
+fn list_dependencies(ctx: &Ctx, repo: &dyn RowDependencyRepository, sheet: SheetId, filter: DependencyFilter, page: Cursor) -> Result<Page<Dependency>, DomainError>;
+fn detect_cycle(graph: &DependencyGraph, candidate: Edge) -> Result<(), CyclePath>;
+fn rollup_parents(graph: &DependencyGraph, results: &mut Vec<ScheduleResult>);
+fn compute_critical_path(ctx: &Ctx, repo: &dyn RowDependencyRepository, results: &dyn ScheduleResultRepository, sheet: SheetId) -> Result<CriticalPath, DomainError>;
+fn plan_shift(ctx: &Ctx, repo: &dyn RowDependencyRepository, sheet: SheetId, req: ShiftRequest) -> Result<ShiftPlan, DomainError>;
+fn commit_shift(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, expected: Version, plan: ShiftPlan) -> Result<ShiftPlan, DomainError>;
+```
+
+`detect_cycle` and `rollup_parents` are pure functions over the in-memory graph returned by
+`load_graph_for_sheet`; they take no repository and no `ctx` because they perform no I/O and no
+authorization. A use case never takes a pool or a connection and never returns a database row type.
+
+Transaction boundaries:
+
+- `create_dependency` and `update_dependency` each open one `UnitOfWork` that takes F011's
+  `lock_for_schedule(sheet_id)` row lock first, then counts, checks the pair, re-reads the graph,
+  detects the cycle, writes the `row_dependencies` row, the audit row and the outbox event. The lock
+  is what makes cycle detection correct: without it two concurrent inserts each see an acyclic graph
+  and together close a cycle.
+- `delete_dependency` takes the same lock and writes the delete, audit row and outbox event together,
+  so a concurrent create cannot read a graph that is half-deleted.
+- `commit_shift` opens one `UnitOfWork` covering the `If-Match` check on `schedule_version`, every
+  affected row's start and end cell writes through the F006/F007 cell repositories, the
+  `upsert_schedule_results` rewrite, one audit row carrying the whole before/after list, and one
+  `schedule.shifted.v1` outbox row. All of it or none: a partially shifted schedule violates the
+  dependency constraints the shift exists to satisfy.
+- `plan_shift` and `compute_critical_path` open no `UnitOfWork` and take repositories directly; they
+  are reads and must never write, which is what makes `preview: true` safe for a `sheet-viewer`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_dependencies_*.sql` creates `row_dependencies(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, predecessor_row_id uuid not null references rows(id) on delete restrict, successor_row_id uuid not null references rows(id) on delete restrict, kind text not null check (kind in ('FS','SS','FF','SF')), lag integer not null default 0, lag_unit text not null default 'days' check (lag_unit in ('days','hours')), version bigint not null default 1, created_by, created_at, updated_by, updated_at, check (predecessor_row_id <> successor_row_id))` and `schedule_results(tenant_id uuid not null, sheet_id uuid not null, row_id uuid not null references rows(id) on delete cascade, early_start date, early_finish date, late_start date, late_finish date, total_float_days integer, is_critical boolean not null default false, computed_at timestamptz not null, schedule_version bigint not null, primary key (sheet_id, row_id))`. Both tables hold only scalar typed columns: no array column and no `jsonb` column exists in this feature's schema.

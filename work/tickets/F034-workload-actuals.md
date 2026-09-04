@@ -93,6 +93,186 @@ Excluded: allocation editing itself (F033 API, called from the UI), capacity ari
 - Validation: limits from FR-F034-01 through FR-F034-09; `entry_date ≤ today` in tenant time zone; quarter-hour steps; daily cap 24 h; reason 10–1,000 chars. Idempotency via `idempotency_keys` for 24 hours plus `(source_system, external_id)` for imports. Concurrency: `If-Match` on time entries.
 - Error mapping: `WorkloadError::RangeTooLarge → 400 invalid`, `TimeEntryError::DailyCapExceeded → 400 invalid`, `TimeEntryError::FutureDate → 400 invalid`, `TimeEntryError::Locked → 403 denied`, `TimeEntryError::ExternalEntry → 409 conflict`, `TimeEntryError::NotPending → 409 conflict`, `TimeEntryError::StaleVersion → 409 conflict`, `TimeEntryError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Ids are UUIDv7 strings, timestamps RFC 3339 UTC, dates `YYYY-MM-DD`, hours are decimals with two
+places, `version` increments by one per write. `T?` is nullable and an absent optional field equals an
+explicit `null`. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and the
+error body are F028's. Mutations require `Idempotency-Key`; `PATCH` and `DELETE` require
+`If-Match: <version>`. `WorkloadRow` and `ConflictResponse` below are the shapes F069's home surface
+reads, so they are stated once here and not restated there.
+
+Cost fields — `cost_rate`, `cost_currency`, `cost_amount`, `planned_cost`, `actual_cost` — are
+**absent** from every response to an actor without `resource-admin`, never null.
+
+**`GET /api/v1/workload`** — `WorkloadResponse`
+
+| Parameter | Type | Constraint |
+|---|---|---|
+| `from` / `to` | date | required; `to >= from` and `to − from` ≤ 182 days, else `400 invalid` with `field_errors.to = "range"` |
+| `granularity` | `"day" \| "week"` | required |
+| `resource_ids` | uuid[]? | ≤ 500 entries; more, or a filter matching more than 500 resources, is `400 invalid` with `field_errors.resource_ids = "too_many"` |
+| `project_sheet_id` | uuid? | restricts to resources allocated to that project |
+| `skill` | string? | a skill name resolved through F033's `skills` lookup |
+
+**`WorkloadResponse`**: `{ granularity, from, to, rows: WorkloadRow[], totals: WorkloadTotal[], stale: bool }`. `totals` carries one entry per period summed across the returned resources. `stale` is true when any contributing summary is behind a queued source event.
+
+**`WorkloadRow`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `resource_id` | uuid | |
+| `resource_name` | string | |
+| `period_start` / `period_end` | date | inclusive |
+| `available_hours` | decimal | from F033 capacity |
+| `allocated_hours` | decimal | |
+| `actual_hours` | decimal | native plus `accepted` external; excludes `pending`, `rejected` and `superseded` |
+| `utilization_pct` | decimal? | `allocated ÷ available × 100`, one decimal; **null** when `available_hours` is 0 |
+| `status` | `"under"\|"ok"\|"over"\|"no_capacity"` | `under` below 70, `ok` 70–100 inclusive, `over` above 100, `no_capacity` when `available_hours` is 0 |
+
+**`WorkloadTotal`** is `WorkloadRow` without `resource_id` and `resource_name`.
+
+An actor with neither `resource-viewer` nor `resource-admin` receives only the row for their own
+linked resource, with `200` and a one-row array — not `403`. Asking about other people is not an
+error; it simply returns nothing about them.
+
+**`GET /api/v1/workload/conflicts`** returns `Page<ConflictResponse>` sorted `period_start desc` then
+`resource_id`, `limit` 1–200 (default 50), filtered by `resource_id`, `project_sheet_id`, `status` and
+`from`/`to` by period overlap.
+
+**`ConflictResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `resource_id`, `resource_name` | | |
+| `period_start` / `period_end` | date | |
+| `available_hours`, `allocated_hours`, `over_hours` | decimal | `over_hours = allocated − available`, always positive on an open conflict |
+| `allocation_ids` | uuid[] | assembled from `workload_conflict_allocations`, ascending |
+| `suggestions` | ConflictSuggestion[] | computed on read, never stored — a suggestion is only true of the schedule as it is now |
+| `status` | `"open" \| "resolved"` | |
+| `detected_at` / `resolved_at` | timestamp? | `resolved_at` null while `open` |
+| `version` | integer | |
+
+**`ConflictSuggestion`** is a tagged union on `kind`:
+`{ kind: "shift_within_float", allocation_id, row_id, float_days: integer }` for each contributing
+allocation whose task row has `total_float_days > 0` in F012's `schedule_results`; and
+`{ kind: "reassign_to", resource_id, resource_name, remaining_hours: decimal }` for up to three active
+resources sharing a required skill whose `remaining_hours >= over_hours` in that period. The array is
+empty when neither applies, which is a real answer and not an error.
+
+**`CreateTimeEntryRequest`** — `POST /api/v1/time-entries`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `resource_id` | uuid | yes | the caller's own linked resource, or any resource for a `resource-admin`; another user's resource without that role is `403 denied` |
+| `row_id` | uuid | yes | a live row the caller may read; its sheet supplies `project_sheet_id`, which is never sent |
+| `entry_date` | date | yes | not later than today in the tenant time zone, else `400 invalid` with `field_errors.entry_date = "future"` |
+| `hours` | decimal | yes | `0.25..=24` in quarter-hour steps, else `field_errors.hours = "step"`; a daily total above 24 for that resource is `field_errors.hours = "daily_cap"` |
+| `note` | string? | no | ≤ 500 chars; excluded from logs |
+
+**`UpdateTimeEntryRequest`** — `PATCH /api/v1/time-entries/{id}`: `hours`, `entry_date`, `note`, each
+optional, at least one present. Permitted for the entry's own user within `time_entry_lock_days`
+(tenant setting, default 30) and for a `resource-admin` at any time; outside the window a non-admin
+gets `403 denied` with `details.code_detail = "locked"`. An entry with `source: external` is
+`409 conflict` with `details.code_detail = "external_entry"`. `DELETE` follows the same rules and
+returns `204`.
+
+**`TimeEntryResponse`**: `{ id, resource_id, row_id, project_sheet_id, entry_date, hours, note?, source: "native"|"external", external_ref: { source_system, external_id }? (external only), reconciliation_state: "none"|"pending"|"accepted"|"rejected"|"superseded", reconciled_by?, reconciled_at?, resolution?, reason?, superseded_by?, cost_rate?, cost_currency?, cost_amount?, version, created_at, created_by, updated_at, updated_by, deleted_at? }`.
+
+**`ImportTimeEntriesRequest`** — `POST /api/v1/time-entries/import`, `resource-admin` only
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source_system` | string | yes | 1–50 chars; part of the import's idempotency key |
+| `entries` | ImportEntry[] | yes | 1–2,000 entries |
+
+**`ImportEntry`**: `{ external_id: string (1–200), resource_id: uuid?, user_email: string?, row_id: uuid, entry_date: date, hours: decimal, note: string? }`. Exactly one of `resource_id` and `user_email` must be present. A repeat of `(source_system, external_id)` updates that external entry rather than creating a second one.
+
+**`ImportResult`**: `{ created: integer, updated: integer, pending_reconciliation: uuid[], rejected: [{ index: integer, code: string }] }` where `code` is `unknown_resource`, `unknown_row`, `foreign_tenant`, `future_date`, `bad_hours`, `daily_cap` or `duplicate_in_batch`. The import is atomic: a request with any rejection still applies the accepted entries and reports the rest, because a 2,000-line timesheet with one bad row is not a reason to reject the other 1,999 — but a request whose every entry is rejected returns `400 invalid`.
+
+**`ReconcileRequest`** — `POST /api/v1/time-entries/reconcile`, `resource-admin` only:
+`{ decisions: [{ time_entry_id: uuid, resolution: "keep_native"|"accept_external"|"sum" }], reason: string (10–1,000 chars) }`, 1–500 decisions with distinct `time_entry_id`. Each id must name an external entry in `reconciliation_state: pending`, else `409 conflict` with `details.code_detail = "not_pending"` naming the id. **`ReconcileResult`**: `{ applied: integer, entries: TimeEntryResponse[] }` carrying every entry whose state changed, native and external alike.
+
+**`EffortResponse`** — `GET /api/v1/rows/{id}/effort?include_children=`
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | |
+| `include_children` | bool | default `false`; `true` adds the F009 descendant rollup |
+| `planned_hours` | decimal | allocation hours attributed to the row, or the row's mapped `estimate_hours` column value when no allocation exists |
+| `actual_hours` | decimal | native plus `accepted` external |
+| `pending_external_hours` | decimal | imported hours awaiting reconciliation, reported separately so they never silently inflate actuals |
+| `remaining_hours` | decimal | `max(0, planned − actual)` |
+| `variance_hours` | decimal | `actual − planned`; negative means under |
+| `variance_pct` | decimal? | null when `planned_hours` is 0 |
+| `by_resource` | `[{ resource_id, resource_name, actual_hours, planned_hours }]` | |
+| `planned_cost` / `actual_cost` | decimal? | `resource-admin` only |
+| `computed_at` | timestamp | when the serving summary was built |
+| `stale` | bool | a source event newer than the stored summary is queued |
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | workload, conflicts, effort, `PATCH`, import, reconcile |
+| `201` | `POST /api/v1/time-entries` |
+| `204` | `DELETE /api/v1/time-entries/{id}` |
+| `400 invalid` | `range`, `too_many`, `future`, `step`, `daily_cap`, an import whose every entry is rejected, `reason` length, more than 500 decisions |
+| `403 denied` | a non-admin editing outside the lock window or touching another user's entry; a `resource-viewer` importing or reconciling |
+| `404 not_found` | time entry, conflict, resource, row or sheet in another tenant or invisible to the caller |
+| `409 conflict` | `external_entry`, `not_pending`, stale `If-Match`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | import or workload-query quota exceeded |
+
+### Use case signatures
+
+In `crates/domain/src/workload/`; the two consumers are in `services/worker/src/workload/`. `Ctx` is
+F038's `ActorContext`.
+
+```rust
+fn query_workload(ctx: &Ctx, repo: &dyn EffortSummaryRepository, q: WorkloadQuery) -> Result<Workload, DomainError>;
+fn detect_conflicts(ctx: &Ctx, uow: &mut UnitOfWork, resource: ResourceId, span: DateRange, source: Version) -> Result<Vec<WorkloadConflict>, DomainError>;
+fn list_conflicts_with_suggestions(ctx: &Ctx, repos: &SuggestionInputs<'_>, filter: ConflictFilter, page: Cursor) -> Result<Page<WorkloadConflict>, DomainError>;
+fn record_time_entry(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateTimeEntry) -> Result<TimeEntry, DomainError>;
+fn update_time_entry(ctx: &Ctx, uow: &mut UnitOfWork, id: TimeEntryId, expected: Version, req: UpdateTimeEntry) -> Result<TimeEntry, DomainError>;
+fn delete_time_entry(ctx: &Ctx, uow: &mut UnitOfWork, id: TimeEntryId, expected: Version) -> Result<(), DomainError>;
+fn import_time_entries(ctx: &Ctx, uow: &mut UnitOfWork, req: ImportTimeEntries) -> Result<ImportResult, DomainError>;
+fn reconcile_time_entries(ctx: &Ctx, uow: &mut UnitOfWork, req: Reconcile) -> Result<ReconcileResult, DomainError>;
+fn get_row_effort(ctx: &Ctx, repo: &dyn EffortSummaryRepository, row: RowId, include_children: bool) -> Result<Effort, DomainError>;
+fn rebuild_summaries(ctx: &Ctx, uow: &mut UnitOfWork, scope: SummaryScope, id: ScopeId, span: DateRange) -> Result<EffortSummary, DomainError>;
+```
+
+`SuggestionInputs<'_>` bundles the conflict repository with F012's `ScheduleResultRepository` and
+F033's `AllocationRepository` and `ResourceRepository`, so suggestions are computed from traits the
+harness can stub and this module still owns no cross-feature SQL. `query_workload` and `get_row_effort`
+take a repository, not a `UnitOfWork`: they read the summary cache and must never write, which is what
+lets a user with no resource role call them safely.
+
+Transaction boundaries:
+
+- `record_time_entry`, `update_time_entry` and `delete_time_entry` each open one `UnitOfWork` covering
+  the `time_entries` write, the daily-cap check re-read under that transaction, the cost-rate snapshot
+  taken from F033, the audit row and the `time-entry.recorded.v1` outbox row. The cap is a constraint
+  over the resource's other entries that day, so checking it outside the write transaction would let
+  two concurrent entries each pass and together exceed 24 hours.
+- `import_time_entries` opens one `UnitOfWork` for the whole batch: every accepted entry, its
+  `pending` marking where a native collision exists, one audit row for the import and one outbox event
+  per entry. One boundary because the `ImportResult` counts must describe what was actually written —
+  a partially applied batch would report numbers that no longer match the database.
+- `reconcile_time_entries` writes every decision's state change — the external entry's
+  `reconciliation_state`, `resolution`, `reason`, `reconciled_by` and `reconciled_at`, and where
+  `accept_external` applies, the native entry's `superseded` state and `superseded_by` — plus one
+  audit row and one `time-entry.reconciled.v1` outbox row per decision, in one boundary. A native
+  entry marked superseded while its external counterpart failed to be accepted would drop hours from
+  actuals with nothing recording why.
+- `detect_conflicts` opens one `UnitOfWork` per affected resource span covering the
+  `workload_conflicts` upsert, the full replacement of its `workload_conflict_allocations` rows, the
+  resolution of periods no longer over-allocated, and the `workload-conflict.detected.v1` events for
+  newly opened conflicts. The contributing allocations are the conflict's evidence, so they land with
+  it or not at all.
+- `rebuild_summaries` writes the `effort_summaries` row and its `effort_summary_sources` rows in one
+  boundary; the source versions are the job's idempotency key, so a summary written without them would
+  be recomputed forever or never.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_workload_*.sql` creates `time_entries(id uuid pk, tenant_id uuid not null, resource_id uuid not null references resources(id) on delete restrict, row_id uuid not null references rows(id) on delete restrict, project_sheet_id uuid not null references sheets(id) on delete restrict, entry_date date not null, hours numeric(5,2) not null, note text, source text not null check (source in ('native','external')), source_system text, external_id text, reconciliation_state text not null default 'none' check (reconciliation_state in ('none','pending','accepted','rejected','superseded')), reconciled_by uuid references users(id) on delete restrict, reconciled_at timestamptz, resolution text check (resolution in ('keep_native','accept_external','sum')), reason text, superseded_by uuid references time_entries(id) on delete restrict, cost_rate numeric(18,4) not null, cost_currency char(3) not null, cost_amount numeric(18,2) not null, version bigint, audit fields, deleted_at)`, `effort_summaries(tenant_id uuid not null, scope text not null check (scope in ('row','project','resource_period')), row_id uuid references rows(id) on delete cascade, project_sheet_id uuid references sheets(id) on delete cascade, resource_id uuid references resources(id) on delete cascade, scope_id uuid generated always as (coalesce(row_id, project_sheet_id, resource_id)) stored, period_start date not null, period_end date not null, planned_hours numeric(12,2), actual_hours numeric(12,2), pending_external_hours numeric(12,2), available_hours numeric(12,2), planned_cost numeric(18,2), actual_cost numeric(18,2), computed_at timestamptz not null, stale bool not null default false, primary key (tenant_id, scope, scope_id, period_start))`, `workload_conflicts(id uuid pk, tenant_id uuid not null, resource_id uuid not null references resources(id) on delete restrict, period_start date not null, period_end date not null, available_hours numeric(10,2), allocated_hours numeric(10,2), over_hours numeric(10,2), status text not null default 'open' check (status in ('open','resolved')), detected_at timestamptz not null, resolved_at timestamptz, version bigint, audit fields)`.

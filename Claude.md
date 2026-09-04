@@ -177,6 +177,7 @@ and the other is corrected — never both edited to meet in the middle.
 | How code is written and styled | `docs/engineering-standards.md` |
 | What each plan includes | `docs/packaging.md` |
 | Who consumes which event | `docs/event-map.md` |
+| Filter operators, the value each takes, relative dates | `docs/filter-vocabulary.md` |
 | Incident behaviour and postmortems | `docs/incident-management.md` |
 | Accessibility claim and its evidence | `docs/accessibility-conformance.md` |
 | Setup, pull requests and review | `docs/contributing.md` |
@@ -203,6 +204,7 @@ Run before review and in CI. Each exists because something was wrong that a huma
 | `check-design` | Every ticket names an artboard that exists in `design/artboards/`, or states plainly that it has no user surface |
 | `check-completeness` | Every ticket defines its request and response fields, its use-case signatures and its transaction boundaries, rather than naming them |
 | `check-order` | `docs/build-order.md` matches the order derived from the tickets, so the schedule cannot silently diverge from the dependency graph |
+| `check-filters` | Every feature that filters records declares its subset of `docs/filter-vocabulary.md`, and names no operator outside it, so one predicate has one spelling product-wide |
 | `check-references` | Every `FR-`/`NFR-`/`SR-` citation resolves to a requirement its owner actually declares, and every `docs/` or `design/artboards/` path a document points at exists |
 | `check-migrations` | Migration naming, ordering, reversibility and safety. The expand-migrate-contract staging in decisions section 2.2 is a review responsibility it cannot check |
 | `validate-tickets` | Ticket metadata, dependency references, owned paths, flags, required sections, file size and lifecycle timestamps. Run it: it catches the 500-line limit on files the other gates do not read |

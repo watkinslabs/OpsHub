@@ -19,6 +19,7 @@ Feature: Files and proofing. Flag `F017_FEATURE`. Every case maps to a ticket re
 | `F017-REQ-013` | FR-F017-13 | api | new version on open proof → `superseded` and `proof.decided.v1 outcome superseded` |
 | `F017-REQ-014` | FR-F017-14 | frontend, e2e | file tab, badges, versions, proof panel render and act |
 | `F017-REQ-015` | FR-F017-15 | api, database | each mutation → audit row and outbox row; tenant B → 404; viewer → 403 |
+| `F017-REQ-016` | FR-F017-16 | api, database | `column_id` with a non-`file` column or a non-`row` target → `column_id = "not_applicable"`; oversize → `size_bytes = "too_large"`; a media type outside a non-empty set → `mime_type = "not_allowed"`; a full cell → `column_id = "max_files"`; every refusal happens before the presigned URL is issued, so no object is written |
 | `F017-NFR-001` | NFR-F017-01 | performance | start/complete p95 < 800 ms; list p95 < 500 ms; 250 MB scan < 120 s |
 | `F017-NFR-002` | NFR-F017-02 | api, database | keys under tenant prefix; signed URL expired at +16 min → rejected; quarantine never signed |
 | `F017-NFR-003` | NFR-F017-03 | accessibility | axe serious = 0; keyboard upload; live region on scan and decision |

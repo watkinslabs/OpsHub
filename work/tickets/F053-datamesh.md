@@ -96,6 +96,190 @@ Canonical contract: `docs/capability-contracts.md` row F053 (aggregate `datamesh
 - Validation: name 1–120 chars; `match_keys` 1–3; `field_maps` 1–100; expression ≤ 200 AST nodes and 100 ms evaluation per cell via the F035 evaluator; cron ≥ 15 minutes; `limit` 1–100; `manual_value` must pass the target column validation from F007.
 - Error mapping: `MappingError::SameSheet → 400 invalid`, `MappingError::LimitReached → 409 conflict`, `MappingError::RunActive → 409 conflict`, `MappingError::StaleVersion → 409 conflict`, `ConflictError::RowMoved → 409 conflict`, `MappingError::NotFound → 404 not_found`, field map validation → `400 invalid`, `AuthzError::Denied → 403 denied`, module guard → `403 denied`.
 
+### Interface
+
+Exact shapes for every route above. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid` naming the
+field in `field_errors`. `Page<T>`, the signed cursor and the error body with its six codes are
+F028's; `CellValue` is F007's; the expression grammar, its AST limits and its parse errors are
+F035's; the provenance link record is F009's. None of them is restated here.
+
+**`CreateMappingRequest`** — `POST /api/v1/datamesh/mappings` (FR-F053-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `data-admin` in the tenant and may read the workspace |
+| `name` | string | yes | 1–120 chars after trim, case-insensitively unique among live mappings of the workspace → otherwise `409 conflict` with `field_errors.name` |
+| `source_sheet_id` | uuid | yes | a live sheet the caller may read |
+| `target_sheet_id` | uuid | yes | a different live sheet in the same tenant; equal to the source → `400 invalid` with `field_errors.target_sheet_id = "same_sheet"` |
+| `match_keys` | `MatchKey` array | yes | 1–3 entries in evaluation order, stored one per `datamesh_mapping_match_keys` row keyed `(mapping_id, ordinal)`; more than 3, a gap in the order, or a repeated column pair → `400 invalid` with `field_errors.match_keys[i]` |
+| `field_maps` | `FieldMap` array | yes | 1–100 entries, one `datamesh_mapping_field_maps` row each |
+| `sync_mode` | `SyncMode` | yes | below |
+| `unmatched_policy` | `"create" \| "ignore" \| "flag"` | yes | |
+| `deletion_policy` | `"ignore" \| "clear" \| "flag"` | yes | |
+
+Exceeding the tenant `max_mappings` limit is `409 conflict` with
+`field_errors.mappings = "limit_reached"`.
+
+**`MatchKey`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source_column_id` | uuid | yes | a live column of `source_sheet_id`; foreign → `400 invalid` |
+| `target_column_id` | uuid | yes | a live column of `target_sheet_id` |
+| `normalize` | `"exact" \| "trim" \| "case_insensitive" \| "whitespace" \| "date"` | yes | applied to both sides before hashing; the `key_hash` is the SHA-256 of the normalized values concatenated in `ordinal` order |
+
+**`FieldMap`** (FR-F053-02)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source_column_id` | uuid | yes | a live column of `source_sheet_id` |
+| `target_column_id` | uuid | yes | a live column of `target_sheet_id`; written by at most one map in this mapping and, while the mapping is enabled and live, by at most one mapping in the tenant → otherwise `409 conflict` with `field_errors.field_maps[i].target_column_id = "owned_by_mapping"` |
+| `direction` | `"source_to_target" \| "bidirectional"` | yes | `bidirectional` with `transform: "expression"` → `400 invalid` with `field_errors.field_maps[i].direction` |
+| `transform` | `"none" \| "expression"` | yes | `expression` requires `expression`, `none` rejects it |
+| `expression` | string? | conditional | parsed by F035; a parse failure or more than 200 AST nodes → `400 invalid` with `field_errors.field_maps[i].expression` |
+| `overwrite` | `"always" \| "if_empty" \| "never"` | yes | `if_empty` writes only an empty target cell; `never` reports the difference and writes nothing |
+
+A source and target column pair whose F007 types are incompatible and that carries no `transform` is
+`400 invalid` with `field_errors.field_maps[i].target_column_id`.
+
+**`SyncMode`**: `{ kind: "manual" | "on_change" | "scheduled", cron_expression?: string,
+cron_timezone?: string }`. `scheduled` requires both members, with an interval no denser than 15
+minutes and an IANA zone name; `manual` and `on_change` reject both → `400 invalid` with
+`field_errors.sync_mode`.
+
+**`UpdateMappingRequest`** — `PATCH /api/v1/datamesh/mappings/{id}`, `If-Match` and
+`Idempotency-Key` required, every field of the create request except `source_sheet_id` and
+`target_sheet_id` optional, at least one present, plus `enabled: bool`. `match_keys` and
+`field_maps` are each replaced whole rather than merged.
+
+**`MappingResponse`** — create, patch, and `Page<T>.items` of `GET /api/v1/datamesh/mappings`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` / `source_sheet_id` / `target_sheet_id` | uuid | |
+| `name` | string | |
+| `match_keys` / `field_maps` | arrays | reassembled from their child rows in `ordinal` and insertion order, so a round trip is byte-identical to what was submitted |
+| `sync_mode` | `SyncMode` | |
+| `unmatched_policy` / `deletion_policy` | enums | |
+| `owner_id` | uuid | the actor whose permissions every run executes under |
+| `enabled` | bool | |
+| `last_cursor` | `{ sheet_version, observed_at }`? | the source cursor the last successful run advanced to; null before the first run |
+| `open_conflict_count` | integer | derived from `datamesh_conflicts` where `status = 'open'` |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` / `deleted_at` | | |
+
+`GET /api/v1/datamesh/mappings` returns `Page<MappingResponse>` sorted by `name` with `id` as
+tiebreak, `limit` 1–100 (default 50), filters `workspace_id` (required), `source_sheet_id`,
+`target_sheet_id`, `sync_mode` and `enabled`.
+
+**`PreviewResponse`** — `POST /api/v1/datamesh/mappings/{id}/preview` (FR-F053-04). The body is
+empty; the preview always runs against the stored mapping, never against an unsaved draft, so what
+is previewed is what a sync would do. Nothing is written.
+
+| Field | Type | Notes |
+|---|---|---|
+| `computed_at` | timestamp | a result older than 10 minutes is recomputed on the next request rather than returned |
+| `matched` / `unmatched_source` / `unmatched_target` | integer | counts over the whole sheet pair |
+| `would_create` / `would_update` / `would_clear` | integer | the writes a sync would perform under the current policies |
+| `conflicts` | integer | candidate conflicts the run would record |
+| `sample` | `PreviewRow` array | at most 50 rows, ordered by target row position |
+
+**`PreviewRow`**: `{ source_row_id: uuid?, target_row_id: uuid?, marker: "create" | "update" |
+"clear" | "conflict", cells: { column_id, before: CellValue?, after: CellValue? } array }`. A column
+the caller cannot read is absent from `cells` entirely (NFR-F053-02).
+
+**Sync request** — `POST /api/v1/datamesh/mappings/{id}/sync` (FR-F053-05) takes an empty body and a
+required `Idempotency-Key`, and returns `202 SyncRequestResponse { run_id, status: "queued" }` within
+2 seconds. A mapping with a `queued` or `running` run → `409 conflict` with
+`field_errors.run = "already_active"`; a repeat of a cursor that already succeeded finishes
+`succeeded` with `written 0` rather than re-running.
+
+**`ConflictResponse`** — `Page<T>.items` of `GET /api/v1/datamesh/mappings/{id}/conflicts`
+(FR-F053-08), sorted by `created_at` descending with `id` as tiebreak, `limit` 1–100 (default 50),
+filters `kind` and `status`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `mapping_id` / `run_id` | uuid | |
+| `kind` | `"ambiguous_match" \| "both_changed" \| "unmatched_source" \| "source_deleted"` | |
+| `source_row_id` / `target_row_id` | uuid? | either may be absent, depending on the kind |
+| `column_id` | uuid? | present on `both_changed` only |
+| `source_value` / `target_value` | `CellValue`? | the two sides captured verbatim for side-by-side display |
+| `source_version` / `target_version` | integer? | the row versions the conflict was recorded at; `resolve` compares against these |
+| `status` | `"open" \| "resolved"` | |
+| `resolution` / `reason` / `resolved_by` / `resolved_at` | enum? / string? / uuid? / timestamp? | present once resolved |
+| `created_at` | timestamp | |
+
+**`ResolveConflictRequest`** — `POST /api/v1/datamesh/conflicts/{id}/resolve`,
+`Idempotency-Key` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `resolution` | `"keep_source" \| "keep_target" \| "manual_value"` | yes | |
+| `value` | `CellValue`? | conditional | required for `manual_value`, rejected otherwise; must pass the target column's F007 validation |
+| `reason` | string? | no | ≤ 500 chars |
+
+Either row having moved since the conflict was recorded is `409 conflict` and the conflict stays
+`open`; an already `resolved` conflict is also `409 conflict`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, the same sheet on both sides, an expression over 200 AST nodes, a bidirectional map carrying a transform, a cron denser than 15 minutes |
+| `403` | `denied` | a non-`data-admin` creating, updating, syncing or resolving; a tenant without the `datamesh` entitlement (`field_errors.module`) |
+| `404` | `not_found` | unknown or foreign-tenant mapping, run or conflict id, or a sheet the caller may not read |
+| `409` | `conflict` | duplicate name, stale `If-Match`, a run already active, a target column already owned by another enabled mapping, a resolve on a moved or already-resolved row, `max_mappings` reached |
+| `429` | `rate_limited` | the F038 limiter for the route; carries `Retry-After` |
+| `503` | `unavailable` | the preview exceeded its 30-second budget (`preview_timeout`) or the match engine's spill store is unreachable |
+
+A run whose changed-row set exceeds `max_rows_per_sync`, or whose owner has lost `sheet-editor`,
+ends with `error_code` `too_many_rows` or `sheet_denied` on the run row rather than an HTTP status,
+because the request was already acknowledged with `202`.
+
+### Use case signatures
+
+In `crates/domain/src/datamesh/`. Every use case takes `ctx` carrying tenant, actor and correlation
+id, and a `UnitOfWork` for writes or a repository trait for reads — never a pool or a connection —
+and returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn create_mapping(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateMapping) -> Result<Mapping, DomainError>;
+fn update_mapping(ctx: &Ctx, uow: &mut UnitOfWork, id: MappingId, expected: Version, req: UpdateMapping) -> Result<Mapping, DomainError>;
+fn list_mappings(ctx: &Ctx, repo: &dyn MappingRepository, filter: MappingFilter, page: Cursor) -> Result<Page<Mapping>, DomainError>;
+fn preview_mapping(ctx: &Ctx, repo: &dyn MatchRepository, mapping: &Mapping) -> Result<Preview, DomainError>;
+fn request_sync(ctx: &Ctx, uow: &mut UnitOfWork, id: MappingId, trigger: Trigger) -> Result<MeshRun, DomainError>;
+fn execute_sync(ctx: &Ctx, uow: &mut UnitOfWork, cells: &dyn CellWriter, links: &dyn LinkWriter, id: RunId) -> Result<RunCounts, DomainError>;
+fn compute_matches(ctx: &Ctx, uow: &mut UnitOfWork, mapping: &Mapping) -> Result<MatchStats, DomainError>;
+fn list_conflicts(ctx: &Ctx, repo: &dyn ConflictRepository, id: MappingId, filter: ConflictFilter, page: Cursor) -> Result<Page<Conflict>, DomainError>;
+fn resolve_conflict(ctx: &Ctx, uow: &mut UnitOfWork, id: ConflictId, req: ResolveConflict) -> Result<Conflict, DomainError>;
+fn normalize_key(value: &CellValue, normalize: Normalize) -> NormalizedKey;
+fn plan_changes(matches: &[Match], source: &RowSet, target: &RowSet, cursor: Option<Cursor>, field_maps: &[FieldMap]) -> ChangePlan;
+fn validate_field_maps(source_cols: &[Column], target_cols: &[Column], maps: &[FieldMap]) -> Result<(), FieldErrors>;
+```
+
+`ChangePlan` is `{ writes, write_backs, conflicts }`, so a both-changed field leaves the plan with a
+conflict entry and no write entry — the executor cannot overwrite a side it was never handed.
+`normalize_key`, `plan_changes` and `validate_field_maps` are pure and take no context, which is what
+lets the `overwrite` × `direction` truth table prove the semantics.
+
+Transaction boundaries. A mapping save holds one `UnitOfWork` over the `datamesh_mappings` row, the
+full replacement of `datamesh_mapping_match_keys` and `datamesh_mapping_field_maps`, the audit row
+and the `mapping.updated.v1` enqueue — that boundary is what makes the cross-mapping
+target-column uniqueness enforceable, since the partial unique index is checked against the new rows
+inside the same transaction that removes the old ones. `request_sync` holds one `UnitOfWork` over
+the active-run check and the `datamesh_runs` insert, which is what the partial unique index on
+`(mapping_id) where status in ('queued','running')` relies on. `execute_sync` writes each batch of
+500 rows in one `UnitOfWork` spanning the F008 bulk cell write, the F009 link records, the
+`datamesh_matches` rows and any `datamesh_conflicts` rows that batch produced; the run's final
+`UnitOfWork` advances `last_cursor` together with the counts and the `mapping.synced.v1` enqueue, so
+a cursor never moves past work that was not committed and a retry re-does only uncommitted batches.
+`resolve_conflict` holds one `UnitOfWork` over the row-version re-check, the cell write and the
+conflict row's `resolved` transition, so a concurrent edit rolls the resolution back rather than
+writing a value against a version the resolver never saw.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_datamesh_*.sql` creates `datamesh_mappings(id uuid pk, tenant_id uuid not null, workspace_id uuid not null references workspaces(id) on delete restrict, name text not null, source_sheet_id uuid not null references sheets(id) on delete restrict, target_sheet_id uuid not null references sheets(id) on delete restrict, sync_mode text not null check (sync_mode in ('manual','on_change','scheduled')), cron_expression text, cron_timezone text, unmatched_policy text not null check (unmatched_policy in ('create','ignore','flag')), deletion_policy text not null check (deletion_policy in ('ignore','clear','flag')), owner_id uuid not null references users(id) on delete restrict, enabled bool not null default true, last_cursor_sheet_version bigint, last_cursor_at timestamptz, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at, check (source_sheet_id <> target_sheet_id), check ((sync_mode = 'scheduled') = (cron_expression is not null)))`, `datamesh_matches(tenant_id, mapping_id uuid not null references datamesh_mappings(id) on delete cascade, source_row_id uuid not null, target_row_id uuid not null, key_hash bytea not null, match_score smallint not null, computed_at timestamptz not null, primary key (mapping_id, source_row_id))`, `datamesh_runs(id uuid pk, tenant_id, mapping_id uuid not null references datamesh_mappings(id) on delete restrict, mapping_version bigint not null, trigger text not null check (trigger in ('manual','on_change','scheduled')), status text not null check (status in ('queued','running','succeeded','failed')), source_cursor_sheet_version bigint not null, source_cursor_at timestamptz not null, matched int, created int, updated int, cleared int, written_back int, conflicts int, error_code text, started_at, completed_at, duration_ms int, correlation_id uuid, created_at)`, `datamesh_conflicts(id uuid pk, tenant_id, mapping_id uuid not null references datamesh_mappings(id) on delete restrict, run_id uuid not null references datamesh_runs(id) on delete restrict, kind text not null check (kind in ('ambiguous_match','both_changed','unmatched_source','source_deleted')), source_row_id uuid, target_row_id uuid, column_id uuid references columns(id) on delete restrict, source_value jsonb, target_value jsonb, source_version bigint, target_version bigint, status text not null check (status in ('open','resolved')), resolution text check (resolution in ('keep_source','keep_target','manual_value')), reason text, resolved_by uuid references users(id) on delete restrict, resolved_at timestamptz, created_at)`.

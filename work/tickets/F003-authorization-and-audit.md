@@ -347,6 +347,14 @@ Scenario: Guest never inherits tenant bindings
 - Risks and mitigations: ancestry for workspaces and folders does not exist until F005, so the engine resolves ancestry through the `AncestryResolver` trait and the harness registers a synthetic resolver; the 30-second cross-request cache can serve a stale allow for up to 30 seconds after a deny is added, so ACL replace also invalidates the local cache synchronously and the outbox event invalidates other instances; monthly partitions require the F004 worker job, so the migration pre-creates three months to cover the gap.
 - Open questions: none
 
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F002 `RoleAssignmentPort` | `RoleBindingRepository` implements F002's `RoleAssignmentPort` (`set_tenant_role`, `active_admin_count`), the way `AuditEventRepository` already backs `record_audit` | F002's bulk `set_role` must change `role_bindings`, which this feature owns; the port keeps the write on this side of the boundary |
+
 ## 7.1 Agent handoff
 
 Recorded at implementation: implemented summary, files changed, commands and evidence, known issues, follow-up tickets, migration and rollback status.

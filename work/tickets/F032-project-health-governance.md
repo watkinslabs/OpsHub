@@ -93,6 +93,188 @@ Excluded: portfolio rollup storage (F031 consumes `project_health`), approval ro
 - Validation: weights sum 100, thresholds ordered, reason 10–1,000 chars, justification ≤ 4,000, evidence count equals required count, `expires_at` in the future, `decision` enum. Idempotency via `idempotency_keys` for 24 hours. Concurrency: `If-Match` on model and override.
 - Error mapping: `GovernanceError::WeightsNotHundred → 400 invalid`, `GovernanceError::MissingEvidence(i) → 400 invalid`, `GovernanceError::GateSequence → 409 conflict`, `GovernanceError::GateNotSubmitted → 409 conflict`, `GovernanceError::StaleVersion → 409 conflict`, `GovernanceError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Ids are UUIDv7 strings, timestamps RFC 3339 UTC, dates `YYYY-MM-DD`, `version` an integer incrementing
+by one per write. `T?` is nullable and an absent optional field equals an explicit `null`. Unlisted
+fields are rejected with `400 invalid`. The error body is F028's. Mutations require `Idempotency-Key`;
+`PUT /api/v1/health-models/{id}` and `PUT /api/v1/projects/{id}/health-override` require
+`If-Match: <version>`. Projects are addressed by their sheet id throughout, so `{id}` on the project
+routes is a `sheet_id`.
+
+**`Indicator`** is the closed set `schedule | budget | scope | risk | resource`; **`HealthColour`** is
+`green | amber | red | unknown`, and `unknown` is computed-only — a client may never send it.
+
+**`UpsertHealthModelRequest`** — `PUT /api/v1/health-models/{id}`, a whole replacement
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–200 chars after trim |
+| `scope` | string | yes | `"tenant_default"` or `"template_version:{uuid}"`; stored as `scope_kind` plus `template_version_id`. A second `tenant_default` model in a tenant, or a second model for one template version, is `409 conflict` with `field_errors.scope = "taken"` |
+| `weights` | map<Indicator, integer> | yes | all five keys, each `0..=100`, summing to exactly 100, else `400 invalid` with `field_errors.weights = "sum"` |
+| `thresholds` | `{ green_min: integer, amber_min: integer }` | yes | `100 >= green_min > amber_min >= 0`, else `field_errors.thresholds = "order"` |
+| `rules` | map<Indicator, map<string, decimal>> | no | inner keys are the parameters that indicator takes; each value `> 0`. An unknown indicator or parameter is `400 invalid` naming `field_errors["rules.<indicator>.<parameter>"]`. An omitted parameter falls back to its default and is still returned |
+| `risk_points` | `{ high: integer, medium: integer, low: integer }` | no | each `> 0`; defaults `3`, `2`, `1` |
+
+The parameter each indicator takes, with its default: `schedule` → `late_days_for_zero` (30);
+`budget` → `over_pct_for_zero` (25); `scope` → `creep_pct_for_zero` (20); `risk` →
+`risk_points_for_zero` (12); `resource` → `conflicts_for_zero` (5). Each scores 100 at zero and 0 at
+the parameter's value, linearly, clamped to `0..=100`.
+
+**`HealthModelResponse`** is the request plus `{ id, version, created_at, created_by, updated_at, updated_by, deleted_at? }`, with `rules` and `risk_points` fully materialised from the stored rows and the defaults.
+
+**`ProjectHealthResponse`** — `GET /api/v1/projects/{id}/health`
+
+| Field | Type | Notes |
+|---|---|---|
+| `computed` | ComputedHealth? | null before the first recompute |
+| `override` | HealthOverride? | null when no `project_health_overrides` row exists |
+| `effective_colour` | HealthColour | the override's colour when an override exists and is not expired, else `computed.colour`, else `unknown` |
+
+**`ComputedHealth`**: `{ score: integer?, colour: HealthColour, confidence: integer, indicators: IndicatorResult[], computed_at: timestamp, model_id: uuid, source_version: integer, last_error: string? }`. `score` is null exactly when `colour` is `unknown`; `confidence` is the summed weight of indicators whose `state` is `ok`, `0..=100`.
+
+**`IndicatorResult`**: `{ name: Indicator, score: integer?, state: "ok"|"missing", weight_applied: integer, inputs: map<string, decimal> }`, ordered by the stored `display_order` (1–5) so the card's bars never reorder between reads. `inputs` keys are the indicator's own input names — `variance_days`, `variance_pct`, `creep_pct`, `risk_points`, `open_conflicts` — and are absent when `state` is `missing`.
+
+**`HealthOverride`**: `{ colour: "green"|"amber"|"red", reason: string, set_by: uuid, set_at: timestamp, expires_at: timestamp?, expired: bool }`. `expired` is computed on read; an expired override is returned and ignored by `effective_colour`, because hiding it would leave the reader unable to explain a colour change.
+
+**`HealthOverrideRequest`** — `PUT /api/v1/projects/{id}/health-override`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `colour` | `"green"\|"amber"\|"red"`? | yes | explicit `null` clears the override, deleting the row after the audit write |
+| `reason` | string | yes | 10–1,000 chars, **also required when clearing**, else `400 invalid` with `field_errors.reason = "required"` |
+| `expires_at` | timestamp? | no | strictly in the future, rejected when `colour` is null |
+
+**`StageGateResponse`** — the item of `GET /api/v1/projects/{id}/stage-gates`, a plain array in
+`sequence` order rather than a `Page<T>`: a project's gates are a short authored list, not a feed.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `project_sheet_id`, `name`, `sequence` | | `sequence` starts at 1 |
+| `approver` | `{ kind: "group"\|"user", id: uuid }` | exactly one of the two stored columns |
+| `required_evidence` | EvidenceRequirement[] | in `position` order |
+| `status` | `pending\|submitted\|approved\|rejected\|deferred` | |
+| `attempt` | integer | 0 before the first submission |
+| `approval_id` | uuid? | the F020 approval opened by the current submission |
+| `deferred_until` | timestamp? | set only by a `deferred` decision |
+| `latest_decision` | DecisionSummary? | null until a decision exists |
+| `version` | integer | |
+
+**`EvidenceRequirement`**: `{ position: integer, kind: "file"|"approval"|"checklist"|"field", label: string, column_id: uuid? (present exactly when kind is field), items: [{ position, label }]? (present exactly when kind is checklist) }`.
+
+**`SubmitGateRequest`** — `POST /api/v1/stage-gates/{id}/submit`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `evidence` | EvidenceEntry[] | yes | exactly one entry per `required_evidence` entry, matched by `position`; a missing one is `400 invalid` with `field_errors.evidence[i]` where `i` is that requirement's `position`, and an entry for an unknown position is `"unknown_position"` |
+| `note` | string? | no | ≤ 2,000 chars |
+
+**`EvidenceEntry`**: `{ position: integer }` plus exactly the payload its requirement's `kind` demands
+— `file_id: uuid` (an F017 file the caller may read), `approval_id: uuid` (a decided F020 approval),
+`completed_item_positions: integer[]` (a distinct subset of that requirement's item positions), or
+`field_value: string` (read from the project sheet's `column_id`). A payload that does not match the
+requirement's kind is `400 invalid` with `field_errors.evidence[i] = "kind_mismatch"`.
+
+Submitting gate N while gate N−1 is not `approved` is `409 conflict` with
+`details.code_detail = "gate_sequence"`. Submitting a gate already in `submitted` is `409 conflict`
+with `"already_submitted"`.
+
+**`DecideGateRequest`** — `POST /api/v1/stage-gates/{id}/decide`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `decision` | `approved\|rejected\|deferred` | yes | |
+| `reason` | string? | conditional | required and ≥ 10 chars for `rejected` and `deferred`, ≤ 1,000; optional for `approved` |
+| `deferred_until` | timestamp? | conditional | required for `deferred`, strictly in the future, rejected otherwise |
+
+Deciding a gate not in `submitted` is `409 conflict` with `details.code_detail = "gate_not_submitted"`.
+
+**`DecisionSummary`**: `{ id, attempt, decision, approver_id, reason?, decided_at, evidence_snapshot: EvidenceSnapshotEntry[] }` where **`EvidenceSnapshotEntry`** is `{ position, kind, label, file_id?, file_sha256? (lowercase hex), approval_ref_id?, field_column_id?, field_value?, checklist_completed?, checklist_required? }`. The snapshot is insert-only and is what a later attempt cannot change.
+
+**`IntakeRequestBody`** — `POST /api/v1/project-intake`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `template_id` | uuid | yes | a **published** F015 template version; a draft is `400 invalid` with `field_errors.template_id = "not_published"` |
+| `workspace_id` | uuid | yes | caller holds `sheet-editor` in it, else `403 denied`; unreadable → `404 not_found` |
+| `name` | string | yes | 1–200 chars after trim |
+| `sponsor_user_id` | uuid | yes | an active user of this tenant |
+| `justification` | string? | no | ≤ 4,000 chars |
+| `requested_start` | date | yes | |
+| `requested_finish` | date? | no | on or after `requested_start`, else `field_errors.requested_finish = "before_start"` |
+| `budget_planned` | decimal | yes | `>= 0`, two decimal places |
+| `currency` | string | yes | ISO 4217 alpha-3, uppercase |
+| `value_estimate` | decimal? | no | `>= 0` |
+| `portfolio_id` | uuid? | no | a live portfolio of this tenant; the provisioned project is added to it on success |
+
+**`IntakeResponse`** — the create body and `GET /api/v1/project-intake/{id}`: the request fields plus `{ id, status: "submitted"|"approved"|"rejected"|"provisioning"|"provisioned"|"failed", approval_id: uuid?, decision: "approved"|"rejected"?, reason: string?, provisioning_run_id: uuid?, project_sheet_id: uuid?, error: string?, version, created_at, created_by, updated_at, updated_by }`. `project_sheet_id` appears only in `provisioned`; `error` only in `failed`.
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | health read, gate list, `PUT` model, `PUT` override, decide, intake read |
+| `201` | `POST /api/v1/project-intake` |
+| `202` | `POST /api/v1/stage-gates/{id}/submit` — the F020 approval is opened asynchronously |
+| `400 invalid` | weight sum, threshold order, unknown rule key, `reason` length, evidence missing or `kind_mismatch` or `unknown_position`, `not_published`, `before_start`, `expires_at` in the past |
+| `403 denied` | a `sheet-viewer` on any mutation; a non-approver, non-`portfolio-admin` deciding; a non-`portfolio-admin` on model or override routes |
+| `404 not_found` | project, gate, model or intake in another tenant, or a project sheet the caller cannot read |
+| `409 conflict` | `gate_sequence`, `already_submitted`, `gate_not_submitted`, duplicate model `scope`, stale `If-Match`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | recompute or intake quota exceeded |
+| `503 unavailable` | the recompute or provisioning work stream refuses the message; the request row is left in its prior status |
+
+### Use case signatures
+
+In `crates/domain/src/governance/`; the four consumers are in `services/worker/src/governance/`.
+`Ctx` is F038's `ActorContext`.
+
+```rust
+fn upsert_health_model(ctx: &Ctx, uow: &mut UnitOfWork, id: ModelId, expected: Option<Version>, req: UpsertHealthModel) -> Result<HealthModel, DomainError>;
+fn score_indicators(model: &HealthModel, inputs: &IndicatorInputs) -> Vec<IndicatorResult>;
+fn compute_project_health(ctx: &Ctx, uow: &mut UnitOfWork, project: SheetId, source: Version) -> Result<ProjectHealth, DomainError>;
+fn get_project_health(ctx: &Ctx, repo: &dyn ProjectHealthRepository, project: SheetId) -> Result<ProjectHealth, DomainError>;
+fn set_health_override(ctx: &Ctx, uow: &mut UnitOfWork, project: SheetId, expected: Version, req: HealthOverrideRequest) -> Result<ProjectHealth, DomainError>;
+fn list_stage_gates(ctx: &Ctx, repo: &dyn StageGateRepository, project: SheetId) -> Result<Vec<StageGate>, DomainError>;
+fn create_gates_from_template(ctx: &Ctx, uow: &mut UnitOfWork, project: SheetId, version: VersionId) -> Result<Vec<StageGate>, DomainError>;
+fn submit_stage_gate(ctx: &Ctx, uow: &mut UnitOfWork, gate: GateId, expected: Version, req: SubmitGate) -> Result<StageGate, DomainError>;
+fn decide_stage_gate(ctx: &Ctx, uow: &mut UnitOfWork, gate: GateId, expected: Version, req: DecideGate) -> Result<StageGateDecision, DomainError>;
+fn apply_approval_decision(ctx: &Ctx, uow: &mut UnitOfWork, approval: ApprovalId, decision: ApprovalOutcome) -> Result<(), DomainError>;
+fn submit_intake(ctx: &Ctx, uow: &mut UnitOfWork, req: IntakeRequestBody) -> Result<IntakeRequest, DomainError>;
+fn get_intake(ctx: &Ctx, repo: &dyn IntakeRequestRepository, id: IntakeId) -> Result<IntakeRequest, DomainError>;
+fn advance_intake(ctx: &Ctx, uow: &mut UnitOfWork, id: IntakeId, to: IntakeStatus) -> Result<IntakeRequest, DomainError>;
+```
+
+`score_indicators` is pure — no `ctx`, no repository, no clock — so every scoring rule is testable as a
+table of inputs to expected scores, which is the only way five weighted formulas stay verifiable.
+
+Transaction boundaries:
+
+- `upsert_health_model` writes the `health_models` row and the complete replacement of its
+  `health_model_weights`, `health_model_thresholds`, `health_model_rules` and
+  `health_model_risk_points` rows, plus the audit row, in one `UnitOfWork`. The "sum to 100" rule is
+  an invariant over five rows, so it can only be true or false at a transaction boundary.
+- `compute_project_health` writes the `project_health` row, all five `project_health_indicators` rows,
+  their `project_health_indicator_inputs` rows and the `project-health.computed.v1` outbox row in one
+  boundary. A score written without the indicators it was derived from cannot be explained or audited.
+- `set_health_override` writes the override row (or deletes it), the audit row carrying the reason and
+  the `health-override.set.v1` outbox row in one boundary — the reason is the record, so it must never
+  outlive or predate the colour change.
+- `submit_stage_gate` writes the gate's `status` and incremented `attempt`, one `stage_gate_evidence`
+  row per requirement, every `stage_gate_evidence_checklist` row, the F020 approval through its
+  repository, and the outbox event in one `UnitOfWork`. A gate marked `submitted` with no approval is
+  a gate no one is asked to decide.
+- `decide_stage_gate` writes the `stage_gate_decisions` row, the copy of that attempt's evidence into
+  `stage_gate_decision_evidence`, the gate's new `status` and the outbox event in one boundary. The
+  snapshot is copied inside the same transaction as the decision precisely so it records what the
+  approver saw and not what a later attempt replaced.
+- `advance_intake` writes the intake row's status, the F015 provisioning-run reference and the F031
+  `replace_projects` membership addition in one `UnitOfWork` shared with those features' repositories,
+  so an intake that reads `provisioned` always points at a project that exists and, when a portfolio
+  was named, is in it.
+- `apply_approval_decision` is idempotent by `approval_id` and shares the `decide_stage_gate`
+  boundary, which is what stops an approval consumer and a direct decide call producing two divergent
+  outcomes for one gate.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_governance_*.sql` creates the five catalog tables: `health_models(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, name text not null, scope_kind text not null check (scope_kind in ('tenant_default','template_version')), template_version_id uuid null references template_versions(id) on delete cascade, check ((scope_kind = 'tenant_default') = (template_version_id is null)), version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)` — the encoded `scope` string is rendered from the two columns rather than stored as a delimited value; `project_health(project_sheet_id uuid pk references sheets(id) on delete cascade, tenant_id uuid not null references tenants(id) on delete restrict, model_id uuid not null references health_models(id) on delete restrict, score smallint check (score between 0 and 100), colour text not null check (colour in ('green','amber','red','unknown')), confidence smallint not null check (confidence between 0 and 100), computed_at timestamptz not null, source_version bigint not null, last_error text, version bigint not null default 1, audit fields)`; `stage_gates(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, project_sheet_id uuid not null references sheets(id) on delete cascade, name text not null, sequence int not null check (sequence > 0), approver_group_id uuid null references groups(id) on delete restrict, approver_user_id uuid null references users(id) on delete restrict, check (num_nonnulls(approver_group_id, approver_user_id) = 1), status text not null default 'pending' check (status in ('pending','submitted','approved','rejected','deferred')), attempt int not null default 0, approval_id uuid null references approvals(id) on delete restrict, deferred_until timestamptz, version bigint not null default 1, audit fields)`; `stage_gate_decisions(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, gate_id uuid not null references stage_gates(id) on delete cascade, attempt int not null, decision text not null check (decision in ('approved','rejected','deferred')), approver_id uuid not null references users(id) on delete restrict, reason text, decided_at timestamptz not null, approval_id uuid null references approvals(id) on delete restrict)`; `project_intake_requests(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, workspace_id uuid not null references workspaces(id) on delete restrict, template_id uuid not null references template_versions(id) on delete restrict, name text not null, sponsor_user_id uuid not null references users(id) on delete restrict, justification text, requested_start date not null, requested_finish date, budget_planned numeric(18,2) not null, currency char(3) not null, value_estimate numeric(18,2), portfolio_id uuid null references portfolios(id) on delete restrict, status text not null check (status in ('submitted','approved','rejected','provisioning','provisioned','failed')), approval_id uuid null references approvals(id) on delete restrict, provisioning_run_id uuid null references provisioning_runs(id) on delete restrict, project_sheet_id uuid null references sheets(id) on delete restrict, decision text check (decision in ('approved','rejected')), reason text, error text, version bigint not null default 1, audit fields)`.

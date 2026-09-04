@@ -44,7 +44,7 @@ As a tenant administrator, I want to register an API application with scoped cre
 - **FR-F028-03:** `PATCH /api/v1/applications/{id}` updates name, description, scopes, rate limit, allowed IPs, and `status: active|suspended` with `If-Match`; a scope or CIDR change replaces the `api_application_scopes` and `api_application_allowed_ips` rows for the application in the same transaction as the parent version bump, so a token's effective scopes are the current rows and never a stale copy; suspending an application rejects its tokens with `401 denied` within 5 s; `DELETE` soft-deletes and revokes all bound tokens; both publish `application.updated.v1`.
 - **FR-F028-04:** Every `/api/v1` list route accepts `cursor` (opaque, HMAC-signed, expires after 24 hours), `limit` (1–200 default 50 unless the route documents a higher cap), `filter` (grammar `field op value` joined by `and`, operators `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, `is_null`), `sort` (`field` or `-field`, at most 3 keys), and `fields` (comma-separated projection); an invalid cursor returns `400 invalid` with `field_errors.cursor`, an unknown filter field returns `400 invalid` with `field_errors.filter`.
 - **FR-F028-05:** List responses are `{ items, next_cursor, has_more, total?: number }` where `total` is present only when `include_total=true` and the route allows it; `fields` projection removes non-requested attributes but always returns `id` and `version`.
-- **FR-F028-06:** Every error response uses `{ code, message, field_errors, correlation_id }` with `code` in `invalid`, `denied`, `not_found`, `conflict`, `rate_limited`, `unavailable`; HTTP status maps `400`, `403`, `404`, `409`, `429`, `503`; `correlation_id` equals the request's `X-Correlation-Id` header when supplied (UUID) or a generated UUIDv7, and is echoed on every response.
+- **FR-F028-06:** Every error response uses `{ code, message, field_errors, correlation_id, reason? }` with `code` in `invalid`, `denied`, `not_found`, `conflict`, `rate_limited`, `unavailable`; HTTP status maps `400`, `403`, `404`, `409`, `429`, `503`, plus the single `401` carve-out below for authentication failure, which F038 owns; `correlation_id` equals the request's `X-Correlation-Id` header when supplied (UUID) or a generated UUIDv7, and is echoed on every response.
 - **FR-F028-07:** Requests authenticated by an application token are rate-limited per application with a token bucket of `rate_limit_per_minute` and burst 2x; every response carries `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` (epoch seconds); an exhausted bucket returns `429 rate_limited` with `Retry-After`.
 - **FR-F028-08:** A `tenant-admin` can create a webhook with `url` (https, public IP only, ≤ 2,048 chars), `events` (1–50 names from the contract event catalog, wildcards `row.*`), `filters` (optional `{ workspace_id?, sheet_id? }`), `secret` (generated 32 bytes, returned once), `status: active`; each event pattern becomes one `webhook_events` row and each filter becomes one `webhook_filters(filter_key, filter_value)` row, so a duplicate pattern is rejected by the primary key and an unsupported filter key by the `check` constraint with `field_errors.filters`; creation returns `version` 1 and publishes `webhook.updated.v1`.
 - **FR-F028-09:** For each outbox event the dispatcher selects candidate webhooks by joining `webhook_events` on an exact pattern or its `row.*` prefix and requiring that every `webhook_filters` row for the webhook is satisfied by the envelope, then creates a `webhook_deliveries` row with a UUIDv7 `delivery_id` and POSTs the JSON envelope `{ id, event, occurred_at, tenant_id, data, correlation_id }` with headers `X-OpsHub-Delivery-Id`, `X-OpsHub-Event`, `X-OpsHub-Timestamp`, and `X-OpsHub-Signature: v1=<hex HMAC-SHA256 of "<timestamp>.<body>">` within 10 s timeout; any 2xx marks the delivery `succeeded`.
@@ -155,6 +155,7 @@ concatenated with the tag; a client treats the whole string as opaque and never 
 | `message` | string | human-readable, not stable, never parsed |
 | `field_errors` | map<string, string> | request field path (dotted, e.g. `filters.workspace_id`) to a stable reason key; `{}` when the failure is not field-specific |
 | `correlation_id` | uuid | the request's `X-Correlation-Id` or the generated one; the same value the response header carries |
+| `reason` | string? | a stable, machine-readable key naming *which* rule produced this `code` when the failure is not field-specific — `unauthenticated`, `invalid_token`, `refresh_reuse`, `mfa_required` (F038), and the keys named by the requirement that returns them; absent when `code` alone is enough. Clients branch on `code` first and `reason` only where a requirement names one; never on `message`. |
 
 **Status codes** — the whole product uses these and no others
 
@@ -167,7 +168,7 @@ concatenated with the tag; a client treats the whole string as opaque and never 
 | `429` | `rate_limited` | the application's token bucket is exhausted; carries `Retry-After` |
 | `503` | `unavailable` | a dependency the request cannot complete without is down; safe to retry after `Retry-After` |
 
-`401` is the one status outside the six-code body's own mapping: an application token whose
+`401` is the one status outside the six-code mapping, and F038 owns it: any request with no credential, or with an unknown, revoked or expired one, is rejected at authentication with `401` and `code = "denied"`, carrying the `reason` F038 FR-F038-12 and FR-F038-15 name. Within this feature, an application token whose
 application is `suspended` or deleted is rejected at authentication with `401` and a body whose
 `code` is `denied` (FR-F028-03). Authentication failure is not authorization failure, which is why
 the status differs from the `denied → 403` row above.
@@ -420,6 +421,14 @@ Scenario: Rate limit headers and 429
 - External dependencies: customer HTTPS endpoints; harness receiver stands in during tests
 - Risks and mitigations: OpenAPI drift between annotations and handlers, mitigated by generating from the same route registration and failing CI on diff; SSRF through webhook URLs, mitigated by resolving and checking addresses at creation and at every attempt with redirects disabled; delivery storms after an outage, mitigated by per-tenant dispatch quota and jittered retries; secret exposure in logs, mitigated by envelope encryption and a redaction test on the logging layer.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Interface review of F038 | The shared error body gained an optional `reason`, and FR-F028-06 now names the `401` carve-out and points at F038 as its owner | Fourteen tickets already returned a `reason` key that the body this ticket owns did not contain, and FR-F028-06's status list contradicted this ticket's own `401` paragraph |
 
 ## 7.1 Agent handoff
 

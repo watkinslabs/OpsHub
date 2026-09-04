@@ -21,6 +21,8 @@ Feature: Typed columns. Flag `F007_FEATURE`. Every case maps to a ticket require
 | `F007-REQ-015` | FR-F007-15 | api | create `formula` shell with null expression; cell write to formula column → 400 `field_errors.cells` |
 | `F007-REQ-016` | FR-F007-16 | api | replay same key → one column; tenant B → 404 on every route; one audit and one outbox row per mutation |
 | `F007-REQ-017` | FR-F007-17 | frontend, e2e | drawer adds column, preview shown before type change, validation icon carries message |
+| `F007-REQ-018` | FR-F007-18 | api, database | link column defaults to the nine copyable types; empty set → `accepted_types = "required"`; a `formula`, `link` or `file` member → `"unsupported_target"`; removing a type leaves existing `cell_links` untouched and appears in the audit diff |
+| `F007-REQ-019` | FR-F007-19 | api, database | `max_files` outside 1–50 and `max_file_bytes` above the F017 ceiling → `400 invalid`; more than 32 `accepted_media_types` → `400 invalid`; a cell write naming more than `max_files` files → code `max`; an empty media-type set accepts every type F017 accepts |
 | `F007-NFR-001` | NFR-F007-01 | performance | 500-column list p95 < 500 ms; create p95 < 800 ms; 100k validate < 60 s |
 | `F007-NFR-002` | NFR-F007-02 | api | cross-tenant, role, person-scope, and regex-budget negatives green |
 | `F007-NFR-003` | NFR-F007-03 | accessibility | axe serious = 0 on drawer and menu; keyboard reorder; icon described |

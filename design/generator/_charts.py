@@ -1,5 +1,8 @@
 import math
-SER = ["var(--brand)","#0e9aa7","#e0930f","#d6558f","#5aa06b"]
+SER = ["var(--brand)","#0e9aa7","#e0930f","#d6558f","#5aa06b",
+       "color-mix(in oklch, #0e9aa7 58%, var(--surface))",
+       "color-mix(in oklch, #e0930f 58%, var(--surface))",
+       "color-mix(in oklch, #d6558f 58%, var(--surface))"]  # F062 FR-F062-13, slots --chart-1..8
 
 def line(w,h,pts,color="var(--brand)",fill=True,sw=2):
     n=len(pts); mx=max(pts); mn=min(pts); rng=(mx-mn) or 1

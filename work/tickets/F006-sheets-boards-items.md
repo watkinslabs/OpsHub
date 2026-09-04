@@ -125,6 +125,7 @@ one per write. Unlisted fields are rejected with `400 invalid`.
 | `default_view_id` | uuid? | no | null |
 | `row_numbering` | `"sequential" \| "hierarchical"` | no | `"sequential"` |
 | `locked` | bool | no | `false` |
+| `calendar_binding` | CalendarBinding? | no | null; owned and defined by F029, carried here so a sheet's binding travels with its settings |
 
 **`SheetResponse`**
 

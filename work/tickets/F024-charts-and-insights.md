@@ -98,6 +98,163 @@ Excluded: metric definitions (F022), dashboard layout and sharing (F023), export
 - Validation limits: dimensions ≤ 2, measures ≤ 5, series ≤ 20, points ≤ 1,000 per series, `limit` ≤ 1,000, burndown span ≤ 366 days, timeline ≤ 500 bars, workload ≤ 200 people × 53 buckets, `horizon_days` ≤ 90, spec JSON ≤ 32 KB.
 - Error mapping: `ChartError::MissingDeclaration(path) → 400 invalid`, `ChartError::KindLimit → 400 invalid`, `ChartError::StaleVersion → 409 conflict`, `ChartError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `ProjectionError::InsufficientPoints` → `projected: []`, queue unavailable → `503 unavailable`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and `ListQuery`
+are F028's; the error body and the six codes are the shared ones; `ViewerScope` and `ColumnRef` are
+F021's; `MetricValuesResponse` and `PeriodSpec` are F022's; `WidgetRegistry`, `WidgetResolver` and
+`WidgetDataResponse` are F023's; `ActorContext` is F038's. Every numeric measurement — `y`, `value`,
+`lower`, `upper`, `remaining` — travels as a decimal **string** or `null`, following F007's rule that
+no client does float arithmetic on a number it did not compute.
+
+**Series colours are not this feature's to choose.** The categorical palette is fixed by F062
+FR-F062-13 in order — `var(--brand)`, `#0e9aa7`, `#e0930f`, `#d6558f`, `#5aa06b` — chosen to remain
+distinguishable under deuteranopia and protanopia, and that requirement also forbids colour as the
+only signal, which is why every series in `ChartData` carries a `label` the renderer must show as a
+legend entry, a direct label, or a value. Sequential scales derive from one hue by lightness, and
+axis, grid and label colours come from the border and text tokens. A `ChartSpec` therefore names no
+colours; per-series appearance beyond `label` is the renderer's, taken from that palette in series
+order.
+
+**`ChartSpec`** — the declaration F024 owns (FR-F024-01). It is the body of `POST /charts/query`, the
+`spec` of a saved `chart_definitions` row, and the inline `chart_spec` an F023 widget may carry.
+Every field below is required except `sort`, `limit` and `stacked`; a spec missing `dimensions`,
+`measures`, an `aggregation` on any measure, `timezone`, `formatting`, `empty_state` or `error_state`
+is `400 invalid` naming the missing path, e.g. `field_errors["spec.formatting"]`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"bar" \| "line" \| "pie" \| "burndown" \| "timeline" \| "workload"` | yes | closed set; `kpi` and `metric_comparison` are widget kinds with no `ChartSpec`, resolved from a metric id instead |
+| `source` | `{ kind: "report" \| "metric" \| "sheet", id }` | yes | a source the caller may read, else `404 not_found`; `burndown`, `timeline` and `workload` require `kind: "sheet"` |
+| `dimensions` | Dimension[] | yes | 1–2 for `bar` and `line`, exactly 1 for `pie`; a violation is `400 invalid` |
+| `measures` | Measure[] | yes | 1–5 for `bar` and `line`, exactly 1 for `pie` |
+| `timezone` | string | yes | IANA name; drives every bucket boundary and is echoed in `meta` |
+| `formatting` | `{ number: { kind, decimals, currency_code? }, date: "short" \| "medium" \| "long" }` | yes | `number` is F022's `FormatSpec` under the same rules; drives `formatted` on every point through F049 in the viewer's locale |
+| `empty_state` | `{ message }` | yes | 1–200 chars; rendered when every series is empty |
+| `error_state` | `{ message }` | yes | 1–200 chars; rendered with `correlation_id` when the query fails |
+| `sort` | `{ by: "dimension" \| "measure", index, direction }`? | no | `index` addresses the dimension or measure array; default is dimension order ascending |
+| `limit` | integer? | no | 1–1,000 points per series; above the cap the response sets `truncated: true` rather than failing |
+| `stacked` | bool? | no | `bar` only; `true` on any other kind is `400 invalid` |
+
+The whole `spec` is ≤ 32 KB. **`Dimension`** `{ field: ColumnRef, bucket: "none" | "day" | "week" |
+"month" | "quarter", label }` — `bucket` other than `none` requires a `date` or `datetime` column.
+**`Measure`** `{ field: ColumnRef?, metric_id: uuid?, aggregation: "count" | "count_distinct" |
+"sum" | "avg" | "min" | "max", label }` — exactly one of `field` and `metric_id`; `field` is required
+for every aggregation but `count`; `sum` and `avg` need a `number`, `currency` or `duration` column.
+
+**Kind-specific fields** (FR-F024-02), carried alongside the table above and rejected on the wrong
+kind:
+
+| `kind` | Extra fields | Constraint |
+|---|---|---|
+| `burndown` | `done_field` (ColumnRef), `done_values` (string[]), `start` (date), `end` (date), `scope` (`"count" \| "field"`) | all required; `start <= end` spanning ≤ 366 days; `done_values` 1–20 option ids of `done_field`; `scope: "field"` also requires a numeric `field` measure |
+| `timeline` | `start_field` (ColumnRef), `end_field` (ColumnRef), `group_field` (ColumnRef?) | `start_field` and `end_field` are `date` or `datetime`; a null `end_field` value marks a milestone |
+| `workload` | `person_field` (ColumnRef), `bucket` (`"week" \| "month"`), `measure` (Measure), `capacity_per_bucket` (decimal string?) | `person_field` must be a `person` column; `measure.aggregation` is `count` or `sum` of a numeric field; `capacity_per_bucket` defaults to `"40"` for `sum` and is absent for `count` |
+
+**`ChartQueryRequest`** — `POST /api/v1/charts/query`: `{ spec, from?, to? }`. `from` and `to` are
+timestamps with `from <= to`; absent means the spec's own window (`burndown` uses `start`/`end`).
+This route computes and returns; it saves nothing and needs no `Idempotency-Key`.
+
+**`ChartDataResponse`** `{ series, meta }`
+
+| Field | Type | Notes |
+|---|---|---|
+| `series` | array of `{ label, points }` | at most 20 series in spec order — the order the FR-F062-13 palette is applied in |
+| `series[].points` | array of `{ x, y, formatted }` | at most 1,000 per series; `x` is the dimension value (a string, a bucket start timestamp, or an option id); `y` is a decimal string or `null`; `formatted` is `y` rendered by F049, and `""` when `y` is `null` |
+| `meta` | `{ computed_at, duration_ms, source_versions, stale, point_count, truncated, scope, timezone }` | `truncated` is `true` when a series or point cap clipped the result; `stale` is `false` on an ad-hoc query, which always computes fresh |
+
+A measure over a field the viewer may not read yields `y: null` on **every** point rather than
+omitting the series, so the legend still states what is missing (FR-F024-03).
+
+**`ChartDefinitionResponse`** — `GET /api/v1/charts/{id}`: `{ id, widget_id, kind, spec, series,
+version, created_at, created_by, updated_at, updated_by }`, where `series` is the projected
+`chart_series` rows as `{ position, label, source_kind, source_id, column_id?, axis }`. `series` is
+read-only in responses: it is derived from `spec` at save time, and the reason it exists as rows is
+that FR-F024-12's per-series authorization and the reverse lookup for a deleted metric, report or
+sheet are joins on `(source_kind, source_id)`.
+
+**`UpdateChartRequest`** — `PATCH /api/v1/charts/{id}`, `If-Match` and `Idempotency-Key` required:
+`{ spec }` only. The whole spec is replaced, its `chart_series` rows are rebuilt from it, and the
+widget's `widget_cache` rows are invalidated in the same transaction. There is no create route: a
+definition comes into existence through F023's `PUT /dashboards/{id}/widgets` (FR-F024-04).
+
+**Burndown route.** `GET /api/v1/sheets/{sheet_id}/burndown` takes query parameters, not a body:
+`start` and `end` (dates, required, `start <= end`, span ≤ 366 days), `done_field` (uuid, required),
+`done_values` (comma-separated option ids, 1–20, required), `scope` (`count` or `field`, required),
+`timezone` (IANA, required) and `field` (uuid, required when `scope` is `field`). It returns
+**`BurndownResponse`** `{ points, meta }` with one point per local day:
+
+| Field | Type | Notes |
+|---|---|---|
+| `date` | date | the local day in `timezone`; day boundaries are local midnights, which is why the timezone is required rather than defaulted |
+| `ideal` | decimal string | linear from the day-one total to 0 at `end` |
+| `remaining` | decimal string | not-done rows (or the sum of `field` over them) reconstructed from F008 `cell_history` at that local midnight, counting only rows the viewer may read |
+| `completed` | decimal string | rows that reached a `done_values` state on or before that day |
+| `added` | decimal string | rows created after `start`, counted on their creation day |
+
+`meta` is `{ computed_at, duration_ms, timezone, scope, row_count, cached }`; the result is cached
+60 s per `(sheet_id, params, scope_key)` and `cached` says which side of that the caller got.
+
+**Time-series route.** `GET /api/v1/time-series/{metric_id}` takes `from`, `to`, `grain` (F022's four
+members, no finer than the metric's), `horizon_days` (1–90, default 30) and
+`method` (`linear` or `moving_average`, default `linear`). It returns **`TimeSeriesResponse`**:
+
+| Field | Type | Notes |
+|---|---|---|
+| `actual` | array of `{ ts, value }` | from F022 `metric_values` for the caller's `scope_key`; `value` may be `null` for an empty bucket |
+| `projected` | array of `{ ts, value, lower, upper }` | `[]` when fewer than 3 complete buckets exist (FR-F024-06); `lower`/`upper` are the 80% interval from the residual standard error and are clamped at 0 for count-based metrics |
+| `meta` | `{ run_id, computed_at, method, window, grain, horizon_days, stale, scope }` | `window` is the number of complete buckets fitted, at most 12; `stale` is `true` while a newer metric run exists than the one the projection was fitted from (FR-F024-07) |
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | a spec missing a required declaration, a kind limit broken (a `pie` with two measures, three dimensions on a `bar`), a burndown span over 366 days, `horizon_days` outside 1–90, a grain finer than the metric's, `stacked` on a non-`bar` kind, an oversize spec |
+| `403` | `denied` | `PATCH /charts/{id}` without `report-editor`; a query is never `denied`, because an unreadable source is `not_found` |
+| `404` | `not_found` | unknown, foreign-tenant or invisible chart, metric or sheet id, and any source in the spec the caller cannot read — the query is not executed (FR-F024-12) |
+| `409` | `conflict` | stale `If-Match` on `PATCH`, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the calling application's F028 token bucket is exhausted |
+| `503` | `unavailable` | the `charts.project` queue or the outbox is unreachable. Too few points for a fit is **not** an error: it is `projected: []` |
+
+### Use case signatures
+
+In `crates/domain/src/charts/`. Every one takes `ctx: &ActorContext`, takes a `UnitOfWork` for writes
+or a repository trait for reads, never a pool or a connection, and returns the shared `DomainError`.
+
+```rust
+fn validate_spec(ctx: &ActorContext, columns: &ColumnMetadata, spec: &ChartSpec) -> Result<ValidatedSpec, FieldErrors>;
+fn query_chart(ctx: &ActorContext, adapters: &SourceAdapters, scope: &ViewerScope, spec: &ValidatedSpec, window: TimeWindow) -> Result<ChartData, DomainError>;
+fn get_chart(ctx: &ActorContext, repo: &dyn ChartDefinitionRepository, id: ChartId) -> Result<ChartDefinition, DomainError>;
+fn update_chart(ctx: &ActorContext, uow: &mut UnitOfWork, id: ChartId, expected: Version, spec: ChartSpec) -> Result<ChartDefinition, DomainError>;
+fn read_time_series(ctx: &ActorContext, repo: &dyn TimeSeriesPointRepository, values: &dyn MetricValueRepository, scope: &ViewerScope, id: MetricId, q: TimeSeriesQuery) -> Result<TimeSeries, DomainError>;
+fn project_time_series(ctx: &ActorContext, uow: &mut UnitOfWork, id: MetricId, scope: &ScopeKey, q: ProjectionRequest, run_id: RunId) -> Result<Vec<TimeSeriesPoint>, DomainError>;
+fn compute_burndown(ctx: &ActorContext, history: &dyn CellHistoryRepository, scope: &ViewerScope, sheet: SheetId, q: BurndownQuery) -> Result<Vec<BurndownPoint>, DomainError>;
+fn query_timeline(ctx: &ActorContext, rows: &dyn RowRepository, scope: &ViewerScope, spec: &ValidatedSpec) -> Result<Vec<TimelineBar>, DomainError>;
+fn query_workload(ctx: &ActorContext, rows: &dyn RowRepository, scope: &ViewerScope, spec: &ValidatedSpec) -> Result<Vec<WorkloadCell>, DomainError>;
+fn resolve_kpi(ctx: &ActorContext, values: &dyn MetricValueRepository, scope: &ViewerScope, id: MetricId) -> Result<WidgetPayload, DomainError>;
+fn resolve_metric_comparison(ctx: &ActorContext, values: &dyn MetricValueRepository, scope: &ViewerScope, primary: MetricId, compare: MetricId) -> Result<WidgetPayload, DomainError>;
+```
+
+Every read path takes the `ViewerScope` explicitly rather than deriving it, so a resolver called from
+F023's refresh worker computes under the scope the cache entry is keyed by and never under the
+worker's own authority.
+
+**Transaction boundaries.** `update_chart`, and the definition upsert F023's `PUT /widgets` triggers
+through the resolver's `validate`, each take one `UnitOfWork` covering the `chart_definitions` row
+under the expected version, the full `replace_series` of its `chart_series` rows, the invalidation of
+that widget's `widget_cache` entries, the audit row and the `chart.updated.v1` entry. The invariant is
+that `spec` and `chart_series` never disagree: the series rows are the projection FR-F024-12
+authorizes on and FR-F024-04 invalidates from, so a spec committed without its rebuilt rows would be
+permission-checked against sources it no longer names, and a cache entry surviving the write would
+serve a picture of the previous spec. `project_time_series` takes one `UnitOfWork` covering
+`upsert_points`, `delete_superseded` for the previous `run_id` and the `time-series.projected.v1`
+entry, so a reader never sees two fits interleaved for one
+`(metric_id, scope_key, grain, method, horizon_days)`. `query_chart`, `compute_burndown`,
+`query_timeline`, `query_workload` and both resolvers write nothing and open no transaction.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_charts_*.sql` creates `chart_definitions(id uuid pk, tenant_id, widget_id uuid unique, kind text, spec jsonb, version bigint default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `chart_series(id uuid pk, tenant_id uuid not null, chart_id uuid not null references chart_definitions(id) on delete cascade, position smallint not null, label text not null, source_kind text not null check (source_kind in ('metric','report','sheet')), source_id uuid not null, column_id uuid null, axis text not null check (axis in ('primary','secondary')), created_by, created_at)`, and `time_series_points(tenant_id, metric_id, scope_key text, grain text, method text, horizon_days smallint, ts timestamptz, kind text, value numeric null, lower numeric null, upper numeric null, run_id uuid, computed_at, primary key (metric_id, scope_key, grain, method, horizon_days, kind, ts))`.
@@ -188,6 +345,14 @@ Scenario: Spec without formatting rejected
 - External dependencies: NATS JetStream for `charts.project`; `d3-scale` and `d3-shape` in the web app
 - Risks and mitigations: burndown reconstruction over `cell_history` is expensive, so the F008 repository query uses one window-function pass per day boundary, caps the span at 366 days, and caches 60 s; least squares on short or flat series produces misleading bands, so fewer than 3 points yields no projection and bands are clamped at zero for count metrics; two-dimension bar charts can explode series, so series are capped at 20 with `truncated: true`.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F062 FR-F062-13 amendment | `--chart-1` … `--chart-8` are now real tokens defined by F062; a `ChartSpec` still names no colour, and a chart of more than eight series wraps the palette with a fill pattern per repeated slot | §3 named eight tokens that F062, the owner, defined only five colours for |
 
 ## 7.1 Agent handoff
 

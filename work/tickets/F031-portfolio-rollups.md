@@ -93,6 +93,163 @@ Excluded: health computation and override (F032), portfolio dashboards and chart
 - Validation: name 1–200, description ≤ 4,000, projects ≤ 500, `stale_after_seconds` 60–86,400, mappings keyed by the six measure names only. Idempotency via `idempotency_keys` for 24 hours. Concurrency: `If-Match` compared in the update transaction.
 - Error mapping: `PortfolioError::NameTaken → 409 conflict`, `PortfolioError::StaleVersion → 409 conflict`, `PortfolioError::RefreshInProgress → 409 conflict`, `PortfolioError::NotFound → 404 not_found`, `PortfolioError::InvalidProject(i) → 400 invalid` with `field_errors.projects[i]`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Ids are UUIDv7 strings, timestamps RFC 3339 UTC, dates `YYYY-MM-DD`, `version` an integer incrementing
+by one per write. `T?` is nullable and an absent optional field equals an explicit `null`. Unlisted
+fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and the error body are F028's.
+Mutations require `Idempotency-Key`; `PATCH` and `PUT` require `If-Match: <version>`.
+
+**`CreatePortfolioRequest`** — `POST /api/v1/portfolios`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `portfolio-admin` on it, else `403 denied`; unreadable → `404 not_found` |
+| `name` | string | yes | 1–200 chars after trim, unique per workspace case-insensitively among live portfolios, else `409 conflict` with `field_errors.name = "taken"` |
+| `description` | string? | no | ≤ 4,000 chars |
+| `refresh_policy` | `"manual" \| "scheduled"` | no | default `"manual"` |
+| `stale_after_seconds` | integer | no | `60..=86400`, default `900` |
+| `measure_mappings` | MeasureMappings | no | default `{}`; unmapped measures read as `missing` rather than failing |
+
+**`UpdatePortfolioRequest`** — `PATCH /api/v1/portfolios/{id}`, every field optional, at least one
+present: `name`, `description`, `refresh_policy`, `stale_after_seconds`, `measure_mappings` with the
+same constraints. `workspace_id` is absent: a portfolio does not move between workspaces.
+
+**`MeasureMappings`** — a JSON object keyed by the six measure names, each value a stable column id of
+the member projects' template version. A key outside the six is `400 invalid` with
+`field_errors.measure_mappings = "unknown_measure"`; an absent key means that measure is unmapped.
+
+| Key | Value | Notes |
+|---|---|---|
+| `status` | uuid? | text or select column |
+| `planned_finish` | uuid? | date column |
+| `budget_planned` / `budget_actual` | uuid? | numeric columns |
+| `risk_level` | uuid? | text or select column |
+| `value` | uuid? | numeric column |
+
+**`ReplaceProjectsRequest`** — `PUT /api/v1/portfolios/{id}/projects`: `{ project_sheet_ids: uuid[] }`,
+0–500 entries, distinct. Each must be a live sheet of this tenant provisioned from an F015 template;
+an unknown, foreign-tenant or non-project id is `400 invalid` with `field_errors.projects[i]` naming
+the array index, and the whole request writes nothing. The response is `PortfolioResponse` with the new
+`version`; the audit diff records `added` and `removed`.
+
+**`PortfolioResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `workspace_id`, `name`, `description?` | | |
+| `refresh_policy`, `stale_after_seconds` | | |
+| `measure_mappings` | MeasureMappings | reassembled from `portfolio_measure_mappings`; absent measures are absent keys |
+| `project_count` | integer | member rows, including projects the caller cannot read |
+| `rollup_state` | `"never"\|"fresh"\|"stale"\|"refreshing"\|"failed"` | `stale` is derived by comparing `last_refresh_at` with `stale_after_seconds` |
+| `last_refresh_at` | timestamp? | null until the first completed refresh |
+| `last_refresh_duration_ms` | integer? | |
+| `last_refresh_error` | string? | present only while `rollup_state` is `failed` |
+| `project_sheet_ids` | uuid[] | detail read only; omitted from the list route |
+| `version`, `created_at`, `created_by`, `updated_at`, `updated_by`, `deleted_at?` | | |
+
+**`GET /api/v1/portfolios`** returns `Page<PortfolioResponse>` without `project_sheet_ids`, filtered by
+`workspace_id`, sorted by `sort` = `name` or `updated_at` (default `updated_at` descending), with
+F028's `cursor`, `limit` (1–100, default 50) and `include_total`. The sort key is part of the cursor,
+so changing `sort` mid-page is `400 invalid`.
+
+**`RefreshAccepted`** — `POST /api/v1/portfolios/{id}/refresh`, `202`: `{ job_id: uuid, requested_version: integer, rollup_state: "refreshing" }`. `requested_version` is the portfolio's version at enqueue and is the job's idempotency key. A refresh while one is `queued` or `running` is `409 conflict` with `details.job_id` naming the active job.
+
+**`Measure<T>`** — every measure value in a rollup row is wrapped, so a missing value is never confused
+with a zero: `{ value: T?, state: MeasureState, reason: string? }`. **`MeasureState`** is
+`ok | missing | denied | error`. `reason` is present only when `state` is not `ok`, and carries
+`unmapped_measure`, `column_absent`, `project_deleted`, `no_baseline`, `permission_denied` or
+`query_failed`.
+
+**`RollupRow`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `project_sheet_id` | uuid | always present, even for a denied project |
+| `project_name` | string? | null when `state` is `denied` — the name itself is information the caller may not have |
+| `template_version_id` | uuid? | the F015 version the project was provisioned from |
+| `sheet_version` | integer? | source version the snapshot was computed against |
+| `baseline_id` | uuid? | the F015 baseline used for `schedule.baseline_finish` |
+| `state` | `"ok"\|"denied"\|"error"` | row-level outcome; a project soft-deleted since the last refresh keeps its row with every measure `state: missing` and `reason: "project_deleted"` |
+| `status` | Measure\<string\> | |
+| `schedule` | `{ planned_finish: Measure<date>, baseline_finish: Measure<date>, variance_days: Measure<integer> }` | positive `variance_days` means later than baseline |
+| `budget` | `{ planned: Measure<decimal>, actual: Measure<decimal>, variance_pct: Measure<decimal> }` | |
+| `risk_level` | Measure\<string\> | |
+| `value` | Measure\<decimal\> | |
+| `health` | Measure\<string\> | F032's health colour when that feature is present, `missing` with `reason: "unmapped_measure"` otherwise |
+
+**`RollupResponse`** — `GET /api/v1/portfolios/{id}/rollup`
+
+| Field | Type | Notes |
+|---|---|---|
+| `computed_at` | timestamp | when the snapshot was built, not when it was read |
+| `stale` | bool | `now - computed_at > stale_after_seconds` |
+| `rollup_state` | as `PortfolioResponse` | |
+| `excluded_project_count` | integer | rows masked as `denied` for this caller and left out of `totals` |
+| `rows` | RollupRow[] | one per member, in `project_name` order with denied rows last |
+| `totals` | RollupTotals | |
+
+**`RollupTotals`**: `{ budget_planned: decimal?, budget_actual: decimal?, value: decimal?, count_by_status: map<string, integer>, count_by_health: map<string, integer> }`, reassembled from `portfolio_rollup_totals` where `bucket` is the status or health name. Totals are recomputed per caller over the rows that caller may read, which is why a denied project changes the totals two people see from the same snapshot.
+
+Reading the rollup before any refresh returns `200` with `computed_at: null`, `rows: []`,
+`rollup_state: "never"` — not `404`. A portfolio with no snapshot is a real portfolio.
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | list, detail, rollup, `PATCH`, `PUT /projects` |
+| `201` | `POST /api/v1/portfolios` |
+| `202` | `POST /api/v1/portfolios/{id}/refresh` |
+| `400 invalid` | name or description length, `stale_after_seconds` out of range, `unknown_measure`, an invalid `project_sheet_ids` entry, more than 500 projects, `limit` out of range, `sort` changed mid-cursor |
+| `403 denied` | `portfolio-viewer` attempting create, update, membership replacement or refresh |
+| `404 not_found` | portfolio or workspace in another tenant, or one the caller cannot read |
+| `409 conflict` | duplicate name, stale `If-Match`, refresh already in flight, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant refresh quota exceeded |
+| `503 unavailable` | the JetStream work stream refuses the refresh message; `rollup_state` is left unchanged |
+
+### Use case signatures
+
+In `crates/domain/src/portfolios/`; the refresh job is in `services/worker/src/portfolios/`. `Ctx` is
+F038's `ActorContext`.
+
+```rust
+fn create_portfolio(ctx: &Ctx, uow: &mut UnitOfWork, req: CreatePortfolio) -> Result<Portfolio, DomainError>;
+fn update_portfolio(ctx: &Ctx, uow: &mut UnitOfWork, id: PortfolioId, expected: Version, req: UpdatePortfolio) -> Result<Portfolio, DomainError>;
+fn list_portfolios(ctx: &Ctx, repo: &dyn PortfolioRepository, filter: PortfolioFilter, page: Cursor) -> Result<Page<Portfolio>, DomainError>;
+fn get_portfolio(ctx: &Ctx, repo: &dyn PortfolioRepository, id: PortfolioId) -> Result<Portfolio, DomainError>;
+fn replace_projects(ctx: &Ctx, uow: &mut UnitOfWork, id: PortfolioId, expected: Version, sheets: Vec<SheetId>) -> Result<Portfolio, DomainError>;
+fn request_refresh(ctx: &Ctx, uow: &mut UnitOfWork, id: PortfolioId) -> Result<RefreshAccepted, DomainError>;
+fn compute_rollup(ctx: &Ctx, uow: &mut UnitOfWork, id: PortfolioId, requested: Version, query: &dyn ReportQueryExecutor) -> Result<RollupSnapshot, DomainError>;
+fn read_rollup_for_actor(ctx: &Ctx, repo: &dyn PortfolioRollupRepository, authz: &dyn AuthzPort, id: PortfolioId) -> Result<RollupView, DomainError>;
+```
+
+`compute_rollup` runs as the tenant system actor and takes F021's `ReportQueryExecutor` as a trait, so
+the harness drives it without a report engine. `read_rollup_for_actor` takes F003's `AuthzPort` and the
+**calling** actor's `ctx`: the snapshot is computed once for the tenant and masked per reader, which is
+why the permission filter lives in the domain rather than in the query.
+
+Transaction boundaries:
+
+- `create_portfolio` and `update_portfolio` write the `portfolios` row, the replaced
+  `portfolio_measure_mappings` set, the audit row and the `portfolio.updated.v1` outbox row in one
+  `UnitOfWork`. Mappings written separately from the version bump would let a refresh read a portfolio
+  whose measures no longer match its version.
+- `replace_projects` writes the delete of removed `portfolio_projects` rows, the insert of added ones,
+  the version bump, the audit row carrying `added` and `removed`, and the outbox event in one
+  boundary. Membership is a set, and a half-replaced set is a portfolio nobody asked for.
+- `request_refresh` writes `rollup_state = 'refreshing'` and the JetStream message through the outbox
+  in one boundary, which is what makes the "already refreshing" conflict reliable: the state and the
+  message cannot disagree.
+- `compute_rollup` writes the `portfolio_rollups` header, every `portfolio_rollup_rows` row, every
+  `portfolio_rollup_totals` row, the portfolio's `last_refresh_at`, `last_refresh_duration_ms` and
+  `rollup_state`, the snapshot pruning beyond the newest three, and the
+  `portfolio.rollup-refreshed.v1` outbox row in one `UnitOfWork`. A snapshot is read as a whole and
+  must therefore appear as a whole; a header without its rows would render an empty portfolio as
+  `fresh`.
+- `read_rollup_for_actor` opens no `UnitOfWork`: it is a read of a cache, and its masking must never
+  write.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_portfolios_*.sql` creates `portfolios(id uuid pk, tenant_id uuid not null, workspace_id uuid not null, name text not null, description text, refresh_policy text not null default 'manual', stale_after_seconds int not null default 900, measure_mappings jsonb not null default '{}', last_refresh_at timestamptz, last_refresh_duration_ms int, last_refresh_error text, rollup_state text not null default 'never', version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `portfolio_projects(tenant_id, portfolio_id, project_sheet_id, added_by, added_at, primary key (portfolio_id, project_sheet_id))`, `portfolio_rollups(id uuid pk, tenant_id, portfolio_id references portfolios(id) on delete cascade, requested_version bigint, computed_at timestamptz not null, duration_ms int, excluded_project_count int not null default 0)`.

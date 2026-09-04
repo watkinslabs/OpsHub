@@ -93,6 +93,235 @@ Excluded: per-sheet CSV/XLSX export (F010); audit log storage and query (F003); 
 - Validation: day limits per FR-F027-01; hold `name` 1–200; `scope` parsed into `HoldScope`; export `include` non-empty subset of kinds; purge `older_than` ≥ 1 day; confirmation code 8 uppercase alphanumerics compared by SHA-256.
 - Error mapping: `ComplianceError::LimitExceeded → 400 invalid`, `::StaleVersion → 409 conflict`, `::ExportRunning → 409 conflict`, `::ProposalExpired → 409 conflict`, `::WrongCode → 400 invalid`, `::SameActor → 403 denied`, `::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Ids are UUIDv7 strings, timestamps RFC 3339 UTC, `version` increments by one per write. `T?` is
+nullable and an absent optional field equals an explicit `null`. Unlisted fields are rejected with
+`400 invalid`. `Page<T>`, the opaque cursor and the error body `{ code, message, field_errors,
+correlation_id }` are F028's. Every route requires `compliance-admin`; every mutation requires
+`Idempotency-Key`.
+
+**`RecordKind`** — the closed set every policy, export, purge and batch is keyed by:
+`rows | sheets | documents | files | comments | workflow_runs | audit_events | notifications`. It is
+the same list as the `check` constraint on `retention_policies.kind`, and a value outside it is
+`400 invalid` with `field_errors.<field> = "enum"`.
+
+**`GET /api/v1/compliance/retention-policies`** returns `{ policies: RetentionPolicyResponse[] }`,
+exactly one entry per `RecordKind` in that order. It takes no cursor and no filter: the collection is
+closed at eight rows, seeded per tenant, and neither grows nor shrinks.
+
+**`RetentionPolicyResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | stable per `(tenant, kind)`; this is the `{id}` of the `PUT` |
+| `kind` | RecordKind | immutable |
+| `soft_delete_days` | integer | |
+| `purge_after_days` | integer? | null means keep forever |
+| `auto_soft_delete` | bool | when false the nightly sweep only marks eligibility and deletes nothing |
+| `version`, `updated_at`, `updated_by`, `created_at`, `created_by` | | |
+
+**`PutRetentionPolicyRequest`** — `PUT /api/v1/compliance/retention-policies/{id}`, a whole
+replacement, `If-Match` required. `kind` is not in the body: the path identifies it.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `soft_delete_days` | integer | yes | `1..=3650` |
+| `purge_after_days` | integer? | yes | null, or `soft_delete_days..=3650`; smaller → `field_errors.purge_after_days = "below_soft_delete"` |
+| `auto_soft_delete` | bool | yes | |
+
+For `kind = audit_events`, `purge_after_days` must be null or `>= 365`, else `400 invalid` with
+`field_errors.purge_after_days = "audit_floor"`.
+
+**`CreateLegalHoldRequest`** — `POST /api/v1/compliance/legal-holds`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–200 chars after trim |
+| `reason` | string | yes | 1–2,000 chars |
+| `scope` | string | yes | `"tenant"`, or `"workspace:{uuid}"`, `"sheet:{uuid}"`, `"user:{uuid}"`; the referenced object must exist in this tenant, else `404 not_found`; a malformed prefix is `400 invalid` with `field_errors.scope = "format"` |
+| `expires_at` | timestamp? | no | strictly in the future; null means until released |
+
+**`LegalHoldResponse`**: `{ id, name, reason, scope, expires_at?, released_at?, released_by?, active: bool, version, created_at, created_by, updated_at, updated_by }`. `active` is `released_at is null and (expires_at is null or expires_at > now)`, computed on read.
+
+`DELETE /api/v1/compliance/legal-holds/{id}` releases the hold and returns `200` with the updated
+`LegalHoldResponse`; it does not remove the row, because the release itself is evidence. Releasing an
+already-released hold is `409 conflict` with `field_errors.released_at = "already_released"`. Under
+`security_policies.two_person_hold_release`, release by the hold's `created_by` is `403 denied`.
+
+**`CreateTenantExportRequest`** — `POST /api/v1/compliance/tenant-exports`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `include` | RecordKind[] | yes | 1–8 distinct entries; each becomes one `tenant_export_kinds` row |
+| `format` | `"jsonl" \| "csv"` | yes | |
+| `since` | timestamp? | no | not in the future; null exports everything |
+
+Returns `202` with `TenantExportResponse` in `queued`. A second request while one is `queued` or
+`running` is `409 conflict` with `field_errors.tenant_id = "export_running"`.
+
+**`TenantExportResponse`** — `GET /api/v1/compliance/tenant-exports/{id}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `format`, `since?` | | |
+| `status` | `"queued"\|"running"\|"completed"\|"failed"` | |
+| `progress` | map<RecordKind, ExportKindProgress> | reassembled from `tenant_export_kinds`, one entry per requested kind |
+| `download_url` | string? | signed URL, present only while `status` is `completed` and `download_expires_at` is in the future |
+| `download_expires_at` | timestamp? | present under the same condition; 7 days after completion |
+| `error_code` / `error_message` | string? | present only when `failed`; `error_code` is one of `storage_unavailable`, `source_read_failed`, `timeout`, `cancelled` |
+| `created_at`, `created_by`, `updated_at` | | |
+
+**`ExportKindProgress`**: `{ status: "pending"|"running"|"completed"|"failed", rows_written, bytes_written, checksum_sha256: string?, completed_at: timestamp? }`, `checksum_sha256` lowercase hex and null until the kind completes.
+
+**`ProposePurgeRequest`** — `POST /api/v1/compliance/purges`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `scope` | string | yes | same grammar as a hold's `scope` |
+| `kinds` | RecordKind[] | yes | 1–8 distinct entries; `audit_events` is rejected with `field_errors.kinds = "not_purgeable"`, because a purge never removes its own evidence |
+| `older_than` | timestamp | yes | at least 1 day in the past, else `field_errors.older_than = "too_recent"` |
+
+**`PurgePreviewResponse`** — the `201` body of the proposal
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `scope`, `older_than` | | |
+| `status` | `"proposed"` | |
+| `preview` | map<RecordKind, { candidate_count, held_count }> | reassembled from `purge_request_kinds`; counts are a point-in-time estimate and are recomputed at execution |
+| `confirmation_code` | string | 8 uppercase alphanumerics, returned **once** here and never stored in plain form or returned again |
+| `expires_at` | timestamp | proposal time plus 24 hours |
+| `proposed_by`, `created_at`, `version` | | |
+
+**`ConfirmPurgeRequest`** — `POST /api/v1/compliance/purges/{id}/confirm`: `{ confirmation_code: string }`, compared by SHA-256 against `confirmation_code_hash`.
+
+**`PurgeResponse`** — the confirm body and the purge read
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `scope`, `older_than`, `preview` | | as above |
+| `status` | `"proposed"\|"confirmed"\|"running"\|"completed"\|"failed"\|"expired"` | |
+| `results` | map<RecordKind, { purged_count, skipped_held_count, completed_at: timestamp? }> | from `purge_request_kinds`; zeroed until the worker runs |
+| `purged_count` / `skipped_held_count` | integer | the sums over `results`, maintained on the request row |
+| `proposed_by`, `confirmed_by?`, `confirmed_at?` | uuid / timestamp | |
+| `error_code` / `error_message` | string? | only when `failed`; `error_code` is `storage_unavailable`, `delete_failed`, `timeout` or `cancelled` |
+
+**`GenerateAccessReviewRequest`** — `POST /api/v1/compliance/access-reviews` carries **either** a
+generation body or a decision body, discriminated by the presence of `report_id`. Both in one request
+is `400 invalid` with `field_errors.report_id = "exclusive"`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `scope` | string | generation | `"tenant"` or `"workspace:{uuid}"`; holds' `sheet:` and `user:` forms are not review scopes |
+| `as_of` | timestamp? | no | not in the future; null means now |
+| `report_id` | uuid? | decision | an `access_reviews` row of this tenant |
+| `decisions` | ReviewDecision[] | decision | 1–5,000 entries, `principal_id` distinct, each already present in `access_review_principals` for that review, else `400 invalid` with `field_errors.decisions[i].principal_id = "not_in_review"` |
+
+**`ReviewDecision`** (request): `{ principal_id: uuid, decision: "keep"|"revoke", note: string? (≤ 1,000) }`. Re-deciding a principal replaces the prior row rather than adding one; the composite primary key is what makes that true.
+
+**`AccessReviewResponse`**: `{ id, scope, as_of, principal_count, flagged_count, decided_count, download_url_json: string?, download_url_csv: string?, principals: ReviewPrincipal[]?, version, created_at, created_by }`. `principals` is present only on the single-report read and is ordered flagged-first then by `display_name`; the list route omits it. **`ReviewPrincipal`**: `{ principal_id, principal_kind: "user"|"guest", display_name, role_count, group_count, share_count, link_count, token_count, last_login_at?, last_activity_at?, flag_reason: "none"|"inactive_90d"|"stale_guest_link", decision: "keep"|"revoke"|null, outcome: "pending"|"applied"|"partial"|"failed"|null }` — `decision` and `outcome` are null until a decision row exists.
+
+**`GET /api/v1/compliance/access-reviews`** returns `Page<AccessReviewResponse>` sorted `created_at desc`, filtered by `scope`, with F028's `cursor`, `limit` (1–100, default 50) and `include_total`.
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | reads, `PUT` of a policy, hold release, purge confirm, decision submission |
+| `201` | legal hold, purge proposal, access-review generation |
+| `202` | tenant export request |
+| `400 invalid` | day bounds, `audit_floor`, `below_soft_delete`, scope format, `not_purgeable`, `too_recent`, wrong `confirmation_code`, `not_in_review`, `exclusive` |
+| `403 denied` | any actor without `compliance-admin`; the proposer confirming under `two_person_purge`; the hold creator releasing under `two_person_hold_release` |
+| `404 not_found` | a policy, hold, export, purge, review or scope target in another tenant, or a scope object the caller cannot read |
+| `409 conflict` | stale `If-Match`, `export_running`, `already_released`, an expired proposal, confirming a request not in `proposed`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant export or purge quota exceeded |
+| `503 unavailable` | object storage or the JetStream work stream refuses the job; nothing is written |
+
+### Use case signatures
+
+In `crates/domain/src/compliance/`; workers in `services/worker/src/compliance/`. `Ctx` is F038's
+`ActorContext`.
+
+```rust
+fn list_retention_policies(ctx: &Ctx, repo: &dyn RetentionPolicyRepository) -> Result<Vec<RetentionPolicy>, DomainError>;
+fn put_retention_policy(ctx: &Ctx, uow: &mut UnitOfWork, id: PolicyId, expected: Version, req: PutRetentionPolicy) -> Result<RetentionPolicy, DomainError>;
+fn run_retention_sweep(ctx: &Ctx, uow: &mut UnitOfWork, kind: RecordKind, batch: usize) -> Result<SweepReport, DomainError>;
+fn create_legal_hold(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateLegalHold) -> Result<LegalHold, DomainError>;
+fn release_legal_hold(ctx: &Ctx, uow: &mut UnitOfWork, id: HoldId, expected: Version) -> Result<LegalHold, DomainError>;
+fn request_tenant_export(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateTenantExport) -> Result<TenantExport, DomainError>;
+fn get_tenant_export(ctx: &Ctx, repo: &dyn TenantExportRepository, id: ExportId) -> Result<TenantExport, DomainError>;
+fn run_tenant_export(ctx: &Ctx, uow: &mut UnitOfWork, id: ExportId, store: &dyn BlobStore) -> Result<TenantExport, DomainError>;
+fn propose_purge(ctx: &Ctx, uow: &mut UnitOfWork, req: ProposePurge) -> Result<(PurgeRequest, PlaintextCode), DomainError>;
+fn confirm_purge(ctx: &Ctx, uow: &mut UnitOfWork, id: PurgeId, code: &str, clock: &dyn Clock) -> Result<PurgeRequest, DomainError>;
+fn run_purge(ctx: &Ctx, uow: &mut UnitOfWork, id: PurgeId, batch: usize) -> Result<PurgeRequest, DomainError>;
+fn generate_access_review(ctx: &Ctx, uow: &mut UnitOfWork, req: GenerateAccessReview) -> Result<AccessReview, DomainError>;
+fn record_review_decisions(ctx: &Ctx, uow: &mut UnitOfWork, review: ReviewId, decisions: Vec<ReviewDecision>) -> Result<AccessReview, DomainError>;
+fn list_access_reviews(ctx: &Ctx, repo: &dyn AccessReviewRepository, filter: ReviewFilter, page: Cursor) -> Result<Page<AccessReview>, DomainError>;
+```
+
+#### Ports other features implement or call
+
+These three traits are the whole surface F027 exposes to other modules — F070's trash calls all three
+— so they are defined here in full rather than described. They live in `crates/domain/src/compliance/ports.rs`.
+
+```rust
+/// Answers "how long does this kind live?" without exposing the policy table.
+/// F070's trash uses it to compute `expires_at = deleted_at + purge_after_days`.
+pub trait RetentionPolicyPort: Send + Sync {
+    fn policy_for(&self, ctx: &Ctx, kind: RecordKind) -> Result<RetentionPolicy, DomainError>;
+    /// `None` means keep forever: either `purge_after_days` is null, or the tenant has no
+    /// policy row for this kind. Callers must render no countdown, never a zero one.
+    fn purge_after(&self, ctx: &Ctx, kind: RecordKind) -> Result<Option<Days>, DomainError>;
+    fn expires_at(&self, ctx: &Ctx, kind: RecordKind, deleted_at: Timestamp) -> Result<Option<Timestamp>, DomainError>;
+}
+
+/// The single audited hard-delete path. Nothing outside this trait may hard-delete tenant data,
+/// which is why `DELETE /api/v1/trash/{kind}/{id}` routes through it rather than deleting directly.
+pub trait PurgeExecutorPort: Send + Sync {
+    /// Purge one item. Consults `LegalHoldPort` first and returns `Skipped` when held —
+    /// a hold is not an error, and the caller records the skip.
+    fn purge_item(&self, ctx: &Ctx, uow: &mut UnitOfWork, kind: RecordKind, item: ItemId) -> Result<PurgeOutcome, DomainError>;
+    /// Purge a batch under one transaction, capped at 1,000 items, writing one `purge_batches`
+    /// row and one `purge.executed` audit event for the batch.
+    fn purge_batch(&self, ctx: &Ctx, uow: &mut UnitOfWork, kind: RecordKind, items: &[ItemId], request: Option<PurgeId>) -> Result<PurgeBatchReport, DomainError>;
+}
+
+/// A hold always beats a policy, so every purge path consults this before deleting anything.
+pub trait LegalHoldPort: Send + Sync {
+    fn is_held(&self, ctx: &Ctx, kind: RecordKind, item: ItemId) -> Result<Option<HoldRef>, DomainError>;
+    fn count_held(&self, ctx: &Ctx, kind: RecordKind, scope: &HoldScope, older_than: Timestamp) -> Result<u64, DomainError>;
+}
+```
+
+`PurgeOutcome` is `Purged { blobs_removed: u32 } | Skipped { hold: HoldRef } | Absent`;
+`PurgeBatchReport` is `{ purged_count, skipped_held_count, batch_no }`; `HoldRef` is
+`{ hold_id, name }` and is what a `409 conflict` names when a caller tries to purge a held item.
+`purge_batch` takes `request: Option<PurgeId>` so a governance purge attributes its batch to the
+request while a trash purge-now attributes to none, and both write the same audit event.
+
+Transaction boundaries:
+
+- `put_retention_policy` writes the policy row, its audit row and the outbox event in one
+  `UnitOfWork` under `If-Match`.
+- `request_tenant_export` writes the `tenant_exports` row, every `tenant_export_kinds` row and the
+  JetStream message through the outbox in one boundary. The partial unique index enforcing one
+  running export per tenant is only meaningful if the row and its kinds appear atomically.
+- `propose_purge` writes the request row, every `purge_request_kinds` row with its preview counts, and
+  the audit row in one boundary; `confirm_purge` writes the status transition, `confirmed_by`,
+  `confirmed_at`, the audit row and the `purge.confirmed.v1` outbox row in another. They are separate
+  transactions on purpose: the proposal and the confirmation are two acts by two people.
+- `run_purge` opens **one `UnitOfWork` per batch of 1,000**, covering that batch's hard deletes, its
+  `purge_batches` row and the `purge_request_kinds` counter update. Per batch, not per request: a
+  million-row purge in one transaction would hold locks for minutes, and the `purge_batches` row is
+  the resume checkpoint that makes a restarted worker skip what it already deleted.
+- `run_tenant_export` opens one `UnitOfWork` per kind, completing that kind's row after its file is
+  written, so a restarted worker resumes at the first `pending` kind instead of rewriting the ZIP.
+- `generate_access_review` writes the `access_reviews` row and every `access_review_principals` row in
+  one boundary — `flagged_count` is derived from those rows and would be wrong against a partial set.
+  `record_review_decisions` writes every decision row, the F003 ACL revocations and F038 token
+  revocations they imply, each row's `outcome`, and the audit rows in one boundary, so a `revoke`
+  recorded as applied always corresponds to access actually removed.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_compliance_*.sql` creates: `retention_policies(id uuid pk, tenant_id uuid not null, kind text not null check (kind in ('rows','sheets','documents','files','comments','workflow_runs','audit_events','notifications')), soft_delete_days smallint not null, purge_after_days smallint null, auto_soft_delete bool not null default false, version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, updated_by uuid not null references users(id) on delete restrict, created_at, updated_at, deleted_at, unique (tenant_id, kind))`; `legal_holds(id, tenant_id, name text not null, reason text not null, scope_kind text not null check (scope_kind in ('tenant','workspace','sheet','user')), scope_id uuid null, expires_at timestamptz null, released_at timestamptz null, released_by uuid null references users(id) on delete restrict, version, audit fields, check ((scope_kind = 'tenant') = (scope_id is null)))`; `tenant_exports(id, tenant_id, format text not null check (format in ('jsonl','csv')), since timestamptz null, status text not null check (status in ('queued','running','completed','failed')), storage_key text null, download_expires_at timestamptz null, error_code text null check (error_code in ('storage_unavailable','source_read_failed','timeout','cancelled')), error_message text null, audit fields)`; `purge_requests(id, tenant_id, scope_kind text not null check (scope_kind in ('tenant','workspace','sheet','user')), scope_id uuid null, older_than timestamptz not null, status text not null check (status in ('proposed','confirmed','running','completed','failed','expired')), confirmation_code_hash bytea not null, proposed_by uuid not null references users(id) on delete restrict, confirmed_by uuid null references users(id) on delete restrict, confirmed_at timestamptz null, purged_count bigint not null default 0, skipped_held_count bigint not null default 0, error_code text null check (error_code in ('storage_unavailable','delete_failed','timeout','cancelled')), error_message text null, audit fields)`; `access_reviews(id, tenant_id, scope_kind text not null check (scope_kind in ('tenant','workspace')), scope_id uuid null, as_of timestamptz not null, principal_count int not null default 0, flagged_count int not null default 0, storage_key_json text null, storage_key_csv text null, audit fields)`; and `purge_batches(purge_id uuid not null references purge_requests(id) on delete cascade, batch_no int not null, tenant_id, kind text not null check (kind in ('rows','sheets','documents','files','comments','workflow_runs','audit_events','notifications')), deleted_count int not null, completed_at timestamptz not null, primary key (purge_id, batch_no))`.

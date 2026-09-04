@@ -88,9 +88,10 @@ Excluded: share links, guest invitations, and every unauthenticated token route 
 
 ### Rust backend
 
-- Domain entities: `View { id, tenant_id, sheet_id, owner_id, name, kind: ViewKind, visibility: Visibility, is_default, settings: ViewSettings, version, created/updated actor+time, deleted_at }`, `ViewSettings { filter: Option<FilterNode>, sorts: Vec<SortSpec>, group_by: Option<ColumnId>, columns: Vec<ColumnId>, card: Option<CardSettings>, calendar: Option<CalendarSettings>, timeline: Option<TimelineSettings>, gantt: Option<serde_json::Value> }` — one wire and domain shape composed by the repository from the `views` typed columns and the projection tables, `FilterNode::{And(Vec<FilterNode>), Or(Vec<FilterNode>), Leaf { column_id, op: FilterOp, value }}`, `ViewShare { id, tenant_id, view_id, principal_kind: PrincipalKind, principal_id, role: ShareRole, expires_at, revoked_at }`.
+- Domain entities: `View { id, tenant_id, sheet_id, owner_id, name, kind: ViewKind, visibility: Visibility, is_default, settings: ViewSettings, version, created/updated actor+time, deleted_at }`, `ViewSettings { filter: Option<FilterNode>, sorts: Vec<SortSpec>, group_by: Option<ColumnId>, columns: Vec<ColumnId>, card: Option<CardSettings>, calendar: Option<CalendarSettings>, timeline: Option<TimelineSettings>, gantt: Option<serde_json::Value> }` — one wire and domain shape composed by the repository from the `views` typed columns and the projection tables, `FilterNode::{And(Vec<FilterNode>), Or(Vec<FilterNode>), Leaf { column_id, op: FilterOp, value: FilterValue }}` where `FilterOp` and `FilterValue` are `docs/filter-vocabulary.md`, `ViewShare { id, tenant_id, view_id, principal_kind: PrincipalKind, principal_id, role: ShareRole, expires_at, revoked_at }`.
 - Use cases in `crates/domain/src/views/`: `create_view`, `update_view`, `delete_view`, `get_view`, `list_views`, `list_view_rows`, `share_view`, `revoke_share`, `compile_filter` (AST to a filter specification over the F008 row query with the column type table), `validate_settings` (column types and the checks the database cannot express), `project_filter_columns` (AST walk producing the `view_filter_columns` set).
 - Persistence (`crates/persistence/src/views/`): `ViewRepository` owns `views`, `view_sorts`, `view_columns`, `view_card_fields`, `view_filter_columns`; `ViewShareRepository` owns `view_shares`. Each implements the shared `Repository` contract (`get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, `purge`) and adds named queries `list_visible_to(actor, sheet_id, cursor)`, `find_default(sheet_id)`, `clear_default(sheet_id)`, `replace_projection(view_id, sorts, columns, card_fields, filter_columns)`, `list_views_using_column(column_id)`, `list_active_shares(view_id)`, `revoke_shares_for_view(view_id)`; the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the base contract. Multi-table writes — the default swap (`clear_default` then the `views` update) and the settings replace (`views` update plus `replace_projection`) — run in one `UnitOfWork` that owns the transaction. `GET /api/v1/views/{id}/rows` composes a row query executed by F008's row repository under the view's filter, sorts, and visible columns; this feature contributes the filter and sort specification, not SQL. Per decision 2.1 the use cases above depend on these repository traits and contain no SQL: no SQL string, `sqlx::query*` call, or connection exists in `crates/domain/src/views` or `services/api/src/views`.
+- Filter operators: `docs/filter-vocabulary.md`, subset all — this feature owns the vocabulary and the `FilterNode` AST that carries it.
 - API endpoints (`services/api/src/views/`): `GET /api/v1/sheets/{sheet_id}/views`, `POST /api/v1/views`, `GET /api/v1/views/{id}`, `PATCH /api/v1/views/{id}`, `DELETE /api/v1/views/{id}`, `GET /api/v1/views/{id}/rows`, `POST /api/v1/views/{id}/share`. DTOs `CreateViewRequest`, `UpdateViewRequest`, `ShareViewRequest`, `ViewResponse`, `ViewShareResponse`, `Page<ViewRowResponse>`; row query `{ cursor?, limit?, range_start?, range_end? }`.
 - Events: `view.created.v1`, `view.updated.v1`, `view.deleted.v1`, `view.shared.v1` with contract payload and `changed_fields`.
 - Authorization: `sheet-viewer` on the sheet to create and read; owner or `sheet-editor` to update `sheet` views; owner only for `private` views and for `share`; an F036 scoped-token actor whose target is this view reads it read-only through the same filtering path; sheet ACL and explicit deny win over any share.
@@ -123,8 +124,8 @@ Leaf node — `type` is `"leaf"`:
 |---|---|---|---|
 | `type` | `"leaf"` | yes | |
 | `column_id` | uuid | yes | a live, non-deleted column of the view's `sheet_id`; unknown or foreign column → `invalid` with `field_errors.settings.filter` |
-| `op` | FilterOp | yes | must appear in the operator row for that column's `columns.type`; otherwise `invalid` |
-| `value` | FilterValue | conditional | required for every operator except `is_empty` and `is_me`, which reject a present `value` |
+| `op` | FilterOp | yes | a member of `docs/filter-vocabulary.md` that appears in the operator row for that column's `columns.type`; otherwise `invalid` |
+| `value` | FilterValue | conditional | required for every operator except `is_empty`, `is_not_empty` and `is_me`, which reject a present `value` |
 
 Tree constraints, all checked before any evaluation and all returning `400 invalid` with
 `field_errors.settings.filter`: the root is depth 1, maximum nesting depth is 8, and the whole tree
@@ -132,35 +133,16 @@ holds at most 50 leaf nodes (FR-F013-02). A `filter` that is absent or `null` me
 not the same as an empty branch, which is invalid. Every `column_id` appearing anywhere in the tree
 is projected into `view_filter_columns` in the same transaction as the view write.
 
-**`FilterOp`** — the closed operator set, and which column types accept each. `columns.type` is
-F007's; a `formula` column takes the operator row of its `result_type`.
+**`FilterOp`** and **`FilterValue`** are `docs/filter-vocabulary.md`: the product's one closed
+predicate vocabulary, the operator row for each `columns.type`, the value each operator takes, and
+the relative-date tokens. This ticket owns that file and accepts the whole vocabulary; F009, F010,
+F018, F021, F022, F025, F050, F056 and F060 accept subsets and name theirs in their own section 4.
+The operators are not restated here, because a second copy is how the product ended up with five
+spellings of one operator.
 
-| Column type | Operators accepted |
-|---|---|
-| `text` | `eq`, `neq`, `contains`, `in`, `is_empty` |
-| `number`, `currency`, `duration` | `eq`, `neq`, `gt`, `lt`, `between`, `is_empty` |
-| `date`, `datetime` | `eq`, `neq`, `gt`, `lt`, `between`, `before`, `after`, `is_empty` |
-| `boolean` | `eq`, `neq`, `is_empty` |
-| `select` | `eq`, `neq`, `in`, `is_empty` |
-| `person` | `eq`, `neq`, `in`, `is_me`, `is_empty` |
-| `link`, `file` | `is_empty` |
-| `formula` | the row for its `result_type` |
-
-**`FilterValue`** — the shape `value` takes, decided by `op` and typed by the column, never tagged in
-the payload (the convention F007's `CellValue` uses). Comparison runs against the cell's normalized
-value, never its display string, so a `currency` leaf compares decimals and a `date` leaf compares
-instants.
-
-| `op` | `value` |
-|---|---|
-| `eq`, `neq`, `gt`, `lt`, `before`, `after` | one scalar of the column's type: string, number, boolean, RFC 3339 timestamp, or uuid for `select`/`person` |
-| `in` | array of 1–100 scalars of the column's type, distinct |
-| `between` | `{ from, to }`, both scalars of the column's type, `from <= to`, both required |
-| `contains` | string, 1–256 chars, case-insensitive substring |
-| `is_empty`, `is_me` | must be absent; `is_me` resolves to the calling actor's user id at query time, never at save time |
-
-A scalar whose JSON type does not match the column's type is `400 invalid` with
-`field_errors.settings.filter`, the same code as a mismatched operator.
+An operator outside the row for the column's type, a value whose JSON type does not match the
+column, or an unresolvable relative token is `400 invalid` with `field_errors.settings.filter` — the
+one key every filter failure in this feature reports under.
 
 **`ViewSettings`** — one wire shape for create, update and read. The repository decomposes it into
 `views` columns and the four projection tables on write and composes it back on read (FR-F013-01).
@@ -415,6 +397,14 @@ Scenario: Calendar drag reschedules
 - External dependencies: none
 - Risks and mitigations: a filter compiled to SQL could bypass the permission predicate, so `compile_filter` produces a predicate that is always ANDed inside the F008 permission-filtered query and a test asserts hidden rows never appear; a deleted column can no longer strand a view — `list_views_using_column` reads `view_filter_columns` by foreign key, sort and visible-column rows cascade, and the `on delete restrict` references make F007 resolve the view before the column goes; large calendars are bounded by the 366-day range and 5,000-row page test.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification | `FilterOp` and `FilterValue` moved out of this ticket into `docs/filter-vocabulary.md`, which this ticket owns; `is_not_empty` added to the value-absent operators; `before`/`after` removed in favour of `lt`/`gt`; `neq` renamed `ne`; `gte`, `lte`, `not_in`, `starts_with`, `is_not_empty` added; relative-date tokens defined | Five features had each written their own operator list — `ne` against `neq`, `before` beside `lt`, `gte` present in one and missing from the next — so a filter saved in one could not be read by another. `cargo xtask check-filters` now refuses a sixth spelling |
 
 ## 7.1 Agent handoff
 

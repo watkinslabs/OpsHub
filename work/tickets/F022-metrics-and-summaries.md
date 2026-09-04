@@ -90,6 +90,7 @@ Excluded: dashboards and widget placement (F023), time-series projection and cha
 - Domain entities in `crates/domain/src/metrics/`: `Metric { id, tenant_id, workspace_id, name, source: MetricSource, measure: Measure { fn, source_id, column_id }, filters: Vec<MetricFilter { role, node_path, column_id, op, value }>, period: PeriodSpec { grain, timezone, week_start }, format: FormatSpec { kind, decimals, currency_code }, target: Option<Target { value, direction }>, comparison: Comparison, scope_policy: ScopePolicy, version, audit fields, deleted_at }`, `MetricValue { metric_id, scope_key, period_start, period_end, value: Option<Decimal>, sample_count, run_id, computed_at }`, `MetricRun { id, metric_id, scope_key, status: RunStatus, started_at, finished_at, duration_ms, source_versions: Vec<RunSource { source_kind, source_id, source_version }>, rows_scanned, error }`. The nested API bodies are these structs; the flat columns and child rows behind them are a repository concern.
 - Use cases: `create_metric`, `update_metric`, `delete_metric`, `list_metrics`, `request_recompute`, `execute_recompute` (worker), `read_values` (rollup, comparison, formatting, stale), `invalidate_values`.
 - Persistence (`crates/persistence/src/metrics/`): `MetricRepository` owns `metrics` and `metric_filters`; `MetricValueRepository` owns `metric_values`; `MetricRunRepository` owns `metric_runs` and `metric_run_sources`. Each implements the shared `Repository` contract (`get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, `purge`) and adds named queries `load_definition(metric_id)`, `replace_filters(metric_id, rows)`, `page_metrics(filter, cursor)`, `list_metrics_using_source(source_kind, source_id)`, `list_metrics_using_column(column_id)`, `find_active_run(metric_id, scope_key)`, `claim_recompute(metric_id, scope_key, run_id)`, `upsert_values(metric_id, scope_key, buckets)`, `list_values(metric_id, scope_key, from, to)`, `delete_values_for_metric(metric_id)`, `prune_runs_older_than(cutoff)`, `prune_unread_scopes(cutoff)`; the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the base contract. One recompute run — run row, `metric_run_sources` rows, value buckets, outbox — is one `UnitOfWork`, and the FR-F022-11 definition change that deletes cached values for every scope runs in the same `UnitOfWork` as the `PATCH`. Source rows are read through F021's snapshot repository or the F006/F007/F008 repositories, never by this feature's SQL. Per decision 2.1 the use cases above depend on these repository traits and contain no SQL: no SQL string, `sqlx::query*` call, or connection exists in `crates/domain/src/metrics`, `services/api/src/metrics`, `services/worker/src/metrics`, or the F022 test lanes.
+- Filter operators: `docs/filter-vocabulary.md`, subset all — a metric filter is the same predicate over the rows it counts.
 - Aggregator `crates/domain/src/metrics/aggregate.rs`: folds rows supplied by F021's snapshot repository (`read_rows`) or the F006/F007/F008 row repositories under the `ViewerScope` into period buckets using `chrono-tz`; `rollup.rs` re-buckets to a coarser grain; `compare.rs` computes deltas; `format.rs` calls the F049 formatter.
 - Worker `services/worker/src/metrics/{recompute_job.rs, stale_sweeper.rs}`: consumes `metrics.recompute` and calls `claim_recompute`, `upsert_values`, and the run recorder inside one `UnitOfWork` per run; the sweeper runs every 5 minutes and calls `prune_runs_older_than` and `prune_unread_scopes`. The job holds no SQL string, `sqlx::query*` call, or connection.
 - API endpoints (`services/api/src/metrics/`): `GET /api/v1/metrics`, `POST /api/v1/metrics`, `PATCH /api/v1/metrics/{id}`, `DELETE /api/v1/metrics/{id}`, `GET /api/v1/metrics/{id}/values`, `POST /api/v1/metrics/{id}/recompute`; DTOs `CreateMetricRequest`, `UpdateMetricRequest`, `MetricResponse`, `MetricValuesResponse`, `RecomputeResponse { run_id, status }`.
@@ -97,6 +98,155 @@ Excluded: dashboards and widget placement (F023), time-series projection and cha
 - Authorization: `report-editor` on the workspace for mutations and recompute; reads require `read` on the source report or sheet; explicit deny wins; missing access maps to `not_found`.
 - Validation limits: name 1..200, filters depth ≤ 4 and ≤ 50 predicates, `decimals` 0..4, `currency_code` ISO 4217, `target_value` finite decimal set with `target_direction`, `percent_of` requires at least one `of_filter` row, `sum`/`avg`/`min`/`max` require `measure_column_id`, window buckets fixed per grain.
 - Error mapping: `MetricError::InvalidMeasure → 400 invalid`, `MetricError::ScopePolicyNotAllowed → 400 invalid`, `MetricError::FinerGrain → 400 invalid`, `MetricError::RunActive → 409 conflict`, `MetricError::StaleVersion → 409 conflict`, `MetricError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, queue unavailable → `503 unavailable`.
+
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and `ListQuery`
+are F028's; the error body and the six codes are the shared ones; `columns.type` is F007's;
+`ActorContext` is F038's; `FilterNode` and `ViewerScope` are F021's and this feature reuses them
+rather than restating them, including the operator divergence F021 records against F013.
+
+Decimal values — `value`, `target.value`, every `series[].value` — travel as **strings**, the same
+rule F007's `number` cells follow, so no client does float arithmetic on a KPI. `null` is a genuinely
+absent number and is not zero.
+
+**`MetricSource`** `{ kind: "report" | "sheet", id: uuid }` — `report` reads the latest succeeded
+F021 snapshot, `sheet` reads live rows (FR-F022-03). A source the caller cannot read is
+`404 not_found` on create and update, never `denied`.
+
+**`Measure`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `fn` | `"count" \| "count_distinct" \| "sum" \| "avg" \| "min" \| "max" \| "percent_of"` | yes | closed set matching the `measure_fn` check |
+| `column_ref` | ColumnRef? | conditional | required for `count_distinct`, `sum`, `avg`, `min`, `max`; rejected for `count` and `percent_of`. `sum` or `avg` on a column whose type is not `number`, `currency` or `duration` → `400 invalid` with `field_errors["measure.column_ref"]` |
+| `of_filter` | FilterNode? | conditional | required for `percent_of` and rejected for every other `fn`; a `percent_of` with no predicate is `400 invalid` with `field_errors["measure.of_filter"]` |
+
+`ColumnRef` is F021's `{ alias, column_id }` when `source.kind` is `report` and a bare `column_id`
+when it is `sheet`, because a sheet source has one alias. `percent_of` computes
+`100 × count(of_filter) ÷ count(filters)` and yields `null` — not `0` — when the denominator is 0
+(FR-F022-02).
+
+**`PeriodSpec`** `{ grain: "day" | "week" | "month" | "quarter", timezone, week_start: "monday" |
+"sunday" }` — all three required; `timezone` an IANA name; `week_start` is meaningful for `week` and
+stored regardless. Bucket boundaries are computed in `timezone`, which is what makes a DST week 167
+or 169 hours rather than shifting the whole series.
+
+**`FormatSpec`** `{ kind: "number" | "currency" | "percent" | "duration", decimals, currency_code? }`
+— `decimals` 0–4; `currency_code` an ISO 4217 alpha-3, required when `kind` is `currency` and
+rejected otherwise. Rendering follows F049's locale rules (FR-F022-10).
+
+**`Target`** `{ value: string decimal, direction: "up_is_good" | "down_is_good" }` — both fields
+present or the whole object absent; one without the other is `400 invalid`, matching the
+`(target_value is null) = (target_direction is null)` check.
+
+**`CreateMetricRequest`** — `POST /api/v1/metrics`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–200 chars after trim |
+| `workspace_id` | uuid | yes | the caller holds `report-editor` on it, else `403 denied` |
+| `source` | MetricSource | yes | as above |
+| `measure` | Measure | yes | as above |
+| `filters` | FilterNode? | no | F021's tree and grammar, depth ≤ 4 and ≤ 50 predicates; absent means every row of the source |
+| `period` | PeriodSpec | yes | as above |
+| `format` | FormatSpec | yes | as above |
+| `target` | Target? | no | as above |
+| `comparison` | `"previous_period" \| "same_period_last_year" \| "target" \| "none"` | yes | `"target"` without a `target` object → `400 invalid` |
+| `scope_policy` | `"viewer" \| "owner"` | no | default `"viewer"`; `"owner"` requires tenant policy `reports.aggregate_hidden_values` to be `true`, else `400 invalid` with `field_errors.scope_policy` (FR-F022-05) |
+
+**`UpdateMetricRequest`** — `PATCH /api/v1/metrics/{id}`, `If-Match` required, every field optional
+and at least one present, each under the constraints above. `measure`, `filters`, `period`, `format`
+and `target` replace their object whole, never merged. Changing `measure`, `filters`, `period` or
+`source` drops every cached value for every scope in the same transaction (FR-F022-11), so the next
+read returns `current: null` with `meta.status = "computing"` rather than a number computed under the
+old definition.
+
+**`MetricResponse`** — `{ id, workspace_id, name, source, measure, filters?, period, format,
+target?, comparison, scope_policy, latest_run: RunSummary?, version, created_at, created_by,
+updated_at, updated_by, deleted_at? }`. Every nested object is composed by `MetricRepository` from
+the typed columns and `metric_filters` rows; `latest_run` is `null` until the first recompute.
+**`RunSummary`** `{ run_id, status: "queued" | "running" | "succeeded" | "failed", scope_key,
+computed_at?, duration_ms?, rows_scanned?, error? }`.
+
+**`RecomputeResponse`** `{ run_id: uuid, status: "queued" }`, returned `202` (FR-F022-04). A
+recompute while a run is active for the same `(metric_id, scope_key)` is `409 conflict` carrying that
+`run_id` in `field_errors.run_id`.
+
+**Values route.** `GET /api/v1/metrics/{id}/values` takes `from` and `to` (timestamps, optional,
+`from <= to`, defaulting to the trailing window of the metric's grain — 90 `day`, 52 `week`, 24
+`month`, 8 `quarter` buckets) and `grain` (optional; must be the metric's grain or coarser in the
+order `day → week → month → quarter`; finer is `400 invalid`, FR-F022-08). It returns
+**`MetricValuesResponse`**:
+
+| Field | Type | Notes |
+|---|---|---|
+| `current` | `{ value, formatted, period_start, period_end }`? | the latest complete bucket; `null` when no value exists for the caller's `scope_key`, which is also what enqueues a recompute for that scope |
+| `comparison` | ComparisonResult? | `null` when `comparison` is `"none"` or the compared bucket does not exist |
+| `series` | array of `{ period_start, value, sample_count }` | one entry per bucket in ascending `period_start` order; `value` may be `null` for a bucket with no rows |
+| `meta` | ValuesMeta | below |
+
+**`ComparisonResult`** `{ kind, value, delta_abs, delta_pct, direction }` — `kind` echoes the
+metric's `comparison`; `value` is the compared number (the prior bucket, the bucket one year earlier,
+or `target.value`); `delta_abs` and `delta_pct` are decimal strings; `direction` is `better`, `worse`
+or `flat`, and it is derived from `target.direction` and not from the sign of the delta — under
+`down_is_good` a fall is `better` (FR-F022-09) — with `flat` whenever `|delta_pct| < 0.5`.
+
+**`ValuesMeta`** `{ run_id, computed_at, duration_ms, source_versions, stale, scope, status }` —
+`source_versions` is an object of source id to `source_version`, composed from `metric_run_sources`;
+`stale` is `true` when any recorded `source_version` is behind the live one or the source report has
+a newer succeeded snapshot (FR-F022-07); `scope` is `viewer` or `owner`; `status` is `"ready"` or
+`"computing"`, the latter only when `current` is `null`.
+
+**List route.** `GET /api/v1/metrics` returns `Page<MetricResponse>` in F028's envelope
+`{ items, next_cursor, has_more, total? }`, `sort` = `name` or `updated_at` (default `-updated_at`),
+`limit` 1–100, filters `workspace_id` (uuid), `source_id` (uuid) and `name` (string prefix, ≤ 200
+chars); it returns only metrics whose source the actor can read.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `202` | — | a recompute accepted and queued |
+| `400` | `invalid` | any constraint above — `sum` on a non-numeric column, `percent_of` without `of_filter`, `decimals` outside 0–4, a missing `currency_code`, half a `target`, `comparison: "target"` with no target, a grain finer than the metric's, `owner` scope without tenant policy, an out-of-range `limit` or a cursor from a different query |
+| `403` | `denied` | a reader calling `POST`, `PATCH`, `DELETE` or `recompute`, which need `report-editor` on the workspace |
+| `404` | `not_found` | unknown, foreign-tenant or invisible metric, or a `source` the caller cannot read (FR-F022-03) |
+| `409` | `conflict` | stale `If-Match`, a recompute while one is active for the same scope, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the calling application's F028 token bucket is exhausted |
+| `503` | `unavailable` | the `metrics.recompute` queue or the outbox is unreachable |
+
+### Use case signatures
+
+In `crates/domain/src/metrics/`. Every one takes `ctx: &ActorContext`, takes a `UnitOfWork` for
+writes or a repository trait for reads, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn create_metric(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateMetric) -> Result<Metric, DomainError>;
+fn update_metric(ctx: &ActorContext, uow: &mut UnitOfWork, id: MetricId, expected: Version, req: UpdateMetric) -> Result<Metric, DomainError>;
+fn delete_metric(ctx: &ActorContext, uow: &mut UnitOfWork, id: MetricId, expected: Version) -> Result<(), DomainError>;
+fn list_metrics(ctx: &ActorContext, repo: &dyn MetricRepository, filter: MetricFilter, page: Cursor) -> Result<Page<Metric>, DomainError>;
+fn request_recompute(ctx: &ActorContext, uow: &mut UnitOfWork, id: MetricId, scope: &ScopeKey) -> Result<RunHandle, DomainError>;
+fn execute_recompute(ctx: &ActorContext, uow: &mut UnitOfWork, id: MetricId, scope: &ScopeKey, run_id: RunId) -> Result<MetricRun, DomainError>;
+fn read_values(ctx: &ActorContext, repo: &dyn MetricValueRepository, scope: &ViewerScope, id: MetricId, q: ValuesQuery) -> Result<MetricValues, DomainError>;
+fn invalidate_values(ctx: &ActorContext, uow: &mut UnitOfWork, id: MetricId) -> Result<(), DomainError>;
+```
+
+**Transaction boundaries.** `create_metric` and `update_metric` each take one `UnitOfWork` covering
+the `metrics` row under the expected version, the wholesale replacement of the `metric_filters` rows
+for both roles, `invalidate_values` when a definition member changed, the audit row and the
+`metric.updated.v1` entry. The invariant is that no cached value ever outlives the definition it was
+computed from: a value row surviving a measure change would be served as a current KPI computed by a
+rule nobody can see any more. `execute_recompute` takes one `UnitOfWork` per run covering the
+`metric_runs` row, its `metric_run_sources` rows, every `metric_values` bucket for that
+`(metric_id, scope_key)`, and the `metric.computed.v1` entry — the source versions and the buckets
+must land together, because `stale` is decided by joining exactly those rows to the live source, and
+a run whose sources committed separately would report a freshness it never had. `read_values`
+writes nothing; when it finds no value for the scope it returns `computing` and enqueues a recompute
+in a separate boundary, so a read never holds a write transaction open.
 
 ### PostgreSQL/SQLx
 
@@ -178,6 +328,14 @@ Scenario: Stale metric recomputed on read
 - External dependencies: NATS JetStream for `metrics.recompute`; `chrono-tz` for period buckets
 - Risks and mitigations: per-viewer scopes can multiply cache size, so scopes unread for 14 days are pruned and a tenant is capped at 200 scopes per metric with the oldest evicted; DST transitions shift bucket boundaries, so buckets are computed in the metric timezone and tested across the March and November transitions; `count_distinct` cannot be rolled up by summation, so rollups recompute it from the source snapshot.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset of `docs/filter-vocabulary.md` declared in section 4 and the operator names aligned to it | `metric_filters` is now a declared subset of the shared vocabulary |
 
 ## 7.1 Agent handoff
 

@@ -98,6 +98,181 @@ Excluded: working calendars and holidays (F011), user-translated column names or
 - Validation: `locale` in supported list (`en-XA` only when the pseudo flag is on), `timezone` resolvable by `jiff`, `first_day_of_week` in `monday|sunday|saturday`, `hour_cycle` in `h12|h23`, `currency` an ISO 4217 code from the `iso_currency` list. Idempotency and `If-Match` follow the contract conventions.
 - Error mapping: `LocaleError::Unsupported → 400 invalid (field_errors.locale)`, `LocaleError::UnknownTimezone → 400 invalid (field_errors.timezone)`, `LocaleError::StaleVersion → 409 conflict`, `LocaleError::CatalogNotFound → 404 not_found`, `TextError::InvalidEncoding → 400 invalid`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing **except** on `UpdateUserLocaleRequest`, where the difference is load
+bearing and is spelled out below. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid` carrying the
+offending field in `field_errors`. `Page<T>`, the signed cursor, `ListQuery`, the error body
+`{ code, message, field_errors, correlation_id }` and the six codes are F028's and are not restated
+here; `ActorContext` is F038's.
+
+**Resolution rule.** `EffectiveLocale` is resolved per request, per field, by the first non-null of:
+
+1. the caller's `user_locales` row for that field,
+2. the caller's `tenant_locales` row for that field,
+3. the platform constants `locale = "en-US"`, `timezone = "UTC"`, `first_day_of_week = "monday"`,
+   `hour_cycle = "h12"`, `currency = "USD"`.
+
+The order is per field, not per row: a user who overrides only `timezone` keeps the tenant `locale`.
+`currency` has no user level at all — `user_locales` has no such column — so it resolves from step 2
+or 3 only. This is the rule every formatting component in F062 and every server-side renderer
+(exports, emails, notifications) calls; none of them re-derives it, and none of them reads
+`tenant_locales` or `user_locales` directly. `source` on the response names which step won so a
+caller can render "Using tenant default" without a second request.
+
+**`LocaleDescriptor`** — one supported locale; the element of `LocaleListResponse.locales` and static
+for every tenant (FR-F049-01)
+
+| Field | Type | Notes |
+|---|---|---|
+| `tag` | string | BCP 47 tag, one of the eight in the `locale` check constraint |
+| `display_name` | string | endonym, e.g. `Deutsch (Deutschland)`; rendered in the locale's own script |
+| `catalog_version` | integer | `message_catalogs.version` currently latest for the tag; the value to pass to `GET /api/v1/messages/{locale}` caching |
+| `first_day_of_week` | `"monday" \| "sunday" \| "saturday"` | the locale's conventional default, not the tenant's setting |
+| `hour_cycle` | `"h12" \| "h23"` | as above |
+| `decimal_separator` | string | one character, `.` or `,` |
+
+**`LocaleListResponse`** — `GET /api/v1/locales`: `{ locales: LocaleDescriptor[] }`. Not a `Page<T>`:
+the list is a fixed set of at most eight entries, takes no `ListQuery`, and is never paged. `en-XA`
+appears only when `F049_PSEUDO_LOCALE=true` (FR-F049-13).
+
+**`UpdateTenantLocaleRequest`** — `PATCH /api/v1/tenants/{id}/locale`, `If-Match` required, at least
+one field present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `locale` | string | no | in `SUPPORTED_LOCALES`; `en-XA` only with the pseudo flag on, else `400 invalid` with `field_errors.locale = "unsupported"` |
+| `timezone` | string | no | resolvable by `jiff::tz::TimeZone::get`, else `400 invalid` with `field_errors.timezone = "unknown"` |
+| `first_day_of_week` | `"monday" \| "sunday" \| "saturday"` | no | any other value → `400 invalid` |
+| `hour_cycle` | `"h12" \| "h23"` | no | any other value → `400 invalid` |
+| `currency` | string | no | ISO 4217 alpha-3, uppercase, in the `iso_currency` list → else `400 invalid` with `field_errors.currency` |
+
+Every field is non-nullable here: a tenant row has no "unset" state, so an explicit `null` is
+`400 invalid`. Omitting a field leaves the stored value unchanged.
+
+**`UpdateUserLocaleRequest`** — `PATCH /api/v1/users/{id}/locale`, `If-Match` required, at least one
+field present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `locale` | string? | no | as above when a string; explicit `null` clears the override so the field falls back to the tenant (FR-F049-03) |
+| `timezone` | string? | no | as above; explicit `null` clears |
+| `first_day_of_week` | `"monday" \| "sunday" \| "saturday"`? | no | as above; explicit `null` clears |
+| `hour_cycle` | `"h12" \| "h23"`? | no | as above; explicit `null` clears |
+
+An omitted field leaves the override as it stands; an explicit `null` deletes it. `currency` is not
+accepted on this route and is rejected as an unlisted field — the resolution rule has no user level
+for it.
+
+**`EffectiveLocale`** — the resolved values, embedded in `UserLocaleResponse` and returned as the
+`effective_locale` object of `GET /api/v1/users/{id}` (FR-F049-04)
+
+| Field | Type | Notes |
+|---|---|---|
+| `locale` | string | never null; step 3 guarantees a value |
+| `timezone` | string | IANA id |
+| `first_day_of_week` | `"monday" \| "sunday" \| "saturday"` | |
+| `hour_cycle` | `"h12" \| "h23"` | |
+| `currency` | string | ISO 4217; tenant or platform level only |
+| `source` | map<string, `"user" \| "tenant" \| "platform"`> | one entry per field above naming the step that supplied it; `currency` is never `"user"` |
+
+**`TenantLocaleResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `tenant_id` | uuid | |
+| `locale` / `timezone` / `first_day_of_week` / `hour_cycle` / `currency` | as the request table | always present, defaults materialised |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+
+**`UserLocaleResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `tenant_id` / `user_id` | uuid | |
+| `locale` / `timezone` / `first_day_of_week` / `hour_cycle` | string? | the stored override; `null` means no override, not a resolved value |
+| `effective` | EffectiveLocale | the resolution rule applied to this user; always present |
+| `version` | integer | |
+| `updated_at` / `updated_by` | timestamp / uuid | |
+
+**`MessageCatalogResponse`** — `GET /api/v1/messages/{locale}` (FR-F049-08)
+
+| Field | Type | Notes |
+|---|---|---|
+| `locale` | string | the requested tag, echoed |
+| `version` | integer | `message_catalogs.version` served |
+| `fallback` | string | always `"en-US"`; present so the client knows which bundled catalog to fall back through |
+| `messages` | map<string, string> | `message_key` to ICU pattern, assembled from `message_catalog_entries` by `load_catalog`; keys of the requested locale only, so per-key fallback is the caller's job |
+
+Response headers: strong `ETag` copied unchanged from `message_catalogs.etag`, and
+`Cache-Control: public, max-age=86400, immutable`. `If-None-Match` equal to that `ETag` returns
+`304` with no body. This route is unauthenticated-safe content but still requires a session; it
+carries no tenant data and no `tenant_id` predicate because catalogs are platform-wide.
+
+**Response headers on every authenticated response** (FR-F049-04): `X-OpsHub-Locale` and
+`X-OpsHub-Timezone` carry the resolved `EffectiveLocale.locale` and `.timezone`, set by
+`EffectiveLocaleLayer`. They are informational; a client that disagrees does not get a different
+server rendering.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `200` | — | all four routes; `GET /api/v1/messages/{locale}` also returns `304` on an `If-None-Match` hit |
+| `400` | `invalid` | unsupported `locale`, unknown `timezone`, out-of-enum `first_day_of_week` or `hour_cycle`, unknown `currency`, an explicit `null` on a tenant field, `currency` on the user route, an empty body, an unlisted field, or text failing NFC decoding (FR-F049-07, `field_errors.<name> = "encoding"`) |
+| `403` | `denied` | a non-admin patching another user's locale, or any non-admin on `PATCH /api/v1/tenants/{id}/locale`; the caller can see the tenant and the user exist, so this is denial, not absence |
+| `404` | `not_found` | a `tenant_id` or `user_id` of another tenant (FR-F049-14), and an unsupported or unbuilt `locale` on the catalog route; an invisible resource is never `denied` |
+| `409` | `conflict` | `If-Match` not equal to the stored `version`, carrying the current version in the body; or an `Idempotency-Key` replayed with a different body |
+| `503` | `unavailable` | tzdata missing at startup, the same condition `/readyz` reports (NFR-F049-04) |
+
+There is no list route in this feature, so no `Page<T>`, no cursor and no sort key: `GET
+/api/v1/locales` is a fixed set and the other three address a single row.
+
+### Use case signatures
+
+In `crates/domain/src/i18n/`. Every one takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits rather than a pool or connection, and returns the shared `DomainError`
+whose HTTP mapping is the status table above.
+
+```rust
+fn list_locales(ctx: &Ctx, pseudo_enabled: bool) -> Result<Vec<LocaleDescriptor>, DomainError>;
+fn update_tenant_locale(ctx: &Ctx, uow: &mut UnitOfWork, tenant: TenantId, expected: Version, req: UpdateTenantLocale) -> Result<TenantLocale, DomainError>;
+fn update_user_locale(ctx: &Ctx, uow: &mut UnitOfWork, user: UserId, expected: Version, req: UpdateUserLocale) -> Result<UserLocale, DomainError>;
+fn resolve_effective_locale(ctx: &Ctx, tenant_repo: &dyn TenantLocaleRepository, user_repo: &dyn UserLocaleRepository, user: UserId) -> Result<EffectiveLocale, DomainError>;
+fn get_catalog(ctx: &Ctx, repo: &dyn MessageCatalogRepository, locale: &LocaleTag) -> Result<MessageCatalog, DomainError>;
+fn replace_catalog(ctx: &Ctx, uow: &mut UnitOfWork, locale: &LocaleTag, version: i32, entries: Vec<CatalogEntry>) -> Result<MessageCatalog, DomainError>;
+
+fn format_number(loc: &EffectiveLocale, value: Decimal) -> String;
+fn format_currency(loc: &EffectiveLocale, value: Decimal) -> String;
+fn format_date(loc: &EffectiveLocale, date: civil::Date) -> String;
+fn format_datetime(loc: &EffectiveLocale, at: Timestamp) -> String;
+fn render_message(catalog: &MessageCatalog, fallback: &MessageCatalog, key: &str, args: &MessageArgs) -> String;
+fn normalize_text(input: &str) -> Result<String, TextError>;
+fn grapheme_len(input: &str) -> usize;
+```
+
+The six formatting functions are pure over an already-resolved `EffectiveLocale` and loaded catalogs:
+they take no `ctx`, no repository and no connection, which is what lets F062 components and the
+worker's email renderer call them without a database round trip. `render_message` takes the fallback
+catalog explicitly so FR-F049-09's per-key fallback is a parameter, not a hidden global lookup.
+
+**Transaction boundaries.**
+
+- `update_tenant_locale` and `update_user_locale` each write one settings row, its audit row and the
+  `locale.updated.v1` outbox entry in one `UnitOfWork`. The invariant: no consumer ever observes a
+  `locale.updated.v1` for a version that did not commit, and the version check that rejects a stale
+  `If-Match` happens inside the same transaction as the write it guards.
+- `replace_catalog` deletes the prior `message_catalog_entries` rows for `(locale, version)`, inserts
+  the new entry rows, and writes the `message_catalogs` header including `etag` and `entry_count`, all
+  in one `UnitOfWork`. The invariant this protects is the `entry_count` check constraint: a reader
+  running `load_catalog` concurrently sees either the whole previous version or the whole new one,
+  never a header whose count disagrees with the rows present.
+- `resolve_effective_locale` and `get_catalog` are reads and take repositories, not a `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_i18n_*.sql` creates `tenant_locales(tenant_id uuid primary key references tenants(id), locale text not null default 'en-US', timezone text not null default 'UTC', first_day_of_week text not null default 'monday', hour_cycle text not null default 'h12', currency char(3) not null default 'USD', version bigint not null default 1, created_by, created_at, updated_by, updated_at)`, `user_locales(tenant_id uuid not null, user_id uuid not null references users(id), locale text null, timezone text null, first_day_of_week text null, hour_cycle text null, version bigint not null default 1, audit fields, primary key (tenant_id, user_id))`, `message_catalogs(locale text not null, version integer not null, etag text not null, built_at timestamptz not null, entry_count integer not null default 0, primary key (locale, version))` as the catalog header, and `message_catalog_entries(locale text not null, version integer not null, message_key text not null, pattern text not null, primary key (locale, version, message_key), foreign key (locale, version) references message_catalogs(locale, version) on delete cascade)` holding one row per key. There is no `messages jsonb` column: the product reads the catalog by key (FR-F049-08 serves it by locale, FR-F049-09 falls back per key, FR-F049-10 validates plural forms per key), so per decision 2 the key-to-pattern map is a table.

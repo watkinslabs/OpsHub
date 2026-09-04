@@ -96,6 +96,187 @@ Excluded: OIDC login, sessions, MFA, API tokens (F038); user and group tables an
 - Validation: `domains` matched against RFC 1123 labels, lowercased; `idp_sso_url` https; certificate PEM must parse as X.509 with `not_after` in the future; `clock_skew_seconds` 0–300; SCIM `count` 1–200.
 - Error mapping: `SsoError::DomainTaken → 409 conflict`, `SsoError::StaleVersion → 409 conflict`, `SsoError::NotFound → 404 not_found`, `SamlError::* → 401 denied` (ACS redirects to the error page with the code), `ScimError::NotFound → 404 scim`, `ScimError::Uniqueness → 409 scimType uniqueness`, `ScimError::Unauthorized → 401`, rate limit → 429 `rate_limited`.
 
+### Interface
+
+Two wire contracts live here and they do not share conventions. The `/api/v1/identity/**` routes are
+OpsHub's: UUIDv7 ids, RFC 3339 UTC timestamps, `version`, `Idempotency-Key`, `If-Match`, F028's
+`Page<T>` and error body, unlisted fields rejected with `400 invalid`. The `/scim/v2/**` routes are
+**SCIM 2.0** and follow the published standard rather than this product's house style: RFC 7643 for
+the resource schemas and RFC 7644 for the protocol. Where the two disagree the RFC wins on `/scim/v2`,
+because the client is a third-party provisioning engine that will not be changed for us.
+
+**`CreateConnectionRequest`** — `POST /api/v1/identity/connections`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per tenant case-insensitively |
+| `protocol` | `"saml"` | yes | the only member; another value → `400 invalid`, `field_errors.protocol = "enum"` |
+| `idp_entity_id` | string | yes | 1–1,024 chars, absolute URI |
+| `idp_sso_url` | string | yes | absolute `https` URL; `http` → `field_errors.idp_sso_url = "insecure"` |
+| `idp_certificate_pem` | string | yes | one PEM X.509 certificate that parses and whose `not_after` is in the future, else `field_errors.idp_certificate_pem = "invalid"` or `"expired"`; never echoed in any response |
+| `domains` | string[] | yes | 1–20 entries, lowercased RFC 1123 DNS names, distinct; each already claimed by another live connection in any tenant → `409 conflict` with `field_errors.domains` |
+| `attribute_map` | AttributeMap | yes | all four fields present |
+| `clock_skew_seconds` | integer | no | `0..=300`, default `120` |
+| `jit_provisioning` | bool | no | default `false` |
+| `ownership_transfer_to` | uuid? | no | an active user of this tenant; null means the tenant primary admin |
+
+**`AttributeMap`**: `{ email, given_name, family_name, groups }`, each a 1–256 char IdP attribute name
+or URI. All four keys are required — the `identity_connection_attribute_maps` table stores exactly
+four rows per connection — and a missing or extra key is `400 invalid`.
+
+**`UpdateConnectionRequest`** — `PATCH /api/v1/identity/connections/{id}`, every field optional, at
+least one present, `If-Match` required.
+
+| Field | Type | Constraint |
+|---|---|---|
+| `name`, `idp_sso_url`, `domains`, `attribute_map`, `clock_skew_seconds`, `jit_provisioning`, `ownership_transfer_to` | as create | `domains` and `attribute_map` replace the row set whole; they are not merged |
+| `status` | `"draft" \| "active" \| "disabled"` | `active` requires `last_test_at` within 24 hours and `ok: true`, else `409 conflict` with `field_errors.status = "untested"`; `draft` from `active` is rejected as `"irreversible"` |
+| `add_certificate_pem` | string | a second X.509 PEM; its SHA-256 fingerprint must not already exist on the connection (`409 conflict`), and at most 3 non-retired certificates may exist |
+| `retire_certificate_id` | uuid | a certificate of this connection; retiring the last non-retired one → `400 invalid`, `field_errors.retire_certificate_id = "last_certificate"` |
+| `rotate_scim_token` | bool | `true` mints a new token and starts the 15-minute grace period on the old one |
+| `group_mappings` | GroupMapping[] | ≤ 100, replaces the mapping set whole; each `{ external_id?, display_name?, role_ids: uuid[] }` needs at least one of `external_id` or `display_name`, and every `role_id` must be a role of this tenant |
+
+**`ConnectionResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `tenant_id` omitted, `name`, `protocol` | | `tenant_id` is never on the wire; the gateway context carries it |
+| `idp_entity_id`, `idp_sso_url` | string | |
+| `sp_entity_id` | string | OpsHub's entity id for this connection, to paste into the IdP |
+| `acs_url` | string | absolute URL of `POST /auth/saml/{connection_id}/acs` |
+| `metadata_url` | string | absolute URL of `GET /auth/saml/{connection_id}/metadata` |
+| `domains` | string[] | reassembled from `identity_connection_domains` |
+| `attribute_map` | AttributeMap | reassembled from the four rows |
+| `clock_skew_seconds`, `jit_provisioning`, `ownership_transfer_to` | | |
+| `status` | `"draft"\|"active"\|"disabled"` | |
+| `certificates` | CertificateSummary[] | `{ id, fingerprint_sha256, subject, not_before, not_after, retired_at? }`; the PEM itself is never returned |
+| `scim_token_present` | bool | whether a live token exists; the token value is returned once, only from the rotation that minted it |
+| `scim_token` | string? | present **only** in the response to `rotate_scim_token: true`, never on a read |
+| `group_mappings` | GroupMapping[] | |
+| `last_test_at`, `last_login_at`, `last_scim_sync_at` | timestamp? | null until each first happens |
+| `version`, `created_at`, `created_by`, `updated_at`, `updated_by` | | |
+
+**`ConnectionTestResponse`** — `POST /api/v1/identity/connections/{id}/test`, writes only
+`last_test_at`: `{ ok: bool, checked_at: timestamp, checks: [{ name: "certificate_parses"|"certificate_validity"|"sso_url_reachable"|"metadata_renders", ok: bool, detail: string? }] }`. `ok` is the conjunction of the four. A `sso_url_reachable` failure sets `ok: false` with `200`, not `502`: an unreachable IdP is a result of the test, not a failure of the test.
+
+**`GET /api/v1/identity/connections`** returns `Page<ConnectionResponse>` sorted `created_at desc`,
+filterable by `status` and `domain`, with F028's `cursor`, `limit` (1–100, default 50) and
+`include_total`.
+
+**SAML routes.** `GET /auth/saml/{connection_id}/metadata` returns `200` with
+`application/samlmetadata+xml` and no session. `GET /auth/saml/{connection_id}/login` takes
+`RelayState` (≤ 80 bytes, opaque) and answers `302` to the IdP with the HTTP-Redirect binding.
+`POST /auth/saml/{connection_id}/acs` takes `application/x-www-form-urlencoded` with `SAMLResponse`
+(base64) and `RelayState`, and answers `302` to the app on success or to
+`/auth/saml/error?code=<reason>&correlation_id=<id>` on failure, where `reason` is one of
+`bad_signature`, `expired`, `audience_mismatch`, `replayed`, `unknown_domain`, `unknown_user`,
+`user_suspended`, `connection_disabled`. These three routes carry no JSON body and no OpsHub error
+envelope; the reason code on the redirect is the whole contract, and the assertion is never echoed.
+
+#### SCIM 2.0 conformance
+
+`ScimUser` is RFC 7643 §4.1 with the common attributes of §3.1; `ScimGroup` is §4.2. Field names,
+casing, sub-attribute names and the `schemas` array are the RFC's, not ours. Attributes of the User
+schema this service does not store are simply absent from responses (§3.1 permits omitting
+an attribute that holds no value) and are accepted and ignored on write.
+
+**`ScimUser`** — `urn:ietf:params:scim:schemas:core:2.0:User`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `schemas` | string[] | yes | exactly `["urn:ietf:params:scim:schemas:core:2.0:User"]`; anything else → `400` with `scimType` `invalidSyntax` |
+| `id` | string | server | the OpsHub user UUID; read-only (§3.1), supplied by a client → `400` `mutability` |
+| `externalId` | string? | no | ≤ 256 chars, unique per connection; a clash → `409` `scimType` `uniqueness` |
+| `userName` | string | yes | the login identifier; must be an email whose domain is on this connection, else `400` `invalidValue`; unique per tenant → `409` `uniqueness` |
+| `name` | complex? | no | `{ givenName?, familyName?, formatted? }`, each ≤ 256 chars |
+| `displayName` | string? | no | ≤ 256 chars; defaults to `formatted` then `userName` |
+| `emails` | complex[]? | no | `{ value, type?, primary? }`; exactly one may be `primary: true`; the primary `value` must equal `userName` |
+| `active` | bool | no | default `true`; `false` runs the FR-F026-11 suspension |
+| `groups` | complex[] | server | read-only per §4.1.2 — group membership is changed through `/scim/v2/Groups`, and a `groups` value on a User write is ignored |
+| `meta` | complex | server | `{ resourceType: "User", created, lastModified, location, version }` per §3.1 |
+
+**`ScimGroup`** — `urn:ietf:params:scim:schemas:core:2.0:Group`: `schemas` exactly
+`["urn:ietf:params:scim:schemas:core:2.0:Group"]`, `id` (server), `externalId?`, `displayName`
+(required, 1–256, unique per connection), `members` (`[{ value: user id, display?, type?: "User" }]`,
+≤ 5,000), `meta` as above with `resourceType: "Group"`.
+
+**Protocol**, per RFC 7644:
+
+| Operation | Behaviour |
+|---|---|
+| `POST /scim/v2/Users`, `POST /scim/v2/Groups` (§3.3) | `201` with the created resource and a `Location` header equal to `meta.location` |
+| `GET .../Users`, `.../Groups` (§3.4.2) | `200` with `urn:ietf:params:scim:api:messages:2.0:ListResponse` carrying `totalResults`, `startIndex`, `itemsPerPage`, `Resources` |
+| filtering (§3.4.2.2) | only `eq` on `userName`, `externalId` and `displayName` is supported; any other attribute or operator → `400` with `scimType` `invalidFilter`, which §3.4.2.2 requires rather than a silent full list |
+| pagination (§3.4.2.4) | `startIndex` 1-based, default 1; `count` `0..=200`, default 100; a larger `count` is clamped to 200, which §3.4.2.4 permits |
+| `PATCH` (§3.5.2) | body is `urn:ietf:params:scim:api:messages:2.0:PatchOp` with `Operations[] { op: "add"\|"remove"\|"replace", path?, value? }`; a `path` outside the supported attributes → `400` `invalidPath`; `members` supports add, remove and replace |
+| `DELETE /scim/v2/Users/{id}` (§3.6) | deactivates and returns `204`; a repeat returns `404`, since the resource is no longer addressable |
+| errors (§3.12) | `urn:ietf:params:scim:api:messages:2.0:Error` with `status` as a string, `scimType` and `detail`; content type `application/scim+json` on every SCIM response including errors |
+
+SCIM status codes: `400` (`invalidSyntax`, `invalidValue`, `invalidFilter`, `invalidPath`,
+`mutability`), `401` (unknown, revoked or expired bearer token — no `scimType`), `403` (a token whose
+connection is `disabled`), `404` (unknown or already-deleted resource, and any resource of another
+tenant, so a token cannot probe for foreign ids), `409` (`uniqueness`), `429` (over 60 requests per
+minute per token, with `Retry-After` in seconds), `500` on an unexpected failure. There is no `502`:
+SCIM is inbound only.
+
+OpsHub-route status codes: `200` read/`PATCH`/test, `201` create, `400 invalid` per the field tables,
+`403 denied` for a non-`tenant-admin`, `404 not_found` for a connection in another tenant,
+`409 conflict` for domain or fingerprint uniqueness, stale `If-Match`, untested activation, or a
+replayed `Idempotency-Key` with a different body, `429 rate_limited` on the admin quota, and
+`502 unavailable` never — the reachability probe reports through `checks`, not through the status.
+
+### Use case signatures
+
+In `crates/domain/src/sso/`. `Ctx` is F038's `ActorContext`; on `/scim/v2` it is the context the
+`ScimBearer` extractor builds, carrying the connection id as the actor.
+
+```rust
+fn create_connection(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateConnection) -> Result<IdentityConnection, DomainError>;
+fn update_connection(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, expected: Version, req: UpdateConnection) -> Result<IdentityConnection, DomainError>;
+fn list_connections(ctx: &Ctx, repo: &dyn IdentityConnectionRepository, filter: ConnectionFilter, page: Cursor) -> Result<Page<IdentityConnection>, DomainError>;
+fn test_connection(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, probe: &dyn HttpProbe) -> Result<ConnectionTest, DomainError>;
+fn build_metadata(ctx: &Ctx, repo: &dyn IdentityConnectionRepository, id: ConnectionId) -> Result<SpMetadata, DomainError>;
+fn start_login(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, relay_state: Option<RelayState>) -> Result<AuthnRedirect, DomainError>;
+fn consume_assertion(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, response_b64: &str, clock: &dyn Clock) -> Result<SessionGrant, DomainError>;
+fn rotate_scim_token(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, expected: Version) -> Result<PlaintextToken, DomainError>;
+fn scim_list_users(ctx: &Ctx, repo: &dyn UserRepository, query: ScimQuery) -> Result<ScimListPage<ScimUser>, DomainError>;
+fn scim_create_user(ctx: &Ctx, uow: &mut UnitOfWork, req: ScimUser) -> Result<ScimUser, DomainError>;
+fn scim_patch_user(ctx: &Ctx, uow: &mut UnitOfWork, id: UserId, ops: PatchOp) -> Result<ScimUser, DomainError>;
+fn scim_delete_user(ctx: &Ctx, uow: &mut UnitOfWork, id: UserId) -> Result<(), DomainError>;
+fn scim_list_groups(ctx: &Ctx, repo: &dyn GroupRepository, query: ScimQuery) -> Result<ScimListPage<ScimGroup>, DomainError>;
+fn scim_create_group(ctx: &Ctx, uow: &mut UnitOfWork, req: ScimGroup) -> Result<ScimGroup, DomainError>;
+fn scim_patch_group(ctx: &Ctx, uow: &mut UnitOfWork, id: GroupId, ops: PatchOp) -> Result<ScimGroup, DomainError>;
+fn apply_group_mappings(ctx: &Ctx, uow: &mut UnitOfWork, connection: ConnectionId, user: UserId) -> Result<Vec<RoleBinding>, DomainError>;
+fn transfer_ownership(ctx: &Ctx, uow: &mut UnitOfWork, from: UserId, to: UserId) -> Result<TransferSummary, DomainError>;
+```
+
+`test_connection` takes an `HttpProbe` trait rather than a client so the harness never opens a socket.
+`consume_assertion` takes a `Clock` because `NotBefore`/`NotOnOrAfter` with skew is the one piece of
+this feature that cannot be tested against the wall clock.
+
+Transaction boundaries:
+
+- `create_connection` and `update_connection` write the `identity_connections` row, the full
+  `identity_connection_domains` set, the four `identity_connection_attribute_maps` rows, any added or
+  retired `saml_certificates` row, the replaced `group_mappings` and `group_mapping_roles` sets, the
+  audit row and the outbox event in one `UnitOfWork`. A connection with half its domains would send
+  some employees to the wrong tenant, and a connection with three of four attribute rows cannot read
+  an assertion at all.
+- `consume_assertion` opens one `UnitOfWork` covering `claim_assertion_id` (the replay guard — the
+  unique insert **is** the guard, so it must share the transaction that creates the session), the
+  optional JIT user insert, `apply_group_mappings`, the F038 session grant, the audit row and the
+  `saml.login.v1` outbox row. Outside one transaction a replayed assertion could mint a second
+  session.
+- `rotate_scim_token` inserts the new `scim_tokens` row and stamps the old row's `revoked_at` at
+  `now + 15 minutes` in one boundary, so there is never a window with zero or two live tokens.
+- `scim_patch_user` with `active: false` runs the suspension, the session and API-token revocation,
+  `transfer_ownership` over every owned object, and one audit row per transfer, in one `UnitOfWork`
+  shared with the F002 and F003 repositories. A leaver must not end up suspended with objects still
+  owned by an account nobody can sign into.
+- `scim_patch_group` writes the membership change and the recomputed role bindings of every affected
+  user together, because a member added to a mapped group without its binding is a silent
+  authorization gap.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_sso_*.sql` creates `identity_connections(id uuid pk, tenant_id uuid not null, name text not null, protocol text not null default 'saml' check (protocol in ('saml')), idp_entity_id text not null, idp_sso_url text not null, sp_entity_id text not null, clock_skew_seconds smallint not null default 120, jit_provisioning bool not null default false, ownership_transfer_to uuid null references users(id) on delete restrict, status text not null default 'draft' check (status in ('draft','active','disabled')), last_test_at timestamptz, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `saml_certificates(id, tenant_id, connection_id references identity_connections(id) on delete cascade, fingerprint_sha256 text, pem text, not_before timestamptz, not_after timestamptz, retired_at timestamptz)`, `scim_tokens(id, tenant_id, connection_id references identity_connections(id) on delete cascade, token_hash bytea not null, created_at, expires_at, revoked_at)`, `scim_sync_log(id, tenant_id, connection_id references identity_connections(id) on delete restrict, resource text, operation text, external_id text, target_id uuid, outcome text, detail jsonb, occurred_at timestamptz)`, `group_mappings(id, tenant_id, connection_id references identity_connections(id) on delete cascade, external_id text, display_name text, version, audit fields)`, and `saml_assertion_ids(tenant_id, assertion_id text, expires_at, primary key (tenant_id, assertion_id))`.

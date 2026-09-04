@@ -94,6 +94,148 @@ Excluded: live co-editing sessions, presence, and CRDT change replay (F046); cre
 - Rate limiting: link principals are limited to 60 requests per minute per token via the F038 limiter keyed `link:{token_id}`.
 - Error mapping: `DocumentError::TitleTaken → 409 conflict`, `DocumentError::Cycle → 400 invalid (parent_id=cycle)`, `DocumentError::TooDeep → 400 invalid (parent_id=too_deep)`, `DocumentError::StaleVersion | StaleRevision → 409 conflict`, `DocumentError::NotFound → 404 not_found`, `DocumentError::ChecksumMismatch → 503 unavailable`, `AuthzError::Denied → 403 denied`, `RateLimit → 429 rate_limited`, validation → `400 invalid` with `field_errors`.
 
+### Interface
+
+Exact shapes for every route above. Each field lists its JSON name, type, whether it is required,
+and the constraint whose violation produces the stated error. `T?` is nullable; an absent optional
+field and an explicit `null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339
+UTC, `version` increments by one per write. Unlisted request fields are rejected with `400 invalid`
+naming the offending field in `field_errors`. `Page<T>`, `ListQuery`, the signed cursor, the error
+body and its six codes are F028's and are not restated here; `ActorContext` is F038's;
+`PrincipalRef`, `ShareRole` and the guest/link principal kinds are F036's.
+
+**`CreateDocumentRequest`** — `POST /api/v1/documents` (FR-F045-01, FR-F045-02)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `document-editor` on it or on `parent_id`, else `403 denied`; foreign tenant → `404 not_found` |
+| `parent_id` | uuid? | no | a live node of `kind: "folder"` in the same workspace; null means workspace root; a `doc` parent or a deleted parent → `400 invalid` with `field_errors.parent_id` |
+| `kind` | `"folder" \| "doc"` | yes | any other value → `400 invalid` |
+| `title` | string | yes | 1–255 chars after trim; case-insensitively unique among live siblings under `parent_id` → `409 conflict` with `field_errors.title = "taken"` |
+| `body_base64` | string? | no | `doc` only; decoded size ≤ 20 MB → otherwise `400 invalid` with `field_errors.body_base64 = "too_large"`; present on a `folder` → `400 invalid`; when present it creates revision 1 |
+
+**`UpdateDocumentRequest`** — `PATCH /api/v1/documents/{id}` (FR-F045-04), every field optional, at
+least one present, `If-Match: <version>` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `title` | string | no | as above; a sibling clash → `409 conflict` with `field_errors.title = "taken"` |
+| `archived` | bool | no | archiving a folder archives nothing else; archived nodes stay listable with `archived=true` |
+| `search_visibility` | `"inherit" \| "hidden"` | no | `hidden` removes the node from tenant-wide `q` results (FR-F045-12) |
+
+**`MoveDocumentRequest`** — `POST /api/v1/documents/{id}/move` (FR-F045-03), `If-Match` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `parent_id` | uuid? | yes | null moves to workspace root; the node itself or any descendant → `400 invalid` with `field_errors.parent_id = "cycle"`; a resulting depth above 32 → `400 invalid` with `field_errors.parent_id = "too_deep"`; a subtree above 50,000 nodes → `400 invalid` with `field_errors.parent_id = "subtree_too_large"` |
+
+**`AddRevisionRequest`** — `POST /api/v1/documents/{id}/revisions` (FR-F045-07), `If-Match:
+<current_revision>` required and compared against `documents.current_revision`, not `version`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `body_base64` | string | yes | decoded size ≤ 20 MB; empty body → `400 invalid` with `field_errors.body_base64`; multipart `body` part is the equivalent form |
+| `label` | string? | no | ≤ 120 chars |
+
+**`DocumentResponse`** — returned by create, get, patch, move, restore, and as `Page<T>.items`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `workspace_id` | uuid | |
+| `parent_id` | uuid? | null at workspace root |
+| `kind` | `"folder" \| "doc"` | |
+| `title` | string | |
+| `archived` | bool | |
+| `search_visibility` | `"inherit" \| "hidden"` | |
+| `current_revision` | integer | `0` for a folder; pass as `If-Match` on the next revision write |
+| `depth` | integer | 0 at root, ≤ 32 |
+| `path` | uuid array | ancestor ids read from `document_ancestors` ordered by `distance` descending, root first; empty at root |
+| `effective_role` | `ShareRole` | F036's; the role resolved by the root-to-leaf walk of FR-F045-10 |
+| `snippet` | string? | present only on a `q` search hit (FR-F045-06) |
+| `restored_to_root` | bool? | present only on a restore whose parent was still deleted (FR-F045-05) |
+| `version` | integer | pass as `If-Match` on the next metadata write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted node |
+
+**`RevisionResponse`** — `Page<T>.items` of `GET /api/v1/documents/{id}/revisions` (FR-F045-09)
+
+| Field | Type | Notes |
+|---|---|---|
+| `revision` | integer | sequential from 1 |
+| `author_id` | uuid | |
+| `created_at` | timestamp | |
+| `size_bytes` | integer | |
+| `content_checksum` | string | lowercase hex SHA-256 of the stored body |
+| `label` | string? | set at creation, never edited |
+
+**`RevisionDownloadResponse`** — `GET /api/v1/documents/{id}/revisions/{rev}` (FR-F045-08)
+
+| Field | Type | Notes |
+|---|---|---|
+| `revision` | integer | |
+| `download_url` | string | presigned, expires 15 minutes after issue |
+| `expires_at` | timestamp | |
+| `content_checksum` | string | verified on read; a mismatch is `503 unavailable`, not a body |
+
+**List and search parameters** — `GET /api/v1/documents` (FR-F045-06). `Page<DocumentResponse>` in
+F028's envelope; sort key `title` (default) or `updated_at`, each with `id` as tiebreak.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | |
+| `parent_id` | uuid? | no | children of that node; absent means workspace root, which a guest or link principal may not request (`403 denied`, FR-F045-11) |
+| `kind` | `"folder" \| "doc"`? | no | |
+| `deleted` | bool | no | default `false`; `true` is the trash view |
+| `archived` | bool? | no | absent returns both |
+| `q` | string? | no | 1–256 chars, full text over title and body; excludes `hidden` nodes and link-only nodes unless the workspace setting `link_search_discoverable` is true |
+| `limit` | integer | no | 1–100, default 50 |
+| `cursor` | string? | no | F028's signed cursor |
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, a cycle or depth-32 breach on move, a body over 20 MB, `limit` out of range |
+| `403` | `denied` | the caller may see the node but lacks the role — a viewer mutating, a link principal writing or requesting the root listing |
+| `404` | `not_found` | unknown id, another tenant's id, or a node hidden by an explicit deny at any ancestor; never `denied`, so ids do not leak |
+| `409` | `conflict` | stale `If-Match` on `version` (metadata) or on `current_revision` (revision write), a sibling title clash, an `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | a link principal past 60 requests per minute for its token (FR-F045-11); carries `Retry-After` |
+| `503` | `unavailable` | object storage down, or a checksum mismatch on revision read (FR-F045-08) |
+
+### Use case signatures
+
+In `crates/domain/src/documents/`. Every use case takes `ctx` carrying tenant, actor, principal kind
+and correlation id, and a `UnitOfWork` for writes or a repository trait for reads — never a pool or a
+connection — and returns the shared `DomainError` whose HTTP mapping is the table above.
+
+```rust
+fn create_node(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateNode) -> Result<DocumentNode, DomainError>;
+fn rename_or_archive_node(ctx: &Ctx, uow: &mut UnitOfWork, id: DocumentId, expected: Version, req: UpdateNode) -> Result<DocumentNode, DomainError>;
+fn move_node(ctx: &Ctx, uow: &mut UnitOfWork, id: DocumentId, expected: Version, new_parent: Option<DocumentId>) -> Result<DocumentNode, DomainError>;
+fn delete_subtree(ctx: &Ctx, uow: &mut UnitOfWork, id: DocumentId, expected: Version) -> Result<SubtreeCount, DomainError>;
+fn restore_subtree(ctx: &Ctx, uow: &mut UnitOfWork, id: DocumentId) -> Result<DocumentNode, DomainError>;
+fn list_children(ctx: &Ctx, repo: &dyn DocumentRepository, filter: ChildFilter, page: Cursor) -> Result<Page<DocumentNode>, DomainError>;
+fn search_documents(ctx: &Ctx, repo: &dyn DocumentSearchRepository, query: SearchQuery, page: Cursor) -> Result<Page<SearchHit>, DomainError>;
+fn add_revision(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, id: DocumentId, expected: RevisionNo, req: AddRevision) -> Result<DocumentRevision, DomainError>;
+fn list_revisions(ctx: &Ctx, repo: &dyn DocumentRevisionRepository, id: DocumentId, page: Cursor) -> Result<Page<DocumentRevision>, DomainError>;
+fn get_revision_download(ctx: &Ctx, repo: &dyn DocumentRevisionRepository, store: &dyn ObjectStore, id: DocumentId, revision: RevisionNo) -> Result<RevisionDownload, DomainError>;
+fn resolve_effective_access(ctx: &Ctx, repo: &dyn DocumentRepository, id: DocumentId) -> Result<EffectiveAccess, DomainError>;
+```
+
+Transaction boundaries. `add_revision` holds one `UnitOfWork` over `lock_for_revision`, the
+`document_revisions` insert, the `documents.current_revision` bump and the `document_search` upsert,
+with the object `put_immutable` issued before the commit and the transaction aborted when the put
+fails — that boundary is what makes a revision number unique and a metadata row never point at a
+missing object. `move_node` holds one `UnitOfWork` over the `parent_id` change, the
+`document_ancestors` rewrite for every descendant, the `depth` recompute, the audit row and the
+outbox enqueue, so no reader ever observes a subtree whose ancestor closure disagrees with its
+parent pointer. `delete_subtree` and `restore_subtree` each hold one `UnitOfWork` per 1,000-node
+batch, which is what makes a partially deleted subtree impossible within a batch while keeping lock
+duration bounded. `create_node` and `rename_or_archive_node` write the node, the audit row and the
+outbox entry in one `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_documents_*.sql` creates `documents(id uuid pk, tenant_id uuid not null, workspace_id uuid not null, parent_id uuid null references documents(id) on delete restrict, kind text not null check (kind in ('folder','doc')), title text not null, archived bool not null default false, search_visibility text not null default 'inherit', current_revision bigint not null default 0, depth smallint not null default 0 check (depth <= 32), version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `document_ancestors(tenant_id uuid not null, document_id uuid not null references documents(id) on delete cascade, ancestor_id uuid not null references documents(id) on delete cascade, distance smallint not null check (distance >= 1), created_by uuid not null, created_at timestamptz not null, primary key (document_id, ancestor_id))`, `document_revisions(id uuid pk, tenant_id, document_id uuid not null references documents(id) on delete restrict, revision bigint not null, storage_key text not null, content_checksum bytea not null, size_bytes bigint not null, label text, author_id uuid not null, created_at timestamptz not null)`, `document_search(tenant_id uuid not null, document_id uuid not null references documents(id) on delete cascade, tsv tsvector not null, title text not null, snippet text, updated_at timestamptz not null, primary key (tenant_id, document_id))`. The materialized `path uuid[]` is replaced by the `document_ancestors` closure table: one row per (node, ancestor) pair, `distance` 1 for the parent and increasing toward the root. No `jsonb` column exists in this feature; the only non-scalar column left is `document_search.tsv`, a derived search index rebuilt from the title and body, not a payload the product reads back.

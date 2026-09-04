@@ -149,6 +149,7 @@ accepted within ±1 step of 30 seconds; the response is **`MfaFactorResponse`**.
 
 | Field | Type | Required | Constraint |
 |---|---|---|---|
+| 2026-09-04 | F028 error-body amendment | `reason` is now a declared optional field of F028's shared error body rather than an undeclared one this ticket carried alongside `code` | The body belongs to F028; a field only this ticket described would have been dropped by any implementer reading the owner |
 | `label` | string? | no | ≤ 80 chars; first call only |
 | `attestation` | object? | no | second call only; the browser's `PublicKeyCredential` with `id`, `raw_id`, `response.client_data_json`, `response.attestation_object`, all base64url. Absent → the response is the creation options; present → the credential is stored |
 

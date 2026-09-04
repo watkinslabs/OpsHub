@@ -102,6 +102,212 @@ Excluded: insight generation, scheduled scans, evidence records, and assisted wr
 - Error mapping: `AiError::Disabled → 403 denied`, `::NotEntitled → 403 denied`, `::LimitExceeded → 429 rate_limited`, `::UnusableOutput → 502 unavailable`, `::UncompilablePlan → 502 unavailable`, `::PlanHashMismatch → 409 conflict`, `::ProposalNotPending → 409 conflict`, `::StaleBaseline → 409 conflict`, `::NotFound → 404 not_found`, `ProviderError::Refused → 422 invalid`, `AuthzError::Denied → 403 denied`.
 - Seam with F040: F040 depends on `crates/domain/src/ai-assist/provider` and `crates/domain/src/ai-assist/retrieval` as library modules and owns `ai-insights` paths only; F039 owns no insight, scan, evidence, or assisted-action code and F040 adds no adapter, retrieval, or proposal storage of its own.
 
+### Interface
+
+Exact shapes for every route above, plus the three internal boundaries this feature owns and F040
+consumes: the provider trait's argument and result, the retrieval envelope that leaves the process,
+and the proposal diff a human approves. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid` naming the
+field in `field_errors`. `Page<T>`, the signed cursor and the error body with its six codes are
+F028's; `ActorContext` is F038's; `CellValue` is F007's; `ReportDefinition` and the executed row
+shape are F021's; the formula expression and its parse errors are F035's. This feature restates none
+of them.
+
+**`FormulaRequest`** — `POST /api/v1/ai/formulas` (FR-F039-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `resource-viewer` on it; foreign tenant or unreadable → `404 not_found` |
+| `column_id` | uuid? | no | a `formula` column of `sheet_id`; when present it is the proposal's target and its current expression is the diff baseline |
+| `prompt` | string | yes | 1–2,000 chars after trim; a provider safety refusal → `422 invalid` with `field_errors.prompt = "refused"` |
+| `result_type` | enum? | no | an F007 column type the formula must produce; a mismatch caps `confidence` and is listed in `limitations` |
+
+**`FormulaProposalResponse`** — `201`, and the `formula` variant of `ProposalResponse`
+
+| Field | Type | Notes |
+|---|---|---|
+| `request_id` / `proposal_id` | uuid | |
+| `formula` | string | the F035 expression, already parsed once by F035 before it is returned |
+| `explanation` | string | plain text, never provider identifiers or prompt text |
+| `referenced_fields` | `{ sheet_id, column_id, label }` array | reassembled from `ai_proposal_referenced_fields` in `ordinal` order |
+| `confidence` | number | 0.0–1.0; capped at 0.5 when any preview row evaluated with `status: error` |
+| `limitations` | string array | reassembled from `ai_proposal_limitations` in `ordinal` order; may be empty |
+| `preview` | `PreviewRow` array | 0–5 entries (FR-F039-02) |
+| `diff` | `DiffOp` array | the change `apply` would make, against the live baseline |
+| `stale` | bool | `true` when the baseline version moved since generation (FR-F039-13) |
+| `expires_at` | timestamp | creation plus 24 hours |
+
+**`PreviewRow`** — one evaluated row of the formula preview, computed through F035 under the
+caller's own read scope
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | a row of `sheet_id` the caller can read |
+| `value` | `CellValue` | F007's typed union; absent semantics when `status` is `error` |
+| `display` | string | the rendered form |
+| `status` | `"ok" \| "error"` | |
+| `error_code` | string? | F035's parse or evaluation code; present only when `status` is `error` |
+
+**`DiffOp`** — the ordered change list. This is the shape a human approves, so it names exactly what
+`apply` will write and nothing else. F040 reuses it for the `before`/`after` rows of an action
+preview rather than defining a second diff.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `path` | string | yes | dotted path into the target document: `formula` for a formula proposal, or an F021 `ReportDefinition` path such as `sources.1.sheet_id`, `filters.children.0.value`, `aggregates.2` for a plan |
+| `op` | `"add" \| "remove" \| "replace"` | yes | `add` requires `before` absent, `remove` requires `after` absent, `replace` requires both |
+| `before` | json? | conditional | the value at `path` in `baseline`; `null` and absent are distinguished, since clearing a field is not the same as leaving it |
+| `after` | json? | conditional | the value at `path` in `proposed` |
+
+Applying the ordered ops to `baseline` yields `proposed` exactly; the review UI renders the ops and
+never recomputes them from the two documents, so what a person approves is what is written.
+
+**`QueryRequest`** — `POST /api/v1/ai/queries` (FR-F039-03)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `question` | string | yes | 1–2,000 chars after trim |
+| `workspace_id` | uuid? | no | scopes candidate sheets when `sheet_ids` is absent |
+| `sheet_ids` | uuid array? | no | 0–20 entries; more → `400 invalid` with `field_errors.sheet_ids = "over_limit"`; an unreadable entry is not an error, it is returned in `excluded_sources` |
+
+**`QueryPlanResponse`** — `201`, and the body of `GET /api/v1/ai/queries/{id}` (FR-F039-05)
+
+| Field | Type | Notes |
+|---|---|---|
+| `request_id` / `query_id` | uuid | |
+| `question` | string | present on the `GET` only |
+| `plan` | `ReportDefinition` | F021's, validated by F021's validator before it is returned |
+| `plan_explanation` | string | |
+| `plan_hash` | string | lowercase hex SHA-256 of the canonical `plan`; `execute` must echo it |
+| `sources` | `{ alias, sheet_id, name }` array | included `ai_request_sources` rows |
+| `excluded_sources` | `{ sheet_id, reason }` array | `reason` is `denied`, `not_found` or `over_limit`; a sheet is never in both arrays |
+| `estimated_rows` | integer | |
+| `requires_preview` | bool | `true` when any source carries an F007 `sensitive` column |
+| `status` | `"compiled" \| "executed" \| "expired"` | `GET` only |
+| `last_execution` | object? | `GET` only; `{ executed_at, row_count, duration_ms, restricted_sources, hidden_columns }`, null before the first execution |
+| `version` | integer | `GET` only |
+
+**`ExecuteQueryRequest`** — `POST /api/v1/ai/queries/{id}/execute` (FR-F039-06)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `plan_hash` | string | yes | must equal the stored hash → otherwise `409 conflict` with `current_plan_hash` |
+| `cursor` | string? | no | F028's signed cursor |
+| `limit` | integer | no | 1–500, default 100 |
+
+The response is F021's row shape in an F028 `Page<T>` plus `meta { computed_at, duration_ms,
+restricted_sources: { sheet_id, reason } array, hidden_columns: { sheet_id, column_id } array,
+truncated: bool }`, reassembled from the execution's child rows.
+
+**`ApplyProposalRequest`** — `POST /api/v1/ai/proposals/{id}/apply` (FR-F039-11), `Idempotency-Key`
+and `If-Match: <target_version>` required. The body is empty; the target and its expected version
+come from the path and the header, so an apply cannot silently retarget.
+
+**`RejectProposalRequest`** — `POST /api/v1/ai/proposals/{id}/reject` (FR-F039-12)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `reason` | string | yes | 0–500 chars; stored on the proposal and never sent to a provider |
+
+**`AiSettingsRequest`** — `PATCH /api/v1/tenants/{id}/ai-settings` (FR-F039-14), `tenant-admin` and
+`If-Match` required, every field optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `enabled` | bool | no | `false` makes every other F039 route return `403 denied` with `reason: "ai_disabled"` |
+| `provider_id` / `model_id` | string | no | must name an `enabled` `ai_provider_models` row → otherwise `422 invalid` with `field_errors.model_id` |
+| `monthly_token_budget` | integer | no | 0–100,000,000 |
+| `per_user_daily_requests` | integer | no | 0–1,000, default 50 |
+| `timeout_ms` | integer | no | 1,000–60,000, default 20,000 |
+| `redaction_profile` | `"strict" \| "standard"` | no | default `strict` |
+| `retention_days` | integer | no | 1–365, default 30 |
+| `allowed_kinds` | string array | no | subset of `["formula","query"]`; replaced whole, empty disables generation rather than meaning "all" |
+| `sensitive_preview_required` | bool | no | |
+
+`AiSettingsResponse` returns every field above plus `version`, `updated_at` and `updated_by`, and
+never a provider credential.
+
+**`PromptEnvelope`** — the only structure that crosses the provider boundary (FR-F039-07,
+FR-F039-08). Nothing outside this table is ever sent.
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `"formula" \| "query"` | selects the response JSON schema in `provider/schemas/` |
+| `tenant_hash` | string | opaque; never the tenant id, slug, or any workspace or sheet name |
+| `instruction` | string | the fixed per-kind system text plus the user's `prompt` or `question` |
+| `schema_cards` | `SchemaCard` array | 1–20 entries, one per readable sheet |
+| `repair_note` | string? | present only on the single retry: the F035 parser message or the F021 `field_errors` map from the first attempt |
+
+**`SchemaCard`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `sheet_id` | uuid | |
+| `name` | string | |
+| `columns` | `{ column_id, label, type, samples: string array }` array | only columns the caller can read; `samples` holds up to 3 values drawn from readable rows, 200 values per envelope across all cards |
+
+Redaction runs on the serialized envelope before egress: email, E.164 phone and 13–19 digit card
+values become `<redacted:email>`, `<redacted:phone>` or `<redacted:card>`, and under `strict` every
+column whose F007 metadata sets `sensitive` is dropped entirely. The SHA-256 of the redacted
+serialization is stored as `ai_requests.envelope_hash`; the envelope itself is never persisted.
+
+**`Budget` and `Completion`** — the provider trait's other two shapes
+
+| Type | Fields |
+|---|---|
+| `Budget` | `max_input_tokens`, `max_output_tokens`, `timeout_ms` (default 20,000, from `ai_settings`), `max_cost_micros` |
+| `Completion` | `json` (validated against the per-kind schema), `tokens_in`, `tokens_out`, `cost_micros`, `latency_ms` |
+| `ProviderError` | `Timeout`, `Overloaded`, `TransportFailed`, `RateLimited { retry_after_seconds }`, `Refused`, `MalformedOutput { schema_error }` |
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any field constraint above, `sheet_ids` over 20, `limit` out of range |
+| `403` | `denied` | `ai_settings.enabled` false (`reason: "ai_disabled"`), a `kind` with no `ai_setting_allowed_kinds` row (`reason: "kind_not_allowed"`), no F048 entitlement (`reason: "not_entitled"`), a non-admin on `ai-settings`, another actor in the same tenant reading a proposal or query, or the caller lacking the downstream write role at apply time |
+| `404` | `not_found` | unknown or foreign-tenant proposal, query or sheet id |
+| `409` | `conflict` | `plan_hash` mismatch, stale `If-Match` on the apply target, or a proposal that is not `pending` (body carries `current_status`) |
+| `422` | `invalid` | a provider safety refusal (`field_errors.prompt = "refused"`), or a `(provider_id, model_id)` pair that is not an enabled row |
+| `429` | `rate_limited` | `per_user_daily` or `tenant_monthly` exhausted, checked before any provider call; body carries `{ limit, resets_at }` and the response carries `Retry-After` |
+| `502` | `unavailable` | `provider_error: unusable_output` after a second parse failure, `uncompilable_plan` after a second validation failure, or a provider timeout, overload or transport failure |
+| `503` | `unavailable` | the per-tenant circuit breaker is open; body carries `retry_after_seconds` |
+
+### Use case signatures
+
+In `crates/domain/src/ai-assist/service.rs`. Every use case takes `ctx` carrying tenant, actor and
+correlation id, and a `UnitOfWork` for writes or a repository trait for reads — never a pool or a
+connection — and returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn generate_formula(ctx: &Ctx, uow: &mut UnitOfWork, provider: &dyn AiProvider, req: FormulaRequest) -> Result<Proposal, DomainError>;
+fn compile_query(ctx: &Ctx, uow: &mut UnitOfWork, provider: &dyn AiProvider, req: QueryRequest) -> Result<QueryPlan, DomainError>;
+fn execute_query(ctx: &Ctx, uow: &mut UnitOfWork, reports: &dyn ReportRepository, id: RequestId, req: ExecuteQuery) -> Result<Page<ReportRow>, DomainError>;
+fn apply_proposal(ctx: &Ctx, uow: &mut UnitOfWork, id: ProposalId, expected: Version) -> Result<Proposal, DomainError>;
+fn reject_proposal(ctx: &Ctx, uow: &mut UnitOfWork, id: ProposalId, reason: String) -> Result<Proposal, DomainError>;
+fn expire_proposals(ctx: &Ctx, uow: &mut UnitOfWork, now: DateTime<Utc>) -> Result<usize, DomainError>;
+fn update_settings(ctx: &Ctx, uow: &mut UnitOfWork, expected: Version, req: AiSettings) -> Result<AiSettings, DomainError>;
+fn meter_usage(ctx: &Ctx, uow: &mut UnitOfWork, usage: UsageDelta) -> Result<(), DomainError>;
+fn check_limits(ctx: &Ctx, repo: &dyn AiUsageRepository, kind: RequestKind) -> Result<(), DomainError>;
+fn resolve_scope(ctx: &Ctx, authz: &dyn AuthzClient, candidates: Vec<SheetId>) -> Result<RetrievalScope, DomainError>;
+fn build_envelope(ctx: &Ctx, scope: &RetrievalScope, sheets: &dyn SheetRepository, cols: &dyn ColumnRepository, rows: &dyn RowRepository, profile: RedactionProfile) -> Result<(PromptEnvelope, EnvelopeHash), DomainError>;
+```
+
+Transaction boundaries. `generate_formula` and `compile_query` each hold one `UnitOfWork` over the
+`ai_requests` row, its `ai_request_sources` rows, the `ai_proposals` row with its
+`ai_proposal_referenced_fields` and `ai_proposal_limitations` rows, the usage increment and the
+`ai-proposal.created.v1` enqueue — the provider call happens before that transaction opens, so a
+failed model call never leaves a half-written proposal and a committed proposal always has its
+source and grounding rows. `check_limits` runs before egress and inside no transaction, because a
+rejected request must cost nothing. `execute_query` holds one `UnitOfWork` over the
+`ai_query_executions` row, its restricted-source and hidden-column rows, the request status change
+and the `ai-query.executed.v1` enqueue, so the recorded suppression evidence and the returned `meta`
+can never disagree. `apply_proposal` holds one `UnitOfWork` spanning the downstream F035 or F021
+write, the proposal's `mark_applied`, the audit row and the outbox entry, which is what makes the
+`If-Match` check and the write atomic: a concurrent baseline change rolls the whole apply back
+rather than writing against a version the reviewer never saw. `update_settings` replaces
+`ai_setting_allowed_kinds` inside the settings `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_ai-assist_*.sql` creates `ai_requests(id uuid pk, tenant_id uuid not null, actor_id uuid not null references users(id) on delete restrict, kind text not null check (kind in ('formula','query')), input_text text, envelope_hash bytea not null, output_text jsonb, rejected_plan jsonb, provider_id text not null, model_id text not null, status text not null default 'pending' check (status in ('pending','succeeded','failed')), error_code text, tokens_in int not null default 0 check (tokens_in >= 0), tokens_out int not null default 0 check (tokens_out >= 0), cost_micros bigint not null default 0 check (cost_micros >= 0), latency_ms int, correlation_id uuid not null, created_at timestamptz not null, foreign key (provider_id, model_id) references ai_provider_models(provider_id, model_id) on delete restrict)`, `ai_proposals(id uuid pk, tenant_id uuid not null, request_id uuid not null references ai_requests(id) on delete cascade, kind text not null check (kind in ('formula','report_definition')), target_kind text not null check (target_kind in ('column','workspace')), target_id uuid, baseline jsonb, proposed jsonb not null, diff jsonb not null, explanation text not null, confidence real not null check (confidence >= 0 and confidence <= 1), status text not null default 'pending' check (status in ('pending','applied','rejected','expired')), applied_at timestamptz, applied_by uuid references users(id) on delete restrict, applied_target_version bigint, reject_reason text, expires_at timestamptz not null, version bigint not null default 1, audit fields)`, `ai_settings(tenant_id uuid pk, enabled boolean not null default false, provider_id text not null, model_id text not null, monthly_token_budget bigint not null default 5000000 check (monthly_token_budget between 0 and 100000000), per_user_daily_requests int not null default 50 check (per_user_daily_requests between 0 and 1000), timeout_ms int not null default 20000 check (timeout_ms between 1000 and 60000), redaction_profile text not null default 'strict' check (redaction_profile in ('strict','standard')), retention_days int not null default 30 check (retention_days between 1 and 365), sensitive_preview_required boolean not null default true, version bigint not null default 1, audit fields, foreign key (provider_id, model_id) references ai_provider_models(provider_id, model_id) on delete restrict)`, `ai_usage(tenant_id uuid, usage_day date, actor_id uuid not null references users(id) on delete restrict, kind text not null check (kind in ('formula','query')), request_count int not null default 0 check (request_count >= 0), tokens_in bigint not null default 0 check (tokens_in >= 0), tokens_out bigint not null default 0 check (tokens_out >= 0), cost_micros bigint not null default 0 check (cost_micros >= 0), primary key (tenant_id, usage_day, actor_id, kind))`, and `ai_query_executions(id uuid pk, tenant_id uuid not null, request_id uuid not null references ai_requests(id) on delete cascade, actor_id uuid not null references users(id) on delete restrict, plan_hash bytea not null, executed_at timestamptz not null, row_count int not null check (row_count >= 0), duration_ms int not null check (duration_ms >= 0), truncated boolean not null default false)`.

@@ -85,6 +85,7 @@ Canonical contract: `docs/capability-contracts.md` row F050 (aggregate `dynamic-
 ### Rust backend
 
 - Data access (decision section 2.1): `crates/persistence/src/dynamic-views/` holds `DynamicViewRepository` (owns `dynamic_views`), `DynamicViewTokenRepository` (owns `dynamic_view_tokens`), `DynamicViewPolicyRepository` (owns `dynamic_view_policies` and its child tables `dynamic_view_visible_fields`, `dynamic_view_editable_fields`, `dynamic_view_filter_nodes`, `dynamic_view_filter_values`), and `DynamicViewEditRepository` (owns `dynamic_view_edits`); no other class writes these tables, and this feature owns no F006/F007/F013 table. Named queries: `DynamicViewRepository::{list_for_owner, find_for_audience, count_live_for_tenant, soft_delete_with_token_revocation}`, `DynamicViewTokenRepository::{issue_token, find_live_by_hash, revoke_live_token, count_live_edit_tokens}`, `DynamicViewPolicyRepository::{load_policy, replace_policy, list_visible_columns, list_editable_columns, is_column_editable, load_compiled_filter}`, `DynamicViewEditRepository::{append_edit, list_edits_for_view, list_edits_for_row}`. The use cases below depend on those repository traits and contain no SQL; `services/api/src/dynamic-views/` handlers, the public router, and the rate-limit layer call repositories only. The restricted row fetch never builds a SQL string in a handler: `load_compiled_filter` returns the typed predicate and the visible column ID set, and the F006 `RowRepository::list_rows_for_policy(sheet_id, compiled_policy, audience, cursor)` named query composes them into the `rows`/`cells` read, so `rows` and `cells` stay owned by their own repository. A policy save, a token issue or revoke, and an accepted row edit each run as one `UnitOfWork`: the policy replacement spans five tables, and an edit spans the F008 cell write, `dynamic_view_edits`, the audit row, and the outbox enqueue.
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `ne`, `in`, `contains`, `gt`, `lt`, `is_empty`, `is_me` — the scoped external surface deliberately offers fewer controls than a saved view.
 - Domain entities in `crates/domain/src/dynamic-views/`: `DynamicView { id, tenant_id, sheet_id, base_view_id, name, description, public_token: Option<PublicToken>, version, created/updated actor+time, deleted_at }`, `PublicToken { id, view_id, token_hash, expires_at, allow_edit, revoked_at }`, `ViewPolicy { view_id, row_filter: Predicate, visible_fields: Vec<ColumnId>, editable_fields: Vec<ColumnId>, edit_mode: EditMode, assignment_column_id: Option<ColumnId>, allow_new_rows: bool, version }` — the in-memory vectors and predicate tree are assembled by `DynamicViewPolicyRepository` from the child tables and fanned back out on save, `Predicate` (enum `And`, `Or`, `Cmp { column_id, op, value }`, `AssignedToCurrentUser`), `EditMode { None, AssignedRows, AllVisible }`, `DynamicViewEdit { id, view_id, row_id, actor: EditActor, before: Cells, after: Cells, correlation_id, applied_version, created_at }`, `EditActor { User(UserId), Token(TokenId) }`, `Audience { User(UserId) | Group(GroupId) | Token(TokenId) }`.
 - Use cases: `create_view`, `update_view`, `delete_view`, `list_views`, `set_policy`, `list_rows(view, audience, cursor)`, `edit_row(view, audience, row_id, cells)`, `create_row(view, audience, cells)`, `enable_token`, `revoke_token`, `resolve_token(raw) -> (DynamicView, Audience)`; pure functions `project_rows(policy, rows, audience)` and `check_edit(policy, row, audience, cells) -> Result<(), EditDenied>` are unit tested with a predicate table.
 - API endpoints (`services/api/src/dynamic-views/`): `GET /api/v1/dynamic-views`, `POST /api/v1/dynamic-views`, `PATCH /api/v1/dynamic-views/{id}`, `DELETE /api/v1/dynamic-views/{id}`, `PUT /api/v1/dynamic-views/{id}/policy`, `GET /api/v1/dynamic-views/{id}/rows`, `PATCH /api/v1/dynamic-views/{id}/rows/{row_id}`, `GET /public/dynamic-views/{token}`. DTOs: `CreateDynamicViewRequest`, `UpdateDynamicViewRequest { name?, description?, public_token? }`, `PolicyRequest`, `DynamicViewResponse`, `PolicyResponse`, `Page<ProjectedRow>`, `EditRowRequest { cells, version }`, `PublicViewResponse { name, columns, rows_cursor_url, allow_edit, expires_at }`.
@@ -103,11 +104,182 @@ Canonical contract: `docs/capability-contracts.md` row F050 (aggregate `dynamic-
 - Validation: name 1–200 chars; predicate depth ≤ 4 and ≤ 20 leaves; `visible_fields` 1–500 column IDs of the sheet; `expires_at` > now and ≤ now + 30 days; `limit` 1–500; token writes 60 per minute via the F038 rate-limit buckets keyed by `token_id`.
 - Error mapping: `DynamicViewError::NotEditable → 403 denied`, `DynamicViewError::RowNotInView → 404 not_found`, `DynamicViewError::TokenInactive → 403 denied`, `DynamicViewError::LimitReached → 409 conflict`, `DynamicViewError::StaleVersion → 409 conflict`, `DynamicViewError::NotFound → 404 not_found`, `RateLimit → 429 rate_limited`, validation → `400 invalid` with `field_errors`.
 
+### Interface
+
+Exact shapes for every route above. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid` naming the
+field in `field_errors`. `Page<T>`, the signed cursor and the error body with its six codes are
+F028's; `CellValue` is F007's; the filter AST is F013's `FilterNode`; the token context is F036's
+`ScopedContext`. None of them is restated here.
+
+**`CreateDynamicViewRequest`** — `POST /api/v1/dynamic-views` (FR-F050-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `view-owner` on it; foreign tenant or unreadable → `404 not_found` |
+| `name` | string | yes | 1–200 chars after trim, case-insensitively unique among live views of the sheet → otherwise `409 conflict` with `field_errors.name` |
+| `base_view_id` | uuid? | no | an F013 saved view of the same sheet |
+| `description` | string? | no | ≤ 2,000 chars |
+
+The created view carries `edit_mode: "none"` and no visible fields, so nothing is exposed before a
+policy is set. Exceeding the tenant `max_views` limit is `409 conflict` with `field_errors.limit`.
+
+**`UpdateDynamicViewRequest`** — `PATCH /api/v1/dynamic-views/{id}` (FR-F050-05), `If-Match` and
+`Idempotency-Key` required, every field optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | no | as above |
+| `description` | string? | no | explicit null clears it |
+| `public_token` | `PublicTokenRequest` | no | issues or revokes the view's one live link |
+
+**`PublicTokenRequest`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `enable` | bool | yes | `true` issues a new `dynamic_view_tokens` row and revokes the previous live one; `false` sets `revoked_at` on the live row and issues nothing |
+| `expires_at` | timestamp | conditional | required when `enable` is true; must be in the future and at most 30 days out → otherwise `400 invalid` with `field_errors.public_token.expires_at` |
+| `allow_edit` | bool | no | default `false`; enabling it beyond the tenant `max_external_editors` limit → `409 conflict` with `field_errors.limit` |
+
+**`PolicyRequest`** — `PUT /api/v1/dynamic-views/{id}/policy` (FR-F050-02, FR-F050-03). The policy is
+replaced whole, never merged, so a field omitted here is removed from the stored set.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `row_filter` | `FilterNode`? | no | F013's AST; absent or null means every row of the sheet is in scope, which is not the same as an empty branch (invalid). Nodes are stored one per `dynamic_view_filter_nodes` row and this feature restricts F013's tree to depth ≤ 4 and ≤ 20 leaves, to the operator set `eq`, `neq`, `in`, `contains`, `gt`, `lt`, `is_empty`, and to the one extra leaf kind `assigned_to_current_user`, which resolves to the requesting audience at read time and takes no `value`. A breach of any of those → `400 invalid` with `field_errors.row_filter` |
+| `visible_fields` | uuid array | yes | 1–500 live column ids of the view's `sheet_id`, order preserved as `ordinal`; a duplicate or a foreign column → `400 invalid` with `field_errors.visible_fields` |
+| `editable_fields` | uuid array | yes | a subset of `visible_fields`, possibly empty; a member outside it → `400 invalid` with `field_errors.editable_fields` (the composite foreign key makes the rule unbreakable in storage as well) |
+| `edit_mode` | `"none" \| "assigned_rows" \| "all_visible"` | yes | `assigned_rows` requires `assignment_column_id` → otherwise `400 invalid` with `field_errors.edit_mode` |
+| `assignment_column_id` | uuid? | conditional | a `person` column of the sheet, required by `assigned_rows` |
+| `allow_new_rows` | bool | no | default `false`; `true` with `edit_mode: "none"` → `400 invalid` with `field_errors.allow_new_rows` |
+
+**`PolicyResponse`** returns every field above plus `view_id`, `version`, `updated_at` and
+`updated_by`, with `row_filter` rebuilt from the node rows in `ordinal` order so a round trip is
+byte-identical to what was submitted.
+
+**`DynamicViewResponse`** — create, get, patch, and `Page<T>.items` of `GET /api/v1/dynamic-views`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `sheet_id` / `base_view_id` | uuid / uuid / uuid? | |
+| `name` / `description` | string / string? | |
+| `policy` | `PolicyResponse` | always present; the empty policy on a new view |
+| `public_token` | object? | `{ id, expires_at, allow_edit, revoked_at, url }`; present only while a live or revoked row exists, and the raw token appears in `url` exactly once, in the response to the `enable` call that minted it |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | | |
+| `deleted_at` | timestamp? | present only when listing with `deleted=true` as the owner |
+
+`GET /api/v1/dynamic-views` returns `Page<DynamicViewResponse>` sorted by `name` with `id` as
+tiebreak, `limit` 1–200 (default 50), filters `sheet_id`, `name` prefix and `deleted` (default
+`false`); a caller sees only views they own or hold a share on, and a sheet viewer without a share
+gets an empty page rather than `403 denied`.
+
+**Rows** — `GET /api/v1/dynamic-views/{id}/rows` (FR-F050-04) returns `Page<ProjectedRow>` ordered by
+the sheet's row position with `row_id` as tiebreak.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `cursor` | string? | no | F028's signed cursor |
+| `limit` | integer | no | 1–500, default 100 |
+| `fields` | string? | no | comma-separated column ids; any id without a `dynamic_view_visible_fields` row is dropped silently rather than reported, and is never usable for `filter` or `sort` |
+| `filter` / `sort` | string? | no | F028's terms, restricted to visible columns; a hidden column is ignored the same way |
+| `preview_as` | string? | no | owner only: `user:<uuid>` or `token`, so the owner sees exactly what that audience would; any other caller passing it → `400 invalid` |
+
+**`ProjectedRow`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | |
+| `version` | integer | pass back as `version` on the edit route |
+| `cells` | `{ column_id, value, editable }` array | one entry per visible column in `ordinal` order; `value` is F007's `CellValue`; `editable` is `true` only when the column has a `dynamic_view_editable_fields` row *and* the edit mode admits this row for this audience |
+
+A hidden column never appears in `cells`, in an event payload, or in a log line (NFR-F050-02).
+
+**`EditRowRequest`** — `PATCH /api/v1/dynamic-views/{id}/rows/{row_id}` (FR-F050-06),
+`Idempotency-Key` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `cells` | map<uuid, CellValue> | yes | 1–500 entries; a key without a `dynamic_view_editable_fields` row → `403 denied` with `field_errors.cells.<column_id> = "not_editable"`; a value failing the F007 column validation → `400 invalid` |
+| `version` | integer | yes | the `ProjectedRow.version` last read; a mismatch → `409 conflict` with the current version |
+
+The response is the re-projected `ProjectedRow`. A row that does not pass the stored filter for this
+audience is `404 not_found`, never `denied`, so a filter cannot be probed row by row.
+
+**`PublicViewResponse`** — `GET /public/dynamic-views/{token}` (FR-F050-05). The token resolves
+through `find_live_by_hash` into F036's `ScopedContext`: `roles` empty, exactly one scope entry
+`share-link:dynamic-view:<view_id>:<viewer|editor>` chosen by the token's `allow_edit`, `expires_at`
+from the token row, and a re-check on every request that the row is unrevoked and unexpired.
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | string | the view's name and nothing else identifying the tenant |
+| `columns` | `{ column_id, label, type, editable }` array | visible columns only |
+| `rows_cursor_url` | string | the rows endpoint the page pages through, carrying the same token |
+| `allow_edit` | bool | |
+| `expires_at` | timestamp | |
+
+No workspace id, sheet id, sheet name, folder, or any other tenant identifier appears in this
+response or in the rows it links to.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, a filter deeper than 4 or over 20 leaves, `expires_at` beyond 30 days, `preview_as` from a non-owner |
+| `403` | `denied` | a shared user or token writing a column with no editable row, a token that is revoked, expired, or `allow_edit: false`, and a tenant without the `dynamic-views` entitlement (`field_errors.module`) |
+| `404` | `not_found` | unknown or foreign-tenant view, token or row; a sheet viewer with no share on the view; a row outside the audience's filter |
+| `409` | `conflict` | stale `If-Match` on the view, a stale row `version`, a duplicate name, `max_views` or `max_external_editors` reached (`field_errors.limit`) |
+| `429` | `rate_limited` | a public token past 60 writes per minute (FR-F050-08); carries `Retry-After` |
+| `503` | `unavailable` | the underlying sheet read path is unavailable |
+
+### Use case signatures
+
+In `crates/domain/src/dynamic-views/`. Every use case takes `ctx` carrying tenant, actor or resolved
+`ScopedContext`, and correlation id, plus a `UnitOfWork` for writes or a repository trait for reads —
+never a pool or a connection — and returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn create_view(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateDynamicView) -> Result<DynamicView, DomainError>;
+fn update_view(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version, req: UpdateDynamicView) -> Result<DynamicView, DomainError>;
+fn delete_view(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version) -> Result<(), DomainError>;
+fn list_views(ctx: &Ctx, repo: &dyn DynamicViewRepository, filter: ViewFilter, page: Cursor) -> Result<Page<DynamicView>, DomainError>;
+fn set_policy(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version, req: PolicyRequest) -> Result<ViewPolicy, DomainError>;
+fn list_rows(ctx: &Ctx, repo: &dyn RowRepository, view: &DynamicView, audience: Audience, page: Cursor) -> Result<Page<ProjectedRow>, DomainError>;
+fn edit_row(ctx: &Ctx, uow: &mut UnitOfWork, view: &DynamicView, audience: Audience, row: RowId, expected: Version, cells: CellMap) -> Result<ProjectedRow, DomainError>;
+fn create_row(ctx: &Ctx, uow: &mut UnitOfWork, view: &DynamicView, audience: Audience, cells: CellMap) -> Result<ProjectedRow, DomainError>;
+fn enable_token(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version, req: PublicTokenRequest) -> Result<(PublicToken, RawToken), DomainError>;
+fn revoke_token(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version) -> Result<(), DomainError>;
+fn resolve_token(ctx: &Ctx, repo: &dyn DynamicViewTokenRepository, raw: RawToken, now: DateTime<Utc>) -> Result<(DynamicView, ScopedContext), DomainError>;
+fn project_rows(policy: &ViewPolicy, rows: Vec<Row>, audience: &Audience) -> Vec<ProjectedRow>;
+fn check_edit(policy: &ViewPolicy, row: &Row, audience: &Audience, cells: &CellMap) -> Result<(), EditDenied>;
+```
+
+`project_rows` and `check_edit` are pure and take no context, which is what lets the predicate table
+in the unit suite prove the projection rather than trusting the handler. `enable_token` returns the
+raw token exactly once alongside the stored hash; no other function can produce it.
+
+Transaction boundaries. `set_policy` holds one `UnitOfWork` over all five policy tables — the
+`dynamic_view_policies` row, the full replacement of `dynamic_view_visible_fields`, of
+`dynamic_view_editable_fields`, and of the `dynamic_view_filter_nodes` and
+`dynamic_view_filter_values` trees, plus the audit row and the outbox entry. That single boundary is
+what makes the editable-subset invariant hold: an interleaved save can never leave an editable row
+whose visible row has already been deleted, because the composite foreign key is checked inside the
+same transaction that rewrites both sets. `edit_row` and `create_row` hold one `UnitOfWork` over the
+policy re-check, the F008 cell write, the `dynamic_view_edits` row, the audit row and the outbox
+enqueue, so NFR-F050-04's "an edit record never exists without its cell change" is a property of the
+transaction rather than of the handler's ordering, and a revoked token observed inside that
+transaction rolls the whole edit back. `enable_token` revokes the previous live row and inserts the
+new one in one `UnitOfWork`, which the partial unique index on live rows relies on.
+`delete_view` sets `deleted_at`, sets `revoked_at` on the live token, and writes the audit and outbox
+rows in one `UnitOfWork`, so a deleted view can never leave a working link.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_dynamic-views_*.sql` creates `dynamic_views(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete cascade, base_view_id uuid null references views(id) on delete restrict, name text not null, description text, version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at, updated_by uuid not null references users(id) on delete restrict, updated_at, deleted_at)`, `dynamic_view_policies(view_id uuid pk references dynamic_views(id) on delete cascade, tenant_id uuid not null, edit_mode text not null check (edit_mode in ('none','assigned_rows','all_visible')), assignment_column_id uuid null references columns(id) on delete restrict, allow_new_rows bool not null default false, version bigint not null default 1, updated_by uuid not null references users(id) on delete restrict, updated_at)`, and `dynamic_view_edits(id uuid pk, tenant_id uuid not null, view_id uuid not null references dynamic_views(id) on delete restrict, row_id uuid not null references rows(id) on delete restrict, actor_user_id uuid null references users(id) on delete restrict, actor_token_id uuid null references dynamic_view_tokens(id) on delete restrict, before jsonb not null, after jsonb not null, correlation_id uuid not null, applied_version bigint not null, created_at timestamptz not null)`.
 - Normalized sets (decision section 2, no array columns): `dynamic_view_visible_fields(view_id uuid not null references dynamic_view_policies(view_id) on delete cascade, tenant_id uuid not null, column_id uuid not null references columns(id) on delete cascade, ordinal smallint not null, primary key (view_id, column_id), unique (view_id, ordinal))` replaces `visible_fields uuid[]`; `dynamic_view_editable_fields(view_id uuid not null, tenant_id uuid not null, column_id uuid not null, primary key (view_id, column_id), foreign key (view_id, column_id) references dynamic_view_visible_fields(view_id, column_id) on delete cascade)` replaces `editable_fields uuid[]` and turns the former `editable_fields <@ visible_fields` check into a referential constraint that cannot be bypassed by a partial update; `dynamic_view_tokens(id uuid pk, tenant_id uuid not null, view_id uuid not null references dynamic_views(id) on delete cascade, token_hash bytea not null, expires_at timestamptz not null, allow_edit bool not null default false, revoked_at timestamptz null, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null)` replaces the repeated `token_*` columns on `dynamic_views` and is created before `dynamic_view_edits` in the migration, so re-issuing a link keeps the revoked row for the edit records that point at it. `PolicyRequest`, `DynamicViewResponse`, and `PolicyResponse` keep `visible_fields` and `editable_fields` as JSON arrays and `public_token` as an object, so no externally visible behaviour changes; `DynamicViewPolicyRepository::replace_policy` and `DynamicViewTokenRepository::issue_token` fan them out to rows and reassemble them on read.
-- Row filter as tables (decision section 2, the product evaluates and enforces this structure, so it is not a schema-less payload): `dynamic_view_filter_nodes(id uuid pk, tenant_id uuid not null, view_id uuid not null references dynamic_view_policies(view_id) on delete cascade, parent_id uuid null references dynamic_view_filter_nodes(id) on delete cascade, ordinal smallint not null, node_kind text not null check (node_kind in ('and','or','cmp','assigned_to_current_user')), column_id uuid null references columns(id) on delete cascade, op text null check (op in ('eq','neq','in','contains','gt','lt','is_empty')), value text null, check ((node_kind in ('and','or') and column_id is null and op is null) or (node_kind = 'cmp' and column_id is not null and op is not null) or (node_kind = 'assigned_to_current_user' and op is null)), unique (view_id, parent_id, ordinal))` and `dynamic_view_filter_values(node_id uuid not null references dynamic_view_filter_nodes(id) on delete cascade, tenant_id uuid not null, ordinal smallint not null, value text not null, primary key (node_id, ordinal))` hold the `in` operand list. Together they replace `row_filter jsonb`; the API keeps the nested predicate object in `PolicyRequest`/`PolicyResponse` and the tree is rebuilt from the node rows by `load_policy`.
+- Row filter as tables (decision section 2, the product evaluates and enforces this structure, so it is not a schema-less payload): `dynamic_view_filter_nodes(id uuid pk, tenant_id uuid not null, view_id uuid not null references dynamic_view_policies(view_id) on delete cascade, parent_id uuid null references dynamic_view_filter_nodes(id) on delete cascade, ordinal smallint not null, node_kind text not null check (node_kind in ('and','or','leaf')), column_id uuid null references columns(id) on delete cascade, op text null check (op in ('eq','ne','in','contains','gt','lt','is_empty','is_me')), value text null, check ((node_kind in ('and','or') and column_id is null and op is null) or (node_kind = 'leaf' and column_id is not null and op is not null)), unique (view_id, parent_id, ordinal))` and `dynamic_view_filter_values(node_id uuid not null references dynamic_view_filter_nodes(id) on delete cascade, tenant_id uuid not null, ordinal smallint not null, value text not null, primary key (node_id, ordinal))` hold the `in` operand list. The leaf discriminator is `leaf` and "assigned to the person reading this" is the `is_me` operator on a `person` column, both as `docs/filter-vocabulary.md` and F013's `FilterNode` define them — this feature no longer carries a private `cmp` discriminator or an `assigned_to_current_user` node kind. Together they replace `row_filter jsonb`; the API keeps the nested predicate object in `PolicyRequest`/`PolicyResponse` and the tree is rebuilt from the node rows by `load_policy`.
 - `jsonb` audit: `dynamic_view_policies.row_filter` was a queried structure — `project_rows` reads it by key on every rows request and the policy editor validates depth and leaf counts against it — so it becomes `dynamic_view_filter_nodes` and `dynamic_view_filter_values` per decision section 2. `dynamic_view_edits.before` and `dynamic_view_edits.after` stay `jsonb`: they are the before/after diff of typed cell values from F007, never filtered, joined, sorted, or constrained; the queried facts (`view_id`, `row_id`, actor, `applied_version`, `created_at`) are columns. This module stores no view- or widget-settings blob, so no other `jsonb` column exists in it.
 - Invariants: unique `dynamic_views(tenant_id, sheet_id, lower(name)) where deleted_at is null`; unique `dynamic_view_tokens(token_hash)` and partial unique `dynamic_view_tokens(view_id) where revoked_at is null` giving at most one live link per view; `dynamic_view_editable_fields` is a strict subset of `dynamic_view_visible_fields` by composite foreign key, and its primary key blocks a duplicate editable column; `dynamic_view_visible_fields` primary key blocks a duplicate visible column and its `(view_id, ordinal)` unique index keeps column order deterministic; check `(edit_mode <> 'assigned_rows') or (assignment_column_id is not null)`; check `(allow_new_rows = false) or (edit_mode <> 'none')`; `dynamic_view_filter_nodes` node-kind check keeps comparison operands off group nodes, its `(view_id, parent_id, ordinal)` unique index keeps sibling order stable, and depth ≤ 4 and ≤ 20 leaves are enforced by `replace_policy` before insert; check exactly one of `actor_user_id`, `actor_token_id` is non-null on edits.
 - Indexes: `dynamic_views(tenant_id, sheet_id) where deleted_at is null`, `dynamic_view_tokens(token_hash)` for public resolution and `dynamic_view_tokens(tenant_id, allow_edit) where revoked_at is null` for the `max_external_editors` count, `dynamic_view_visible_fields(view_id)` and `dynamic_view_visible_fields(column_id)` for the "which views expose this column" reverse lookup, `dynamic_view_editable_fields(view_id)` for the per-edit editability check, `dynamic_view_filter_nodes(view_id, parent_id, ordinal)` for tree load and `dynamic_view_filter_nodes(column_id)` for the reverse "which policies filter on this column" query used when a column is deleted, `dynamic_view_filter_values(node_id)`, `dynamic_view_edits(view_id, created_at desc)`, `dynamic_view_edits(row_id)`, `dynamic_view_edits(actor_token_id)`.
@@ -191,6 +363,14 @@ Scenario: Revoked public token
 - External dependencies: none
 - Risks and mitigations: policy evaluation on the client would leak data, so projection runs only in the service and the harness asserts hidden columns are absent from raw HTTP bodies; predicate evaluation over 100k rows could be slow, so `load_compiled_filter` turns equality and `in` nodes into bound parameters of the `RowRepository::list_rows_for_policy` named query, which narrows on the indexed `cells` lookup before the remaining predicate runs, and no handler concatenates SQL; token leakage through logs is prevented by logging only the first 6 hex chars of the hash.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset of `docs/filter-vocabulary.md` declared in section 4 and the operator names aligned to it | the private `cmp` discriminator and `assigned_to_current_user` node kind are replaced by `leaf` and the `is_me` operator, and `neq` by `ne`, so a dynamic view's filter is F013's AST rather than a lookalike |
 
 ## 7.1 Agent handoff
 

@@ -94,6 +94,200 @@ Excluded: published forms (F014 owns `/public/forms`), share links to identities
 - Validation: title 1–200 chars, `expires_at` ≤ now + 30 days, `allowed_origins` valid `https://` scheme-host-port origins with no path (≤ 10 distinct rows after deduplication, counted by `PublicationRepository::replace_allowed_origins` before commit), `refresh_interval_s` 60–3600, one active publication per `(target, access)` pair.
 - Error mapping: `PublishError::ExpiryTooFar → 400 invalid`, `PublishError::BadOrigin → 400 invalid`, `PublishError::DuplicateActive → 409 conflict`, `PublishError::StaleVersion → 409 conflict`, `PublishError::NotFound → 404 not_found`, `PublishError::TokenInvalid|Expired|Revoked → 404 not_found`, `PublishError::OriginNotAllowed → 403 denied` (rendered state), `PublishError::RateLimited → 429 rate_limited`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments
+by one per write. Unlisted request fields are rejected with `400 invalid`. `Page<T>`, `ListQuery`, the
+signed cursor, the error body and the six codes are F028's; `ActorContext` is F038's. This module has
+two surfaces with different rules, and the difference is the point of the feature: the `/api/v1`
+surface is authenticated and behaves like every other module, while `/public/publications/{token}`
+and `/embed/{token}` are **unauthenticated** and constrained below.
+
+**`PublishTarget`**: `{ kind: "view" | "report" | "dashboard", id: uuid }`. The id carries no foreign
+key because the target is one of three aggregates; a target the caller cannot read as `publisher` is
+`404 not_found` on the whole request, never a field error that would confirm the id exists.
+
+**`EmbedSettings`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `enabled` | bool | yes | `false` makes `/embed/{token}` return `404 not_found` |
+| `allowed_origins` | string[] | conditional | required and 1–10 entries when `enabled` is `true`; each is a scheme-host-port origin matching `^https://[a-z0-9.-]+(:[0-9]{1,5})?$` with no path, query or trailing slash, else `400 invalid` with `field_errors.embed.allowed_origins[i]`. Duplicates collapse to one `publication_allowed_origins` row and do not count twice against the limit |
+
+**`CreatePublicationRequest`** — `POST /api/v1/publications`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target` | PublishTarget | yes | caller holds `publisher` on it; one active publication per `(target, access)` pair, else `409 conflict` |
+| `title` | string | yes | 1–200 chars after trim. Shown on the public page, so it must not be assumed private |
+| `access` | `"link" \| "tenant"` | no | default `"link"` |
+| `expires_at` | timestamp | no | default now + 30 days; more than 30 days ahead → `400 invalid` with `field_errors.expires_at` |
+| `embed` | EmbedSettings | no | default `{ enabled: false, allowed_origins: [] }` |
+| `refresh_interval_s` | integer | no | 60–3600, default 300 |
+| `show_freshness` | bool | no | default `true` |
+
+**`UpdatePublicationRequest`** — `PATCH /api/v1/publications/{id}`, `If-Match` required, at least one
+field present: `title`, `access`, `expires_at`, `embed`, `refresh_interval_s`, `show_freshness`, each
+constrained as above. `target` is not patchable and is rejected as an unlisted field — repointing a
+live token at another aggregate is a new publication, not an edit. A supplied `embed.allowed_origins`
+**replaces** the origin rows, so a removed origin stops satisfying the embed check on the next request
+(FR-F059-09).
+
+**`TokenIssuedResponse`** — the body of `POST /api/v1/publications` and of
+`POST /api/v1/publications/{id}/rotate-token`
+
+| Field | Type | Notes |
+|---|---|---|
+| `publication_id` | uuid | |
+| `token` | string | 32 random bytes, base64url. Returned **exactly once**, on the response that mints it. Only the SHA-256 hash is stored, so no later read, list or event can reproduce it; a client that loses it rotates |
+| `expires_at` | timestamp | the token's expiry, which is the publication's |
+| `previous_token_expires_at` | timestamp? | on rotation only: when the superseded token stops working, `now + 10 minutes` (FR-F059-02). `null` on first issue |
+
+**`PublicationResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` | uuid | |
+| `target` | PublishTarget | |
+| `title` / `access` / `expires_at` / `embed` / `refresh_interval_s` / `show_freshness` | as the request | |
+| `publisher_id` | uuid | |
+| `status` | `"active" \| "expired" \| "revoked" \| "error"` | `error` when the publisher lost read access or the target was deleted |
+| `error_reason` | `"publisher_access_lost" \| "target_deleted"`? | present only when `status` is `error` |
+| `snapshot` | `{ generated_at: timestamp?, stale: bool, last_error: string? }` | `generated_at` is `null` before the first refresh |
+| `view_count_7d` | integer | aggregated from `publication_views` over the trailing 7 days on read, not stored |
+| `last_viewed_at` | timestamp? | as above; `null` when never viewed |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` / `revoked_at?` | | |
+
+No token, token hash or `snapshot_key` appears here.
+
+**List route.** `GET /api/v1/publications` takes F028's `ListQuery` and returns
+`Page<PublicationResponse>`; sort key `updated_at` descending with `id` as tiebreak, or `expires_at`
+ascending. Filters: `target_kind` (enum), `target_id` (uuid), `status` (enum), `workspace_id` (uuid).
+Only publications whose target the caller may read are visible, so the list is not a way to discover
+what colleagues have published from sheets the caller cannot see.
+
+#### The unauthenticated surface
+
+**What an anonymous caller sends.** `GET /public/publications/{token}` and `GET /embed/{token}` take
+**one** input: the token in the path. No tenant slug, no workspace id, no publication id, no query
+parameter, no cookie and no `Authorization` header participate in resolution — the token is hashed
+and looked up, and nothing else in the request selects a row. The one exception is the embed
+origin check, which reads the `Origin` header (falling back to `Referer`, and to the signed `origin`
+query parameter the publish dialog mints when the browser strips both) purely to *reject*; it never
+selects a different publication. `access: "tenant"` additionally requires a session cookie in the
+same tenant, and a session from another tenant is treated exactly as no session at all.
+
+**What the response may reveal.** The rendered body carries `title`, the target's visible rows or
+widgets, `generated_at` and the freshness state — nothing else. It carries no tenant id, tenant name
+or slug, no workspace id, no user id, name or avatar, no sheet or view id, no column ids beyond those
+the rendering needs, no hidden columns, no comments, attachments or links, and no navigation into the
+app (FR-F059-04, FR-F059-14). Row ids appear only where the rendering needs them as React keys and
+are opaque outside the page. The only outbound link permitted is `Open in OpsHub` on `access:
+"tenant"`, which is a login-gated route.
+
+**No existence oracle.** Every failure on both public routes returns the same bare `404 not_found`
+page with no body detail and no timing difference beyond the constant-time hash comparison: an
+unknown token, a well-formed token that was never issued, an expired token, a superseded token past
+its grace, a revoked or expired publication, a publication whose `embed.enabled` is `false` on the
+embed route, a `tenant`-access token presented with no session or a session from another tenant, and
+every request while `F059_FEATURE` is off. A caller cannot distinguish "this token never existed"
+from "this token existed and was revoked", and cannot learn that a tenant exists by guessing tokens.
+Two states are visibly different, and only because the token was valid: `status = "error"` renders
+the error page with `reason`, and an embed from an unlisted origin renders the denied state — both
+already prove the caller holds a live token.
+
+**`PublicRender`** — the body of `GET /public/publications/{token}` when the token resolves
+
+| Field | Type | Notes |
+|---|---|---|
+| `target_kind` | `"view" \| "report" \| "dashboard"` | decides which renderer the page uses |
+| `title` | string | |
+| `generated_at` | timestamp | when the snapshot was produced |
+| `stale` | bool | `true` when the last refresh failed or `generated_at` is older than `2 × refresh_interval_s` |
+| `refresh_interval_s` | integer | so the page knows its own poll interval without a second request |
+| `show_freshness` | bool | whether the page displays the freshness banner; `stale` is reported either way |
+| `source_versions` | map<string, integer> | `"<source_kind>:<source_id>"` to `source_version`, assembled from `publication_snapshot_sources`. Present only for `access: "tenant"`; omitted entirely for `access: "link"`, because source ids are internal identifiers an anonymous viewer has no use for |
+| `payload` | object | the target-shaped rendering, already permission-filtered at refresh time under the publisher's scope |
+| `error` | `{ reason: "publisher_access_lost" \| "target_deleted" }`? | present instead of `payload` when the publication is in `error`; no data accompanies it |
+
+Response headers on both public routes: `X-OpsHub-Stale: true|false` (FR-F059-05),
+`Cache-Control: private, max-age=30`, and on `/embed/{token}` a
+`Content-Security-Policy: frame-ancestors <origins>` built by space-joining the
+`publication_allowed_origins` rows in `origin` order, with `X-Frame-Options` deliberately omitted so
+the CSP directive is the single arbiter. `/public/publications/{token}` sends
+`frame-ancestors 'none'`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | `expires_at` over 30 days, a malformed or non-`https` origin, an 11th origin, `refresh_interval_s` outside 60–3600, a title outside 1–200, an unlisted field |
+| `403` | `denied` | a non-`publisher` calling a mutation; a publication token presented to any `/api/v1/*` route, rejected at the gateway before routing (FR-F059-14) |
+| `404` | `not_found` | a publication id of another tenant or one whose target the caller may not read; and every failure of the two public routes, as enumerated above. The public routes never answer `403` — a `denied` there would confirm the token is real |
+| `409` | `conflict` | stale `If-Match`, a second active publication for the same `(target, access)`, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | more than 60 requests per minute per token or 600 per minute per client address, carrying `Retry-After` (FR-F059-12) |
+| `503` | `unavailable` | object storage holding the snapshot is unreachable; the page is not rendered from a partial snapshot |
+
+The origin-denied embed case is **not** an HTTP `403`: it renders a `200` denied *state* inside the
+iframe, because the browser needs a document to display and the CSP already stopped the framing.
+
+### Use case signatures
+
+In `crates/domain/src/publishing/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id
+— on the public routes an anonymous `Ctx` whose actor is the resolved token's scope, never a user —
+depends on repository traits rather than a pool or connection, and returns `DomainError`.
+
+```rust
+fn create_publication(ctx: &Ctx, uow: &mut UnitOfWork, req: CreatePublication) -> Result<(Publication, PlaintextToken), DomainError>;
+fn update_publication(ctx: &Ctx, uow: &mut UnitOfWork, id: PublicationId, expected: Version, req: UpdatePublication) -> Result<Publication, DomainError>;
+fn revoke_publication(ctx: &Ctx, uow: &mut UnitOfWork, id: PublicationId) -> Result<(), DomainError>;
+fn rotate_token(ctx: &Ctx, uow: &mut UnitOfWork, id: PublicationId, grace: Duration) -> Result<PlaintextToken, DomainError>;
+fn list_publications(ctx: &Ctx, repo: &dyn PublicationRepository, filter: PublicationFilter, page: Cursor) -> Result<Page<Publication>, DomainError>;
+fn resolve_token(tokens: &dyn PublicationTokenRepository, presented: &str, now: Timestamp) -> Result<ResolvedToken, DomainError>;
+fn render_public(ctx: &Ctx, repo: &dyn PublicationRepository, store: &dyn SnapshotStore, token: &ResolvedToken, session: Option<&ActorContext>) -> Result<PublicRender, DomainError>;
+fn render_embed(ctx: &Ctx, repo: &dyn PublicationRepository, store: &dyn SnapshotStore, token: &ResolvedToken, origin: Option<&Origin>) -> Result<EmbedRender, DomainError>;
+fn refresh_snapshot(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn SnapshotStore, id: PublicationId, scheduled_at: Timestamp) -> Result<SnapshotMeta, DomainError>;
+fn record_view(ctx: &Ctx, uow: &mut UnitOfWork, view: PublicationView) -> Result<(), DomainError>;
+fn expire_due_publications(ctx: &Ctx, uow: &mut UnitOfWork, now: Timestamp) -> Result<Vec<PublicationId>, DomainError>;
+
+fn is_stale(generated_at: Option<Timestamp>, interval_s: u32, last_error: bool, now: Timestamp) -> bool;
+fn origin_allowed(allowed: &[Origin], presented: Option<&Origin>) -> bool;
+```
+
+`resolve_token` returns `DomainError::NotFound` for every failure class — unknown hash, expired,
+superseded past grace, revoked publication — so a caller cannot branch on the reason and neither can
+a handler accidentally surface it. `is_stale` and `origin_allowed` are pure, which is what lets the
+staleness and origin rules be unit tested without a database and keeps the header, the banner and the
+CSP consistent.
+
+**Transaction boundaries.**
+
+- `create_publication` writes the `publications` row, its `publication_allowed_origins` rows, the
+  first `publication_tokens` row, the audit row and the `publication.created.v1` outbox entry in one
+  `UnitOfWork`. The invariant: a publication is never readable without its origin rows, because an
+  embed whose origin set had not yet committed would frame anywhere the CSP defaulted to.
+- `rotate_token` inserts the new token row and sets `superseded_at = now + 10 minutes` on the
+  current one in one `UnitOfWork`, which the partial unique index on
+  `(publication_id) where superseded_at is null` requires: exactly one non-superseded token at all
+  times, never zero and never two.
+- `update_publication` replaces the origin rows and bumps the version under `If-Match` in one
+  `UnitOfWork`, so a removed origin and the version a client will next send commit together.
+- `revoke_publication` sets `revoked_at`, `status = 'revoked'` and revokes **every** token row in one
+  `UnitOfWork`, which is what makes the 5-second guarantee of FR-F059-08 a property of the commit
+  rather than of a background job.
+- `refresh_snapshot` writes the snapshot object to storage first, then commits the
+  `publications` snapshot columns and the replaced `publication_snapshot_sources` rows in one
+  `UnitOfWork`. Order matters: a committed `snapshot_key` pointing at an object that does not exist
+  would render `503` forever, whereas an orphaned object is only garbage.
+- `record_view` writes one sampled `publication_views` row and, at most once per token per five
+  minutes, the `publication.viewed.v1` outbox entry in its own short `UnitOfWork` — never the
+  render's, because analytics must not be able to fail a public render.
+- `list_publications`, `resolve_token`, `render_public` and `render_embed` are reads and take
+  repositories, not a `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_publishing_*.sql` creates `publications(id uuid pk, tenant_id uuid not null, workspace_id uuid not null references workspaces(id) on delete restrict, target_kind text not null check (target_kind in ('view','report','dashboard')), target_id uuid not null, title text not null, access text not null check (access in ('link','tenant')), expires_at timestamptz not null, embed_enabled bool not null default false, refresh_interval_s int not null check (refresh_interval_s between 60 and 3600), show_freshness bool not null default true, publisher_id uuid not null references users(id) on delete restrict, status text not null default 'active' check (status in ('active','expired','revoked','error')), snapshot_key text, snapshot_generated_at timestamptz, snapshot_last_error text, version bigint not null default 1, created_by, created_at, updated_by, updated_at, revoked_at)`, `publication_tokens(id uuid pk, tenant_id uuid not null, publication_id uuid not null references publications(id) on delete restrict, token_hash bytea not null, scope_target_kind text not null check (scope_target_kind in ('view','report','dashboard')), scope_target_id uuid not null, read_only bool not null default true check (read_only), issued_at timestamptz not null, expires_at timestamptz not null, superseded_at timestamptz)`, `publication_views(id uuid pk, tenant_id uuid not null, publication_id uuid not null references publications(id) on delete cascade, token_id uuid references publication_tokens(id) on delete set null, viewed_at timestamptz not null, access text not null check (access in ('link','tenant')), client_hash bytea not null, referrer_origin text, stale bool not null)`. `target_id` carries no foreign key because the target is one of three aggregates selected by `target_kind`; existence is checked by the F013/F021/F023 repository at create and at every refresh, and a deleted target moves the publication to `status = 'error'` (FR-F059-03).

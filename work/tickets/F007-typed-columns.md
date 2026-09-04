@@ -8,7 +8,7 @@ estimate: 8
 target_milestone: M1
 parent_epic: E002
 depends_on: [F006]
-blocks: [F008, F009, F035, F011, F014, F018]
+blocks: [F008, F009, F035, F011, F014, F016, F017, F018]
 conflicts_with: []
 parallel_safe: true
 owned_paths: [crates/persistence/src/columns/**, crates/domain/src/columns/**, services/api/src/columns/**, apps/web/src/features/columns/**, services/api/migrations/*_columns_*.sql, testing/features/F007/**]
@@ -61,6 +61,8 @@ As a sheet editor, I want to add typed columns with options and validation rules
 - **FR-F007-15:** `formula` and `link` columns are created here as shells with no expression and no target row of their own; the expression lives in the F035 `formula_definitions` row and the target in the F009 link tables, set only through F035 and F009 routes, and cells of these types are read-only through cell writes.
 - **FR-F007-16:** Every mutation requires `Idempotency-Key` and `If-Match`, writes an `audit_events` row with a field diff, and publishes the matching `column.*.v1` event; cross-tenant access to any column returns `not_found`.
 - **FR-F007-17:** The web app lets an editor add, edit, reorder, hide, and delete columns from the grid header and a column editor drawer, shows the type-change preview count before confirming, and renders per-cell validation state as an icon with the message in a tooltip and in the accessible name.
+- **FR-F007-18:** A `link` column owns the set of column types it will accept as a link target, one `column_link_accepted_types` row per type, defaulting on create to every type F009 can copy a display value from (`text, number, currency, date, datetime, boolean, person, select, duration`); an empty set is `invalid` with `field_errors.settings.accepted_types = "required"`, a `formula`, `link` or `file` member is `invalid` with `"unsupported_target"`, and F009 FR-F009-09 rejects a link whose target column type is not in the set. Removing a type from the set leaves existing `cell_links` in place and is recorded in the audit diff; it does not re-validate them.
+- **FR-F007-19:** A `file` column owns `column_settings.max_files` (1–50, default 10) and `column_settings.max_file_bytes` (1–the F017 tenant upload ceiling, default that ceiling), and the set of media types it accepts as one `column_file_accepted_media_types` row per entry; an empty set means every media type F017 accepts. A cell write naming more files than `max_files` is `invalid` with code `max`, and F017 rejects an upload into the column whose size exceeds `max_file_bytes` or whose media type is outside the set, so no file is stored that the column would refuse.
 
 ### Non-functional requirements
 
@@ -96,7 +98,7 @@ Canonical contract: `docs/capability-contracts.md` row F007.
 - Domain entities in `crates/domain/src/columns/`: `Column { id, tenant_id, sheet_id, column_type: ColumnType, label, description, required, is_primary, position: FracIndex, width, hidden, settings: ColumnSettings, validation: Vec<ValidationRule>, version, created/updated actor+time, deleted_at }` where `ColumnSettings` is the column's one `column_settings` row and `Vec<ValidationRule>` its `column_validation_rules` rows, both loaded and replaced with the column, `ColumnOption { id, tenant_id, column_id, label, color: ColorToken, position, archived }`, `CellValidationState { tenant_id, row_id, column_id, state: ValidationState (Valid | Invalid | Pending), code: Option<ValidationCode>, message: Option<String>, checked_at }`.
 - `ColumnType` enum in `crates/domain/src/columns/types.rs` with the twelve variants; each variant implements `normalize(raw: &Value, settings: &ColumnSettings, ctx: &TenantContext) -> Result<Normalized, ValidationCode>` and `display(normalized, settings) -> String`; `ValidationCode` is `required | min | max | regex | allowed_options | date_range | unique | type_mismatch | unknown_person | unsupported_conversion`.
 - Conversion matrix in `crates/domain/src/columns/conversion.rs`: `text → any` (re-normalize), `number ↔ currency`, `number → text`, `date → datetime`, `datetime → date` (truncate), `select → text` (option label), `text → select` (create options from distinct values up to 200), `boolean → text`; every other pair is unsupported; `formula`, `link`, and `file` never convert.
-- Data access (decision 2.1): `ColumnRepository` (`columns`, `column_settings`, `column_validation_rules`), `ColumnOptionRepository` (`column_options`), and `CellValidationStateRepository` (`cell_validation_states`) in `crates/persistence/src/columns/`; each table is written by exactly one of them, and cell re-normalization writes `cells` through the F006 `CellRepository` instead of a second SQL path. The use cases below, the validation engine, and the async re-normalization job depend on those repository traits and the shared `UnitOfWork` and contain no SQL.
+- Data access (decision 2.1): `ColumnRepository` (`columns`, `column_settings`, `column_validation_rules`, `column_link_accepted_types`, `column_file_accepted_media_types`), `ColumnOptionRepository` (`column_options`), and `CellValidationStateRepository` (`cell_validation_states`) in `crates/persistence/src/columns/`; each table is written by exactly one of them, and cell re-normalization writes `cells` through the F006 `CellRepository` instead of a second SQL path. The use cases below, the validation engine, and the async re-normalization job depend on those repository traits and the shared `UnitOfWork` and contain no SQL.
 - Use cases: `create_column`, `update_column`, `change_column_type`, `delete_column`, `list_columns`, `reorder_column`, `upsert_options`, `validate_column`, `renormalize_cells`; validation engine `crates/domain/src/columns/validation.rs` exposes `evaluate(rules, normalized, ctx) -> ValidationOutcome` and is reused by F008 cell writes and F014 form submissions.
 - API endpoints (`services/api/src/columns/`): `GET /api/v1/sheets/{sheet_id}/columns`, `POST /api/v1/sheets/{sheet_id}/columns`, `PATCH /api/v1/columns/{id}`, `DELETE /api/v1/columns/{id}`, `POST /api/v1/columns/{id}/reorder`, `POST /api/v1/columns/{id}/validate`. DTOs `CreateColumnRequest`, `UpdateColumnRequest`, `ReorderColumnRequest`, `ColumnResponse { id, sheet_id, type, label, description, required, is_primary, position, width, hidden, settings, validation, options, version, last_validation: { job_id, status, valid_count, invalid_count, checked_at }, audit fields }`, `TypeChangePreview { invalid_count, mode }`, `ValidateJobResponse { job_id, status }`.
 - Events: `column.created.v1`, `column.updated.v1`, `column.deleted.v1`, `column.reordered.v1` with `changed_fields`; validate completion updates `column.updated.v1` with `changed_fields = ["last_validation"]`.
@@ -176,6 +178,8 @@ defaults materialised. A field set on a type it does not apply to is `400 invali
 | `display_format` | string? | no | number, currency, date, datetime, duration | ≤ 64 chars; `null` uses the type default (`YYYY-MM-DD`, RFC 3339 in the resolved zone, grouped decimal at `precision`, `<value><unit>`) |
 | `multi` | bool | no | select | default `false`; true on any other type is `not_applicable` |
 | `time_zone` | string? | no | datetime | IANA name validated against the bundled tz database; `null` defers to F011's resolution order |
+| `max_files` | integer? | no | file | 1–50, default 10; the largest number of `files.id` values one cell may hold |
+| `max_file_bytes` | integer? | no | file | 1–the F017 tenant upload ceiling, default that ceiling; bytes per file, not per cell |
 
 **`ValidationRule`** — one `column_validation_rules` row; at most one per `rule` name, at most 16 per
 column, replaced as a set by `PATCH`.
@@ -193,6 +197,22 @@ column, replaced as a set by `PATCH`.
 `allowed_options` takes no bound: it restricts a `select` cell to non-archived options of its own
 column. `unique` applies to text and number only and is evaluated across non-deleted rows of the
 sheet.
+
+**`accepted_types`** — the `link` column's `column_link_accepted_types` rows, returned as a sorted
+array of column-type names inside `settings` and replaced as a whole set by `PATCH`. F009
+FR-F009-09 reads it; F007 owns it.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `accepted_types` | array of column type names | yes on a `link` column | non-empty; members drawn from `text, number, currency, date, datetime, boolean, person, select, duration`; `formula`, `link` and `file` are `400 invalid` with `field_errors.settings.accepted_types = "unsupported_target"`; `not_applicable` on any other column type |
+
+**`accepted_media_types`** — the `file` column's `column_file_accepted_media_types` rows, returned as
+a sorted array inside `settings` and replaced as a whole set by `PATCH`. F017 reads it at upload
+time so a refused file is never stored.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `accepted_media_types` | array of strings | no | ≤ 32 entries, each an IANA media type or a `type/*` wildcard, lowercased; `[]` means every media type F017 accepts; `not_applicable` on any type but `file` |
 
 **`ColumnOption`**
 
@@ -273,7 +293,7 @@ returns both), `include_deleted` (bool, default `false`).
 | `200` | reads, `PATCH`, reorder, and validate acknowledgement |
 | `201` | column created |
 | `204` | `DELETE` |
-| `400 invalid` | label or description length, width out of 40–1,000, precision outside 0–8, unknown or `not_applicable` settings field, more than 16 rules or a duplicate rule name, regex over 512 chars or that fails to compile, more than 200 options, unsupported conversion, primary-column immutability, column limit reached, unlisted field |
+| `400 invalid` | label or description length, width out of 40–1,000, precision outside 0–8, `max_files` outside 1–50, `max_file_bytes` above the F017 ceiling, an empty or unsupported `accepted_types` member, more than 32 `accepted_media_types`, unknown or `not_applicable` settings field, more than 16 rules or a duplicate rule name, regex over 512 chars or that fails to compile, more than 200 options, unsupported conversion, primary-column immutability, column limit reached, unlisted field |
 | `403 denied` | the actor can read the sheet but lacks `sheet-editor` for a mutation |
 | `404 not_found` | unknown column or sheet, a soft-deleted one, and every foreign-tenant or unreadable id — never `denied`, so ids do not leak |
 | `409 conflict` | duplicate label, stale `If-Match` (body carries the current `version`), `Idempotency-Key` replayed with a different body |
@@ -315,13 +335,13 @@ row and the outbox enqueue, so an unpublished event rolls the mutation back.
 
 ### PostgreSQL/SQLx
 
-- Migration `*_columns_*.sql` creates `columns(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, type text not null check (type in (...twelve...)), label text not null, description text, required bool not null default false, is_primary bool not null default false, position text not null collate "C", width int not null default 160, hidden bool not null default false, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `column_settings(column_id uuid primary key references columns(id) on delete cascade, tenant_id uuid not null, precision smallint check (precision between 0 and 8), currency_code char(3), display_format text, multi bool not null default false, time_zone text, updated_by uuid, updated_at timestamptz not null)`, `column_validation_rules(tenant_id uuid not null, column_id uuid not null references columns(id) on delete cascade, rule text not null check (rule in ('required','min','max','regex','allowed_options','date_range','unique')), min_number numeric, max_number numeric, min_datetime timestamptz, max_datetime timestamptz, pattern text, message text, created_by uuid, created_at timestamptz not null, primary key (column_id, rule))`, `column_options(id uuid pk, tenant_id, column_id references columns(id) on delete restrict, label text not null, color text not null, position text not null collate "C", archived bool not null default false, version, audit fields)`, `cell_validation_states(tenant_id, row_id uuid references rows(id), column_id uuid references columns(id), state text not null check (state in ('valid','invalid','pending')), code text, message text, checked_at timestamptz not null, primary key (row_id, column_id))`.
+- Migration `*_columns_*.sql` creates `columns(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, type text not null check (type in (...twelve...)), label text not null, description text, required bool not null default false, is_primary bool not null default false, position text not null collate "C", width int not null default 160, hidden bool not null default false, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `column_settings(column_id uuid primary key references columns(id) on delete cascade, tenant_id uuid not null, precision smallint check (precision between 0 and 8), currency_code char(3), display_format text, multi bool not null default false, time_zone text, max_files smallint check (max_files between 1 and 50), max_file_bytes bigint check (max_file_bytes > 0), updated_by uuid, updated_at timestamptz not null)`, `column_validation_rules(tenant_id uuid not null, column_id uuid not null references columns(id) on delete cascade, rule text not null check (rule in ('required','min','max','regex','allowed_options','date_range','unique')), min_number numeric, max_number numeric, min_datetime timestamptz, max_datetime timestamptz, pattern text, message text, created_by uuid, created_at timestamptz not null, primary key (column_id, rule))`, `column_options(id uuid pk, tenant_id, column_id references columns(id) on delete restrict, label text not null, color text not null, position text not null collate "C", archived bool not null default false, version, audit fields)`, `column_link_accepted_types(tenant_id uuid not null, column_id uuid not null references columns(id) on delete cascade, target_type text not null check (target_type in ('text','number','currency','date','datetime','boolean','person','select','duration')), primary key (column_id, target_type))`, `column_file_accepted_media_types(tenant_id uuid not null, column_id uuid not null references columns(id) on delete cascade, media_type text not null, primary key (column_id, media_type))`, `cell_validation_states(tenant_id, row_id uuid references rows(id), column_id uuid references columns(id), state text not null check (state in ('valid','invalid','pending')), code text, message text, checked_at timestamptz not null, primary key (row_id, column_id))`.
 - Neither column settings nor validation rules are `jsonb`: the product reads `precision`, `currency_code`, `display_format`, and `multi` by name on every normalization and constrains their ranges, and it evaluates, edits, counts, and audits rules individually, so both are tables (decision 2). One `column_settings` row per column is created with the column by a trigger, so the former empty settings object and the new row mean the same thing; `column_validation_rules` primary key `(column_id, rule)` makes a duplicate rule impossible where the old array could hold two, and a check constraint per rule name requires exactly the bound columns that rule uses (`min`/`max` a number or datetime bound, `regex` a `pattern`, `date_range` both datetime bounds).
 - Invariants: partial unique index `columns_sheet_label_idx on (tenant_id, sheet_id, lower(label)) where deleted_at is null`; partial unique index `columns_sheet_primary_idx on (sheet_id) where is_primary and deleted_at is null`; check `width between 40 and 1000`; `column_options_column_label_idx on (column_id, lower(label)) where not archived`; the 500-column limit is enforced in the service under `select ... for update` on the sheet row.
 - Indexes: `columns(sheet_id, position) where deleted_at is null`, `columns(tenant_id, id)`, `column_validation_rules(tenant_id, rule)` so the engine can find every column carrying a given rule, `column_options(column_id, position)`, `cell_validation_states(column_id, state)` for invalid counts, `cell_validation_states(tenant_id, row_id)`.
 - The F006 `cells` table gains `normalized jsonb` through an additive nullable column in this migration, with the F006 down migration untouched. `normalized` stays `jsonb` for the same reason as `raw`: it is one user-defined typed cell value whose shape follows the tenant's column type, never a structure the product queries by key (decision 2). This migration also moves the interim `cells.validation_state`, `validation_code`, and `validation_message` columns from F006 into `cell_validation_states`, copying every non-default row first and dropping the three columns afterwards, declared and justified as a destructive statement per the F044 migration gate; the down migration recreates the columns and copies the rows back, so the cell-level validation behaviour F006 shipped is unchanged and there is only one source of truth for it.
 - Audit events: `column.create`, `column.update`, `column.type_change`, `column.delete`, `column.reorder`, `column.options_upsert`, `column.validate` with field-level diffs and counts.
-- Retention/deletion: soft delete sets `deleted_at`; purge follows F027; rollback drops `column_options`, `cell_validation_states`, `column_validation_rules`, `column_settings`, `columns`, and the `cells.normalized` column, and restores the three `cells.validation_*` columns.
+- Retention/deletion: soft delete sets `deleted_at`; purge follows F027; rollback drops `column_file_accepted_media_types`, `column_link_accepted_types`, `column_options`, `cell_validation_states`, `column_validation_rules`, `column_settings`, `columns`, and the `cells.normalized` column, and restores the three `cells.validation_*` columns.
 
 ### React/TypeScript
 
@@ -395,6 +415,14 @@ Scenario: Rename keeps references
 - External dependencies: `regex` crate for RE2 semantics; `rust_decimal` for number and currency normalization
 - Risks and mitigations: synchronous re-normalization on large sheets can exceed the write budget, so sheets above 10,000 rows use the async job and cells show `pending` until it completes; `text → select` on high-cardinality data can create hundreds of options, so the conversion caps at 200 distinct values and reports `invalid` for the rest; regex rules could be slow, so RE2 semantics and a per-cell budget are enforced.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Interface review of F009 and F017 | FR-F007-18 and FR-F007-19 added; `column_link_accepted_types` and `column_file_accepted_media_types` tables and `column_settings.max_files` / `max_file_bytes` added; both sets given field tables and added to `ColumnRepository` | F009 FR-F009-09 read `settings.accepted_types` and F017 enforced per-column file limits, but neither had any storage or shape defined here, so two implementers would have invented different ones |
 
 ## 7.1 Agent handoff
 

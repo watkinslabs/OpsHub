@@ -95,6 +95,182 @@ Canonical contract: `docs/capability-contracts.md` row F052 (aggregate `shuttle-
 - Validation: name 1–120 chars; mapping 1–500 columns; `key_column_ids` 1–5; cron five-field syntax; `keep_days` 1–365; `max_errors` 0–10,000; `limit` 1–100.
 - Error mapping: `FlowError::LimitReached → 409 conflict`, `FlowError::RunActive → 409 conflict`, `FlowError::ArchivePurged → 409 conflict`, `FlowError::StaleVersion → 409 conflict`, `FlowError::NotFound → 404 not_found`, mapping/schedule validation → `400 invalid`, `AuthzError::Denied → 403 denied`, module guard → `403 denied`.
 
+### Interface
+
+Exact shapes for every route above. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid` naming the
+field in `field_errors`. `Page<T>`, the signed cursor and the error body with its six codes are
+F028's; `CellValue` is F007's; `import_jobs`, `export_jobs` and the CSV/XLSX parse errors are F010's.
+None of them is restated here.
+
+**`CreateFlowRequest`** — `POST /api/v1/data-shuttle/flows` (FR-F052-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `data-admin` in the tenant and may read the workspace; foreign tenant → `404 not_found` |
+| `sheet_id` | uuid | yes | a live sheet in `workspace_id`; the flow owner must hold `sheet-editor` on it at create time and again at every run |
+| `name` | string | yes | 1–120 chars after trim, case-insensitively unique among live flows of the workspace → otherwise `409 conflict` with `field_errors.name` |
+| `direction` | `"import" \| "export"` | yes | |
+| `location` | `FileLocation` | yes | below |
+| `mapping` | `Mapping` | yes | below |
+| `validation` | `ValidationPolicy` | yes | below |
+| `schedule` | `Schedule` | yes | below |
+| `archive_policy` | `{ keep_days }` | no | `keep_days` 1–365, default 30 |
+
+Exceeding the tenant `max_flows` limit is `409 conflict` with `field_errors.flows = "limit_reached"`.
+
+**`FileLocation`** — one object whose `kind` decides which other member is present; the other two are
+rejected
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"attachment" \| "inbox" \| "connector"` | yes | |
+| `file_id` | uuid | conditional | `attachment` only; an F017 file in the tenant |
+| `prefix` | string | conditional | `inbox` only; 1–255 chars, no leading `/`, no `..` segment |
+| `connection_id` + `path` | uuid + string | conditional | `connector` only; an F029 connection the flow owner may use, else `403 denied` with `field_errors.location.connection_id` |
+
+Any member belonging to another kind → `400 invalid` with `field_errors.location`.
+
+**`Mapping`** (FR-F052-02)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `columns` | `ColumnMap` array | yes | 1–500 entries in the order they are applied; a repeated `source_column` → `400 invalid` with `field_errors.mapping.columns[i].source_column`; two entries on one `column_id` → `400 invalid` with `field_errors.mapping.columns[i].column_id` |
+| `key_column_ids` | uuid array | conditional | 1–5 ids, each also mapped in `columns`; required for `update`, `replace` and `skip`, and rejected for `append` → `400 invalid` with `field_errors.mapping.key_column_ids` |
+| `duplicate_strategy` | `"append" \| "update" \| "replace" \| "skip"` | yes | |
+
+**`ColumnMap`**: `{ source_column: string (1–255 chars, the header as it appears in the file),
+column_id: uuid (a live column of `sheet_id`; a foreign column → `400 invalid` with
+`field_errors.mapping.columns[i].column_id`), coerce: "text" | "number" | "currency" | "date" |
+"datetime" | "boolean" | "select" (incompatible with the column's F007 type → `400 invalid` with
+`field_errors.mapping.columns[i].coerce`) }`.
+
+**`ValidationPolicy`** (FR-F052-04): `{ required_column_ids: uuid array (0–500, each a live column of
+`sheet_id`), max_errors: integer (0–10,000, default 100), on_error: "abort" | "partial" }`.
+
+**`Schedule`** (FR-F052-03)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"manual" \| "cron"` | yes | `manual` writes no `shuttle_schedules` row and rejects `expression` and `timezone` |
+| `expression` | string | conditional | five-field cron; a cadence denser than every 15 minutes → `400 invalid` with `field_errors.schedule.expression = "min_interval_15m"` |
+| `timezone` | string | conditional | an IANA zone name; an unknown zone → `400 invalid` with `field_errors.schedule.timezone` |
+
+**`UpdateFlowRequest`** — `PATCH /api/v1/data-shuttle/flows/{id}`, `If-Match` and `Idempotency-Key`
+required, every field of `CreateFlowRequest` except `workspace_id` and `direction` optional, at
+least one present, plus `enabled: bool`. Each of `mapping`, `validation`, `location` and `schedule`
+is replaced whole rather than merged, so an omitted member of a submitted object is removed.
+
+**`FlowResponse`** — create, patch, and `Page<T>.items` of `GET /api/v1/data-shuttle/flows`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` / `sheet_id` | uuid | |
+| `name` / `direction` | string / enum | |
+| `location` / `mapping` / `validation` / `schedule` / `archive_policy` | objects | reassembled from the typed columns and child rows in `position` and `key_ordinal` order, so a round trip is byte-identical to what was submitted |
+| `owner_id` | uuid | the actor whose permissions every run executes under |
+| `enabled` | bool | |
+| `next_run_at` | timestamp? | null for a manual flow or a disabled flow |
+| `last_run` | `RunSummary`? | `{ id, status, trigger, completed_at, rows_read, rows_rejected }`, null before the first run |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` / `deleted_at` | | |
+
+`GET /api/v1/data-shuttle/flows` returns `Page<FlowResponse>` sorted by `name` with `id` as
+tiebreak, `limit` 1–100 (default 50), filters `workspace_id` (required), `direction`, `enabled` and
+`name` prefix.
+
+**Run request** — `POST /api/v1/data-shuttle/flows/{id}/run` (FR-F052-06) and
+`POST /api/v1/data-shuttle/runs/{id}/replay` (FR-F052-09) both take an empty body and a required
+`Idempotency-Key`, and both return `202` with `RunRequestResponse { run_id, status: "queued" }`
+within 2 seconds. A run already `queued` or `running` for the flow → `409 conflict` with
+`field_errors.run = "already_active"`. A replay whose archive has `purged_at` set → `409 conflict`
+with `field_errors.archive = "purged"`; the replay run records `replay_of_run_id` and reuses the
+`flow_version` captured on the original run, not the current draft.
+
+**`RunResponse`** — `GET /api/v1/data-shuttle/runs/{id}` (FR-F052-10) and `Page<T>.items` of
+`GET /api/v1/data-shuttle/flows/{id}/runs`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `flow_id` | uuid | |
+| `flow_version` | integer | the flow version the run executed against |
+| `status` | `"queued" \| "running" \| "succeeded" \| "failed" \| "partial"` | |
+| `trigger` | `"manual" \| "scheduled" \| "replay"` | |
+| `replay_of_run_id` | uuid? | |
+| `file_checksum` | string? | lowercase hex SHA-256 of the processed file |
+| `import_job_id` / `export_job_id` | uuid? | F010's job record; exactly one is non-null |
+| `counts` | `{ rows_read, rows_inserted, rows_updated, rows_skipped, rows_rejected }` | integers, all non-negative |
+| `error_code` | enum? | `file_too_large`, `too_many_rows`, `sheet_denied`, `fetch_failed`, `parse_failed`, `validation_failed`, `timeout`, `dead_lettered` |
+| `skipped_reason` | enum? | `overlap` or `duplicate_file`; a run may finish `succeeded` carrying one and writing nothing |
+| `rejected_sample` | `RejectedRow` array | the first 50 `shuttle_run_rejections` rows by `row_number`; on the list route this array is absent |
+| `archive_url` / `report_url` | string? | presigned, 15 minutes; present only when the caller may read `sheet_id` and the archive is not purged |
+| `archive_purged` | bool | derived from `shuttle_archives.purged_at`; `true` disables replay |
+| `started_at` / `completed_at` / `duration_ms` / `correlation_id` | | |
+
+**`RejectedRow`**: `{ row_number: integer (1-based line in the source file), reason_code:
+"missing_required" | "coerce_failed" | "duplicate_key" | "unknown_column" | "row_denied",
+source_column: string?, cell_values: object }` where `cell_values` is the verbatim source row and
+every column the caller cannot read is removed from it before serialization (NFR-F052-02).
+
+`GET /api/v1/data-shuttle/flows/{id}/runs` returns `Page<RunResponse>` sorted by `created_at`
+descending with `id` as tiebreak, `limit` 1–100 (default 50), filters `status` and `since`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, a cron denser than 15 minutes, a coerce incompatible with the column type, `limit` out of range |
+| `403` | `denied` | a non-`data-admin` creating, updating, running or replaying; a connector location the owner may not use; a tenant without the `data-shuttle` entitlement (`field_errors.module`) |
+| `404` | `not_found` | unknown or foreign-tenant flow or run id, or a sheet the caller may not read |
+| `409` | `conflict` | duplicate flow name, stale `If-Match`, a run already active, a purged archive on replay, `max_flows` reached (`field_errors.flows`) |
+| `429` | `rate_limited` | the F038 limiter for the route; carries `Retry-After` |
+| `503` | `unavailable` | object storage or the connector adapter is unreachable at request time |
+
+Run-time failures are not HTTP statuses: a file above `max_file_mb`, a file over `max_rows_per_run`,
+or an owner who has lost `sheet-editor` all end the run with the matching `error_code` on the run
+row, because the request was already acknowledged with `202` (FR-F052-05, FR-F052-13).
+
+### Use case signatures
+
+In `crates/domain/src/data-shuttle/`. Every use case takes `ctx` carrying tenant, actor and
+correlation id, and a `UnitOfWork` for writes or a repository trait for reads — never a pool or a
+connection — and returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn create_flow(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateFlow) -> Result<ShuttleFlow, DomainError>;
+fn update_flow(ctx: &Ctx, uow: &mut UnitOfWork, id: FlowId, expected: Version, req: UpdateFlow) -> Result<ShuttleFlow, DomainError>;
+fn list_flows(ctx: &Ctx, repo: &dyn ShuttleFlowRepository, filter: FlowFilter, page: Cursor) -> Result<Page<ShuttleFlow>, DomainError>;
+fn request_run(ctx: &Ctx, uow: &mut UnitOfWork, id: FlowId, trigger: Trigger) -> Result<ShuttleRun, DomainError>;
+fn replay_run(ctx: &Ctx, uow: &mut UnitOfWork, id: RunId) -> Result<ShuttleRun, DomainError>;
+fn list_runs(ctx: &Ctx, repo: &dyn ShuttleRunRepository, id: FlowId, filter: RunFilter, page: Cursor) -> Result<Page<ShuttleRun>, DomainError>;
+fn get_run(ctx: &Ctx, repo: &dyn ShuttleRunRepository, store: &dyn ObjectStore, id: RunId) -> Result<RunDetail, DomainError>;
+fn execute_run(ctx: &Ctx, uow: &mut UnitOfWork, files: &dyn FileFetcher, id: RunId) -> Result<RunOutcome, DomainError>;
+fn purge_archives(ctx: &Ctx, uow: &mut UnitOfWork, now: DateTime<Utc>) -> Result<usize, DomainError>;
+fn compute_next_run(schedule: &Schedule, after: DateTime<Utc>) -> Option<DateTime<Utc>>;
+fn validate_mapping(sheet_columns: &[Column], mapping: &Mapping) -> Result<(), FieldErrors>;
+fn apply_duplicate_strategy(existing: Option<&Row>, incoming: &SourceRow, strategy: DuplicateStrategy) -> RowAction;
+```
+
+`compute_next_run`, `validate_mapping` and `apply_duplicate_strategy` are pure and take no context,
+so the DST and strategy tables in the unit suite prove them rather than trusting the worker.
+
+Transaction boundaries. A flow save holds one `UnitOfWork` over the `shuttle_flows` row, the full
+replacement of `shuttle_flow_column_maps`, `shuttle_flow_key_columns` and
+`shuttle_flow_required_columns`, the `shuttle_schedules` upsert or delete, the audit row and the
+outbox entry — that boundary is what makes the "keys required for `update`/`replace`/`skip` and
+absent for `append`" rule hold, since the strategy column and its key rows can never be observed
+disagreeing. `request_run` holds one `UnitOfWork` over the single-active check and the
+`shuttle_runs` insert, which is what the partial unique index on `(flow_id) where status in
+('queued','running')` relies on: two concurrent requests cannot both create a queued run. The
+scheduler tick claims due `shuttle_schedules` rows `for update skip locked` inside its own
+`UnitOfWork` and records `last_fired_at` there, so two workers never fire one schedule. A run
+completion holds one `UnitOfWork` over the run counts and status, every `shuttle_run_rejections`
+row, the `shuttle_archives` row, the audit row and the `shuttle-run.completed.v1` or
+`shuttle-run.failed.v1` enqueue, so an `abort` run commits neither rows nor a partial archive record.
+`purge_archives` runs one `UnitOfWork` per batch, setting `purged_at` after the object delete so a
+missing object never leaves a row claiming the archive is still available.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_data-shuttle_*.sql` creates `shuttle_flows(id uuid pk, tenant_id uuid not null, workspace_id uuid not null references workspaces(id) on delete restrict, sheet_id uuid not null references sheets(id) on delete restrict, name text not null, direction text not null check (direction in ('import','export')), location_kind text not null check (location_kind in ('attachment','inbox','connector')), location_file_id uuid null references files(id) on delete restrict, location_prefix text null, location_connection_id uuid null references integration_connections(id) on delete restrict, location_path text null, duplicate_strategy text not null check (duplicate_strategy in ('append','update','replace','skip')), max_errors int not null default 100 check (max_errors between 0 and 10000), on_error text not null check (on_error in ('abort','partial')), archive_keep_days smallint not null default 30 check (archive_keep_days between 1 and 365), owner_id uuid not null references users(id) on delete restrict, enabled bool not null default true, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at, check (case location_kind when 'attachment' then location_file_id is not null and location_prefix is null and location_connection_id is null when 'inbox' then location_prefix is not null and location_file_id is null and location_connection_id is null else location_connection_id is not null and location_path is not null and location_file_id is null end))`, `shuttle_schedules(flow_id uuid pk references shuttle_flows(id) on delete cascade, tenant_id uuid not null, expression text not null, timezone text not null, next_run_at timestamptz, last_fired_at timestamptz)`, `shuttle_runs(id uuid pk, tenant_id uuid not null, flow_id uuid not null references shuttle_flows(id) on delete restrict, flow_version bigint not null, status text not null check (status in ('queued','running','succeeded','failed','partial')), trigger text not null check (trigger in ('manual','scheduled','replay')), replay_of_run_id uuid null references shuttle_runs(id) on delete restrict, file_checksum text, import_job_id uuid null references import_jobs(id) on delete restrict, export_job_id uuid null references export_jobs(id) on delete restrict, rows_read int not null default 0, rows_inserted int not null default 0, rows_updated int not null default 0, rows_skipped int not null default 0, rows_rejected int not null default 0, error_code text null check (error_code in ('file_too_large','too_many_rows','sheet_denied','fetch_failed','parse_failed','validation_failed','timeout','dead_lettered')), skipped_reason text null check (skipped_reason in ('overlap','duplicate_file')), validation_report_file_id uuid null references files(id) on delete restrict, started_at, completed_at, duration_ms int, correlation_id uuid, created_at, check ((import_job_id is null) or (export_job_id is null)))`, `shuttle_archives(id uuid pk, tenant_id uuid not null, run_id uuid not null references shuttle_runs(id) on delete cascade, storage_key text not null, checksum text not null, size_bytes bigint not null, mime text not null, retain_until timestamptz not null, purged_at timestamptz)`.

@@ -96,6 +96,192 @@ Canonical contract: `docs/capability-contracts.md` row F054 (aggregate `bridge-w
 - Validation: name 1–120 chars; steps 1–50; `timeout_secs` 5–300; `for_each` ≤ 1,000 items; transform expressions ≤ 500 AST nodes; schedule interval ≥ 5 minutes; `input` ≤ 256 KB.
 - Error mapping: `GraphError::* → 409 conflict` with `field_errors.steps`, `BridgeError::NotPublished → 409 conflict`, `BridgeError::StepNotFailed → 409 conflict`, `BridgeError::LimitExceeded → 409 conflict` with `field_errors.limit`, `BridgeError::QuotaExceeded → 429 rate_limited`, `ConnectionError::Denied → 403 denied`, `NotFound → 404`, `StaleVersion → 409`, validation → `400 invalid`.
 
+### Interface
+
+Exact shapes for every route above. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings except `step_id`, which is a caller-chosen string,
+timestamps are RFC 3339 UTC, `version` increments by one per write. Unlisted request fields are
+rejected with `400 invalid` naming the field in `field_errors`. `Page<T>`, the signed cursor and the
+error body with its six codes are F028's; the run identifier namespace, the queue, quotas, dead
+letters and the cancel route are F019's; `ActionSpec` with its typed `params` and `continue_on_error`
+is F018's and is reused unchanged for `opshub_action` steps; the connector action catalogue and each
+action's typed input schema are F030's; the expression grammar and its AST limits are F035's. None of
+them is restated here.
+
+**`CreateFlowRequest`** — `POST /api/v1/bridge/flows` (FR-F054-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `workflow-editor` on it, else `403 denied`; foreign tenant → `404 not_found` |
+| `name` | string | yes | 1–120 chars after trim, case-insensitively unique among live flows of the workspace → otherwise `409 conflict` with `field_errors.name` |
+| `description` | string? | no | ≤ 2,000 chars |
+| `steps` | `Step` array | yes | 1–50 entries and at most the tenant `max_steps_per_flow`; a 51st → `400 invalid` with `field_errors.steps`, over the limit → `409 conflict` with `field_errors.limit`. Order is significant and is stored as `step_order` |
+
+**`Step`** — the ordered draft element, stored as one `bridge_flow_steps` row plus the one per-kind
+config row its `kind` selects
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | string | yes | 1–64 chars matching `^[a-z0-9_-]+$`, unique within the flow; a duplicate → `400 invalid` with `field_errors.steps[i].id` |
+| `kind` | enum | yes | `trigger`, `connector_action`, `opshub_action`, `transform`, `wait`, `branch`; exactly one `trigger`, and it must be the first step → otherwise `400 invalid` with `field_errors.steps` |
+| `config` | object | yes | the per-kind table below; a member belonging to another kind → `400 invalid` |
+| `next` | string? | no | another step's `id`, or null to end the flow; an unknown id, or a graph containing a cycle or an unreachable step, is rejected at publish with `409 conflict` and `field_errors.steps = "cycle"` |
+| `timeout_secs` | integer | no | 5–300, default 60 |
+
+**`trigger` config** (FR-F054-02) — `kind` selects which members are present; the others are rejected
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"row_event" \| "schedule" \| "inbound_webhook" \| "sync_event"` | yes | anything else → `400 invalid` with `field_errors.steps[i].config.kind` |
+| `sheet_id` + `event` | uuid + `"created" \| "updated" \| "deleted"` | conditional | `row_event` only; a sheet the flow owner may read |
+| `cron_expression` + `cron_timezone` | string + string | conditional | `schedule` only; interval no denser than 5 minutes, IANA zone name |
+| `inbound_token` | — | conditional | `inbound_webhook` only; the token is minted by the server, returned once in the publish response, and stored only as `inbound_token_hash`; it is served by the F019 route `POST /api/v1/webhooks/inbound/{token}` |
+| `sync_id` | uuid | conditional | `sync_event` only; an F030 sync configuration in the tenant |
+
+**`connector_action` config** (FR-F054-03)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `action_ref` | enum | yes | one of `jira.create_issue`, `jira.transition_issue`, `salesforce.update_record`, `slack.post_message`, `box.upload_file`, `dropbox.upload_file`, `google_drive.create_file`; anything else → `400 invalid` |
+| `connection_id` | uuid | yes | an F029 connection the flow owner is authorized for, re-checked per step at run time as well as at publish; unauthorized → `403 denied` with `field_errors.steps[i].config.connection_id` |
+| `input` | map<string, string> | yes | target field name to source expression, one `bridge_flow_step_mappings` row each; validated against the F030 action's typed input schema at publish; a repeated target field → `400 invalid` |
+
+**`opshub_action` config**: `{ action_type: "update_field" | "create_row" | "assign" | "notify",
+target_sheet_id?: uuid, target_field?: string, params: object }`. `params` is F018's `ActionSpec`
+payload for the matching action, validated by F018's own validator rather than a second one here;
+`update_field` requires both `target_sheet_id` and `target_field`.
+
+**`transform` config** (FR-F054-04): `{ mapping: map<string, string> (one
+`bridge_flow_step_mappings` row per entry; each source expression parsed by F035 in restricted mode —
+text, date, arithmetic and conditional functions only, no cross-sheet reference, at most 500 AST
+nodes), for_each?: { source_step_id: string, path: string, max_items: integer (1–1,000) } }`. A
+`for_each` naming a step that does not precede this one, or a `max_items` above 1,000, is
+`400 invalid` with `field_errors.steps[i].config.for_each`.
+
+**`wait` config** (FR-F054-09): `{ kind: "delay" | "approval", delay_seconds?: integer (60–2,592,000,
+`delay` only), approval_group_id?: uuid (`approval` only, an F002 group) }`. A waiting run holds no
+worker slot; a `delay` resumes through the F004 scheduler and an `approval` resumes on
+`approval.decided.v1`, following the decided branch.
+
+**`branch` config** (FR-F054-04): `{ conditions: { condition_expression: string, target_step_id:
+string } array (1–20 entries, evaluated in the submitted order, which is stored as `branch_order`),
+otherwise: string }`. `otherwise` is stored as the step's `next_step_id`; both it and every
+`target_step_id` must name a step of the same flow.
+
+**`UpdateFlowRequest`** — `PATCH /api/v1/bridge/flows/{id}` (FR-F054-05), `If-Match` and
+`Idempotency-Key` required, `name`, `description` and `steps` each optional with at least one
+present. A submitted `steps` array replaces the draft whole rather than merging, and never affects
+the published version.
+
+**`FlowResponse`** — create, patch, and `Page<T>.items` of `GET /api/v1/bridge/flows`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` | uuid | |
+| `name` / `description` | string / string? | |
+| `owner_id` | uuid | the actor whose connection access every step re-checks at run time |
+| `steps` | `Step` array | the draft, reassembled in `step_order` with each `config` rebuilt from its per-kind row and, for branches, its `bridge_flow_step_branches` rows in `branch_order` |
+| `published_version` | integer? | null until the first publish |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` / `deleted_at` | | |
+
+`GET /api/v1/bridge/flows` returns `Page<FlowResponse>` sorted by `name` with `id` as tiebreak,
+`limit` 1–100 (default 50), filters `workspace_id` (required) and `name` prefix.
+
+**Publish** — `POST /api/v1/bridge/flows/{id}/publish` (FR-F054-05) takes an empty body with
+`If-Match` and `Idempotency-Key`, validates the graph, and returns `PublishResponse { version,
+inbound_webhook_url? }`, the URL present exactly once when the flow's trigger is `inbound_webhook`.
+
+**`RunFlowRequest`** — `POST /api/v1/bridge/flows/{id}/run` (FR-F054-06)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `input` | object | no | the trigger payload, ≤ 256 KB serialized; larger → `400 invalid` with `field_errors.input` |
+| `idempotency_key` | string | yes | 1–255 chars, unique per `(tenant_id, flow_id)`; a repeat returns the original run rather than a second one |
+
+Returns `202 RunAccepted { run_id, status: "queued" }` within 2 seconds. A flow with no published
+version → `409 conflict`; a tenant past `max_runs_per_day` → `429 rate_limited`.
+
+**`RetryStepRequest`** — `POST /api/v1/bridge/runs/{id}/retry-step` (FR-F054-10): `{ step_id:
+string }`, `Idempotency-Key` required. The run must be `failed` and the named step must be `failed`;
+anything else → `409 conflict`. The step re-executes with its stored `input_snapshot` and downstream
+steps resume from it.
+
+**`RunResponse`** — `GET /api/v1/bridge/runs/{id}` and `Page<T>.items` of `GET /api/v1/bridge/runs`
+
+| Field | Type | Notes |
+|---|---|---|
+| `run` | object | `{ id, flow_id, flow_version, status, idempotency_key, input, current_step_id, correlation_id, error_code, started_at, finished_at }`; `status` is `queued`, `running`, `waiting`, `succeeded`, `failed` or `cancelled` |
+| `flow_version` | integer | the pinned version, never the current draft |
+| `steps` | `RunStep` array | ordered by `started_at` then `step_order`; absent on the list route |
+
+**`RunStep`**: `{ id, step_id, kind, status ("pending" | "running" | "waiting" | "succeeded" |
+"failed" | "skipped" | "cancelled"), attempts, input_snapshot, output_snapshot, error_code?,
+started_at?, finished_at? }`. Both snapshots are redacted before persistence: connection tokens and
+any header or field whose name matches `authorization|token|secret|password` become `***`, and a
+snapshot above 256 KB is truncated with a marker (FR-F054-08). `GET /api/v1/bridge/runs` sorts by
+`created_at` descending with `id` as tiebreak, `limit` 1–100 (default 50), filters `flow_id`,
+`status`, `from` and `to`.
+
+Cancel is not a route of this feature: Bridge runs share F019's run identifier namespace, so
+cancellation goes through `POST /api/v1/workflow-runs/{id}/cancel` and the executor observes it and
+marks pending steps `cancelled`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any field constraint above, more than 50 steps, an unknown trigger kind, a `for_each` over 1,000, an expression over 500 AST nodes, an `input` over 256 KB |
+| `403` | `denied` | a `workflow-viewer` creating, patching, publishing, running, retrying or cancelling; a connection the owner may not use; a tenant without an active `bridge` entitlement (`field_errors.module`) |
+| `404` | `not_found` | unknown or foreign-tenant flow, version, run or step id |
+| `409` | `conflict` | a graph error (`field_errors.steps` carrying `cycle`, `unreachable`, or `multiple_triggers`), running an unpublished flow, retrying a step that is not `failed`, a stale `If-Match`, `max_flows` or `max_steps_per_flow` reached (`field_errors.limit`) |
+| `429` | `rate_limited` | `max_runs_per_day` exhausted, or the F019 per-tenant queue quota; carries `Retry-After` |
+| `503` | `unavailable` | the F019 queue or an F030 adapter is unreachable at request time |
+
+Connector failures during a run are not HTTP statuses: `unavailable` and `rate_limited` step results
+are retried at 1 s, 4 s and 16 s, and the third failure sets the step and the run `failed` with the
+step's `error_code` (FR-F054-07).
+
+### Use case signatures
+
+In `crates/domain/src/bridge/`. Every use case takes `ctx` carrying tenant, actor and correlation id,
+and a `UnitOfWork` for writes or a repository trait for reads — never a pool or a connection — and
+returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn create_flow(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateFlow) -> Result<BridgeFlow, DomainError>;
+fn update_flow(ctx: &Ctx, uow: &mut UnitOfWork, id: FlowId, expected: Version, req: UpdateFlow) -> Result<BridgeFlow, DomainError>;
+fn publish_flow(ctx: &Ctx, uow: &mut UnitOfWork, id: FlowId, expected: Version, schemas: &dyn ActionSchemaRegistry) -> Result<BridgeFlowVersion, DomainError>;
+fn enqueue_run(ctx: &Ctx, uow: &mut UnitOfWork, id: FlowId, req: RunFlow) -> Result<BridgeRun, DomainError>;
+fn list_runs(ctx: &Ctx, repo: &dyn BridgeRunRepository, filter: RunFilter, page: Cursor) -> Result<Page<BridgeRun>, DomainError>;
+fn get_run(ctx: &Ctx, repo: &dyn BridgeRunStepRepository, id: RunId) -> Result<RunWithSteps, DomainError>;
+fn retry_step(ctx: &Ctx, uow: &mut UnitOfWork, id: RunId, step: StepId) -> Result<BridgeRunStep, DomainError>;
+fn cancel_run(ctx: &Ctx, uow: &mut UnitOfWork, id: RunId) -> Result<BridgeRun, DomainError>;
+fn execute_step(ctx: &Ctx, uow: &mut UnitOfWork, invoker: &dyn ActionInvoker, id: RunId, step: StepId) -> Result<StepOutcome, DomainError>;
+fn validate_graph(steps: &[Step]) -> Result<(), GraphError>;
+fn resolve_action_schemas(steps: &[Step], schemas: &dyn ActionSchemaRegistry) -> Result<(), FieldErrors>;
+fn redact(value: &Json) -> Json;
+```
+
+`validate_graph` and `redact` are pure and take no context, so the cycle, reachability and
+secret-masking suites prove them directly rather than through the executor.
+
+Transaction boundaries. A flow create or patch holds one `UnitOfWork` over the `bridge_flows` row,
+the full replacement of `bridge_flow_steps`, every per-kind config row, every
+`bridge_flow_step_mappings` and `bridge_flow_step_branches` row, the audit row and the outbox entry;
+`(flow_id, step_order)`, `next_step_id` and the branch target foreign keys are deferred to commit,
+which is what lets a graph be rewritten in any order and still be required to be consistent when the
+transaction ends. `publish_flow` holds one `UnitOfWork` over the graph validation, the immutable
+`bridge_flow_versions` row, the `published_version` repoint and the audit row, so a validation
+failure creates no version and a published version can never reference a step set that was not
+frozen. `enqueue_run` holds one `UnitOfWork` over the idempotency-key lookup and the `bridge_runs`
+insert, which is what the unique index on `(tenant_id, flow_id, idempotency_key)` relies on: two
+concurrent submissions of one key produce one run. Each step attempt holds one `UnitOfWork` over the
+`bridge_run_steps` row, the run status transition, the audit row and the
+`bridge-run.step-completed.v1` enqueue, so a redelivered or retried step cannot half-commit — the
+`(run_id, step_id, attempts)` unique index makes the second delivery a no-op rather than a second
+attempt row.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_bridge_*.sql` creates `bridge_flows(id uuid pk, tenant_id uuid not null, workspace_id uuid not null references workspaces(id) on delete restrict, name text not null, description text, owner_id uuid not null references users(id) on delete restrict, published_version bigint, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `bridge_flow_versions(id uuid pk, tenant_id, flow_id uuid not null references bridge_flows(id) on delete cascade, version bigint not null, steps_snapshot jsonb not null, published_by uuid not null references users(id) on delete restrict, published_at timestamptz not null)`, `bridge_runs(id uuid pk, tenant_id, flow_id uuid not null references bridge_flows(id) on delete restrict, flow_version bigint not null, status text not null check (status in ('queued','running','waiting','succeeded','failed','cancelled')), idempotency_key text not null, input jsonb, current_step_id text, correlation_id uuid not null, error_code text, started_at, finished_at, created_at, foreign key (flow_id, flow_version) references bridge_flow_versions(flow_id, version) on delete restrict)`, `bridge_run_steps(id uuid pk, tenant_id, run_id uuid not null references bridge_runs(id) on delete cascade, step_id text not null, kind text not null check (kind in ('trigger','connector_action','opshub_action','transform','wait','branch')), status text not null check (status in ('pending','running','waiting','succeeded','failed','skipped','cancelled')), attempts int not null default 0, input_snapshot jsonb, output_snapshot jsonb, error_code text, started_at, finished_at)`. Runs use `on delete restrict` on the flow because a run is retained history that outlives flow deletion until the F027 retention purge removes it; versions, steps, and step rows cannot outlive their parent and cascade.

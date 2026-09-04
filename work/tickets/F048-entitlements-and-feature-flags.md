@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f048-entitlements-and-feature-flags`
 - Capability area: advanced module gating (spec 5.11 introduction, 5.9 INT-03, 5.10 "AI access is feature-flagged, admin-controllable", section 10 "Advanced modules use entitlement records plus feature flags")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 9, 10; `docs/capability-contracts.md` row F048
+- Aggregate: `entitlement`
 - Module slug: `entitlements`
 
 ## 2. Requirement specification

@@ -93,6 +93,144 @@ Excluded: workflow authoring and validation (F018); approval quorum and escalati
 - Validation: inbound body ≤ 256 KB and valid JSON; `filter[status]` in the six statuses; `filter[error_code]` in the six run error codes; `limit` 1–200. Idempotency for retry/cancel stored in `idempotency_keys` for 24 hours; run idempotency stored in `workflow_runs.idempotency_key` unique index.
 - Error mapping: `RunError::NotFound → 404 not_found`, `RunError::InvalidTransition → 409 conflict`, `WebhookError::BadSignature → 403 denied`, `WebhookError::RateLimited → 429 rate_limited`, `WebhookError::BodyTooLarge → 400 invalid`, `AuthzError::Denied → 403 denied`, quota exhaustion is never an HTTP error (runs stay queued).
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC. Unlisted fields are rejected with
+`400 invalid`. `Page<T>`, the opaque cursor and `ListQuery` are F028's; the error body and the six
+codes are the shared ones; `WorkflowDefinition`, `Trigger`, `ActionKind` and `ActionSpec` are F018's
+and are replayed from the pinned version rather than restated here; `ActorContext` is F038's.
+
+Four of the six routes take no request body: `GET /api/v1/workflow-runs`,
+`GET /api/v1/workflow-runs/{id}` and `GET /api/v1/workflows/{id}/runs` are reads, and `retry` and
+`cancel` are `POST`s with an empty body carrying only `Idempotency-Key` and `If-Match`. A non-empty
+body on any of them is `400 invalid`. The one route with a caller-supplied body is the inbound
+webhook, whose body is opaque.
+
+**`RunResponse`** — the list item (FR-F019-11) and the envelope of `retry` and `cancel`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the `workflow_runs` row |
+| `workflow_id` | uuid | |
+| `workflow_version_id` | uuid | the immutable F018 version this run is pinned to; editing the workflow never moves it |
+| `workflow_version_no` | integer | that version's `version_no`, denormalised into the response for display |
+| `status` | `"queued" \| "running" \| "completed" \| "failed" \| "dead_lettered" \| "cancelled"` | |
+| `trigger_kind` | TriggerKind | one of the seven `workflow_runs.trigger_kind` members; `field_changed` and `date_reached` runs are recorded under the event that materialised them |
+| `trigger` | object | the captured trigger event body, returned verbatim; its shape is the event's, not this feature's |
+| `attempt` | integer | attempts consumed so far, 0 before the first execution, at most 5 (FR-F019-06) |
+| `depth` | integer | 0 for a run started by a human or a schedule, incremented per nested run, capped at 5 |
+| `parent_run_id` | uuid? | the run whose action started this one; `null` at the root of the chain |
+| `correlation_id` | uuid | shared by every run in one chain and by the audit rows |
+| `queued_at` | timestamp | |
+| `started_at` / `finished_at` | timestamp? | `null` while `queued`; `finished_at` `null` while `running` |
+| `duration_ms` | integer? | `finished_at − started_at`; present only on a terminal status |
+| `next_attempt_at` | timestamp? | present only while `status` is `failed` and attempts remain; the backoff instant of FR-F019-06 |
+| `error_code` | RunErrorCode? | see below; `null` on `completed` |
+| `error_message` | string? | human text, never parsed; present exactly when `error_code` is |
+| `version` | integer | pass as `If-Match` to `retry` or `cancel` |
+
+**`RunErrorCode`** — the closed set a support engineer filters and branches on, matching the
+`workflow_runs.error_code` check: `action_failed`, `timeout`, `loop_detected`, `workflow_disabled`,
+`permission_denied`, `heartbeat_lost`. `timeout` carries the wall-time or step budget it exceeded in
+`error_message` (FR-F019-07); `loop_detected` is the sixth nested run (FR-F019-10);
+`workflow_disabled` is a run stopped at a step boundary by F018 (FR-F019-13); `heartbeat_lost` is set
+by the reaper on a run whose worker died. The provider or executor response that produced the failure
+is not in this envelope — it is `error_detail`, returned only on the step, so a list page never
+carries a payload.
+
+**`RunDetailResponse`** — `GET /api/v1/workflow-runs/{id}`: every field of `RunResponse` plus
+`steps: RunStepResponse[]` in `index` order, one entry per step per attempt, and `error_detail`
+(object?, the failing executor's response snapshot, present only when `error_code` is).
+
+**`RunStepResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `index` | integer | the step's position in the pinned version's `workflow_steps`, 0-based |
+| `kind` | ActionKind | F018's twelve action kinds; F020's `request_approval` and F054's connector steps appear here like any other |
+| `status` | `"pending" \| "running" \| "completed" \| "failed" \| "skipped_error"` | `skipped_error` is a failed step whose `continue_on_error` was `true`, so the run continued (FR-F019-05) |
+| `attempt` | integer | 1-based; the unique key is `(run_id, index, attempt)`, so a retried step is a new row, never an overwrite |
+| `started_at` / `finished_at` | timestamp? | |
+| `output` | object? | the executor's success snapshot, returned verbatim; absent on a failed step |
+| `error_code` | RunErrorCode? | the same closed set as the run |
+| `error_message` | string? | present exactly when `error_code` is |
+| `error_detail` | object? | the executor or provider response that explains the failure — the field the dead-letter console shows and the reason it is a step field and not a run field |
+
+**List routes.** `GET /api/v1/workflow-runs` and `GET /api/v1/workflows/{id}/runs` both return
+`Page<RunResponse>` in F028's envelope `{ items, next_cursor, has_more, total? }`, sorted by
+`queued_at` descending — the only sort key, because that is the order the
+`workflow_runs(tenant_id, workflow_id, queued_at desc)` index serves — with `limit` 1–200. Filters,
+each `400 invalid` with `field_errors.filter` when outside its set:
+
+| Filter | Type | Constraint |
+|---|---|---|
+| `status` | RunStatus | one of the six |
+| `workflow_id` | uuid | rejected on `/workflows/{id}/runs`, where the path already fixes it |
+| `started_after` / `started_before` | timestamp | RFC 3339; `started_after` must not exceed `started_before` |
+| `error_code` | RunErrorCode | one of the six; the dead-letter console's failure-class filter served by `workflow_runs(tenant_id, error_code)` |
+
+**Inbound webhook** — `POST /api/v1/webhooks/inbound/{token}` (FR-F019-04). The body is arbitrary
+JSON up to 256 KB, stored as the run's `trigger` and never interpreted by this feature. It carries no
+session: `token` is the `inbound_webhooks.token` and the caller proves possession of the secret.
+
+| Header | Type | Required | Constraint |
+|---|---|---|---|
+| `X-OpsHub-Signature` | string | yes | hex HMAC-SHA256 of the raw body under the token's `secret_ref` secret, compared in constant time; a mismatch is `403 denied` and no run is created |
+| `X-OpsHub-Delivery-Id` | string | yes | 1–128 chars; a repeat within 24 hours returns `200` with the original `run_id` and creates no second run |
+| `Content-Type` | string | yes | `application/json`; anything else is `400 invalid` |
+
+**`InboundWebhookResponse`** `{ run_id: uuid, delivery_id: string }`, returned `202` on a new
+delivery and `200` on a replay, so a sender can tell the two apart without parsing the body.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `202` | — | a new inbound webhook delivery accepted and queued |
+| `400` | `invalid` | a filter value outside its set, a body over 256 KB or not valid JSON, a body on `retry` or `cancel`, an out-of-range `limit` or malformed cursor |
+| `403` | `denied` | a `workflow-viewer` calling `retry` or `cancel`, which need `workflow-editor`; a webhook signature mismatch |
+| `404` | `not_found` | unknown, foreign-tenant or invisible run, workflow or webhook token; an unknown token is never distinguished from a wrong one |
+| `409` | `conflict` | `retry` on a run that is not `failed` or `dead_lettered`, `cancel` on a run that is not `queued` or `running`, stale `If-Match`, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | more than 60 inbound deliveries per minute for one token; carries `Retry-After` |
+| `503` | `unavailable` | JetStream or the outbox is unreachable. Tenant quota exhaustion is **not** an error: those runs stay `queued` and are dequeued round-robin (FR-F019-08) |
+
+### Use case signatures
+
+In `crates/domain/src/workflow-runtime/`. Every one takes `ctx: &ActorContext` — for worker paths the
+per-tenant service actor of NFR-F019-02 — takes a `UnitOfWork` for writes or a repository trait for
+reads, never a pool or a connection, and returns the shared `DomainError`.
+
+```rust
+fn match_event_to_workflows(ctx: &ActorContext, repo: &dyn WorkflowVersionRepository, event: &ChangeEvent) -> Result<Vec<WorkflowVersionId>, DomainError>;
+fn enqueue_run(ctx: &ActorContext, uow: &mut UnitOfWork, version: WorkflowVersionId, trigger: TriggerPayload, parent: Option<RunId>) -> Result<WorkflowRun, DomainError>;
+fn execute_run(ctx: &ActorContext, uow: &mut UnitOfWork, registry: &ExecutorRegistry, id: RunId) -> Result<WorkflowRun, DomainError>;
+fn execute_step(ctx: &ActorContext, uow: &mut UnitOfWork, registry: &ExecutorRegistry, id: RunId, index: StepIndex, attempt: Attempt) -> Result<StepOutcome, DomainError>;
+fn schedule_retry(ctx: &ActorContext, uow: &mut UnitOfWork, id: RunId, attempt: Attempt) -> Result<Timestamp, DomainError>;
+fn dead_letter_run(ctx: &ActorContext, uow: &mut UnitOfWork, id: RunId) -> Result<WorkflowRun, DomainError>;
+fn tick_schedules(ctx: &ActorContext, uow: &mut UnitOfWork, now: Timestamp, limit: usize) -> Result<Vec<RunId>, DomainError>;
+fn ingest_inbound_webhook(ctx: &ActorContext, uow: &mut UnitOfWork, token: &WebhookToken, delivery: DeliveryId, body: Bytes, signature: &str) -> Result<WorkflowRun, DomainError>;
+fn retry_run(ctx: &ActorContext, uow: &mut UnitOfWork, id: RunId, expected: Version) -> Result<WorkflowRun, DomainError>;
+fn cancel_run(ctx: &ActorContext, uow: &mut UnitOfWork, id: RunId, expected: Version) -> Result<WorkflowRun, DomainError>;
+fn get_run(ctx: &ActorContext, repo: &dyn WorkflowRunRepository, id: RunId) -> Result<RunDetail, DomainError>;
+fn list_runs(ctx: &ActorContext, repo: &dyn WorkflowRunRepository, filter: RunFilter, page: Cursor) -> Result<Page<WorkflowRun>, DomainError>;
+```
+
+**Transaction boundaries.** `enqueue_run` is one `UnitOfWork` covering the `enqueue_if_absent` insert
+on `(tenant_id, idempotency_key)`, the audit row and the `workflow-run.queued.v1` outbox entry, and
+the JetStream ack happens only after it commits — that boundary is exactly what makes FR-F019-02
+hold, because a redelivery finds the row and a crash before commit leaves nothing to ack.
+`execute_step` is one `UnitOfWork` per step attempt covering the `workflow_run_steps` row for
+`(run_id, index, attempt)`, the run's status transition, `next_attempt_at`, and the outbox entry for
+any state change; a step's own side effect is executed by its executor before that boundary and is
+made idempotent on the same triple, so a worker that dies between the effect and the commit re-runs
+the step without duplicating it. `ingest_inbound_webhook` writes the
+`inbound_webhook_deliveries` row and the run in one boundary, so a replayed `X-OpsHub-Delivery-Id`
+can never create a second run. `retry_run` and `cancel_run` each take one boundary over the status
+transition under the expected version, the audit row and the outbox entry.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_workflow-runtime_*.sql` creates `workflow_runs(id uuid pk, tenant_id uuid not null, workflow_id uuid not null, workflow_version_id uuid not null, status text not null check (status in ('queued','running','completed','failed','dead_lettered','cancelled')), trigger_kind text not null check (trigger_kind in ('row_created','row_updated','form_submitted','approval_decided','schedule','date_reached','webhook_received')), trigger jsonb not null, idempotency_key bytea not null, correlation_id uuid not null, parent_run_id uuid null, depth int not null default 0, attempt int not null default 0, queued_at timestamptz not null, started_at, finished_at, next_attempt_at timestamptz null, error_code text null check (error_code in ('action_failed','timeout','loop_detected','workflow_disabled','permission_denied','heartbeat_lost')), error_message text null, error_detail jsonb null, version bigint not null default 1, created_by, created_at, updated_by, updated_at)`, `workflow_run_steps(id uuid pk, tenant_id, run_id not null, index int not null, kind text not null, status text not null, attempt int not null default 0, started_at, finished_at, output jsonb, error_code text null check (error_code in ('action_failed','timeout','loop_detected','workflow_disabled','permission_denied','heartbeat_lost')), error_message text null, error_detail jsonb null)`, `workflow_triggers(id uuid pk, tenant_id, workflow_id not null, kind text not null, next_fire_at timestamptz, timezone text not null default 'UTC', last_fired_at timestamptz)`, `inbound_webhooks(id uuid pk, tenant_id, workflow_id not null, token text not null, secret_ref text not null, disabled_at timestamptz, created_at)`, `inbound_webhook_deliveries(tenant_id, webhook_id, delivery_id text, run_id uuid, received_at, primary key (webhook_id, delivery_id))`.

@@ -92,6 +92,207 @@ Excluded: SAML and SCIM, which stay F026 and are the alternative federation path
 - Authorization: `identity-admin` for every `/api/v1/entra` route; the login and callback routes are unauthenticated and protected by `state`, `nonce` and PKCE; cross-tenant IDs map to `not_found`.
 - Error mapping: `EntraError::BadCloud|BadGuid → 400 invalid`, `::MissingConsent → 409 conflict` with `field_errors.capabilities`, `::TokenExchangeFailed → 502 unavailable`, `::Throttled → 429 rate_limited`, `::StateInvalid → 400 invalid`, `::NoMatchingUser|UserInactive → 403 denied`, `NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings unless stated, timestamps are RFC 3339 UTC,
+`version` increments by one per write. Unlisted request fields are rejected with `400 invalid`.
+`Page<T>`, `ListQuery`, the signed cursor, the error body and the six codes are F028's;
+`ActorContext`, the session it issues and the scope catalogue are F038's; `NotificationRequest`,
+`DeliveryTransport`, `ChannelRegistry`, `RenderedMessage`, `ChannelTarget`, `TransportReceipt` and
+`TransportError` are F037's.
+
+**What this feature implements rather than defines.**
+
+- **F037's `DeliveryTransport`** (F037 §Interface, "Channel registration"). This feature supplies one
+  implementation, `GraphMailTransport`, and registers it in F037's `ChannelRegistry` at worker
+  start-up exactly as F029 registers its own. It declares `key() = "graph"` and
+  `channel() = Channel::Email`, which is why its deliveries record under the existing `email` column
+  of F037's preference matrix and its `notification_deliveries.channel` check needs no new member —
+  a Graph attempt and an SMTP attempt are two attempts on the same delivery row (FR-F063-08).
+  `available_for(tenant)` is `true` exactly when an `entra_connection_capabilities` row with
+  capability `mail` exists for that tenant's connection and the connection `status` is `active`.
+  `render()` returns F037's `RenderedMessage` from F037's own templates — this feature adds no second
+  template system. `deliver()` maps a Graph `429`/`503`/timeout to `TransportError::Transient` so
+  F037's retry schedule (FR-F037-06) applies unchanged, and a `4xx` other than `429` to
+  `TransportError::Permanent`. F063 defines none of these types and restates none of their fields.
+- **F026's identity-connection contracts.** F026 owns the `identity-connection` aggregate and its
+  `ConnectionResponse` / `ConnectionTestResponse` shapes; `entra-connection` is a **separate**
+  aggregate with its own table and route family, and the two never merge. What F063 reuses from F026
+  and does not redefine: the connection lifecycle vocabulary (`draft`/`active` is F026's;
+  F063's `status` enum is stated in full below because it differs), the rule that a test writes only
+  `last_test_at` and reports a reachability failure as `ok: false` with `200` rather than a `502`,
+  and — the load-bearing one — **the domain-claim rule**: an email domain may back at most one active
+  identity connection per tenant, counting F026 connections and this one together, so a domain
+  already claimed by an F026 `identity_connection_domains` row is `409 conflict` here with
+  `field_errors.allowed_email_domains`, and the reverse holds in F026. Sign-in itself issues an F038
+  session through F038's session service; F063 defines no session, refresh token or `ActorContext`.
+
+**`EntraConnectionRequest`** — `PUT /api/v1/entra/connection`, `If-Match` required once a connection
+exists, absent on first create
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `directory_tenant_id` | uuid | yes | the Entra directory GUID; malformed → `400 invalid` with `field_errors.directory_tenant_id` |
+| `client_id` | uuid | yes | the app registration GUID |
+| `client_secret` | string? | conditional | exactly one of `client_secret` and `certificate_thumbprint` is required on create; on update, omitting both keeps the stored credential and sending both is `400 invalid`. Envelope-encrypted through the F029 vault and **never** returned by any route, event, audit diff or log |
+| `certificate_thumbprint` | string? | conditional | 40 hex chars, uppercase |
+| `cloud` | `"global" \| "us_gov" \| "china"` | yes | selects the authority and Graph host; any other value → `400 invalid` |
+| `capabilities` | (`"sign_in" \| "group_sync" \| "mail"`)[] | yes | 0–3 distinct entries; the wire shape stays an array while storage is one `entra_connection_capabilities` row each. A duplicate → `400 invalid` |
+| `allowed_email_domains` | string[] | yes | 1–20 lowercase RFC 1123 DNS names, distinct; a domain claimed by another active connection in this tenant or by an F026 connection → `409 conflict` with `field_errors.allowed_email_domains` |
+| `require_verified_domain` | bool | no | default `true`; `false` permits sign-in for a claim domain outside the list, which then never provisions |
+| `sender_mailbox` | string? | conditional | required when `capabilities` contains `"mail"`, else `400 invalid` with `field_errors.sender_mailbox`; a mailbox address in the directory, used as `{sender}` in `POST /v1.0/users/{sender}/sendMail` |
+
+**`CapabilityState`** — an element of `EntraConnectionResponse.capability_states`
+
+| Field | Type | Notes |
+|---|---|---|
+| `capability` | `"sign_in" \| "group_sync" \| "mail"` | |
+| `enabled` | bool | an `entra_connection_capabilities` row exists |
+| `consent_ok` | bool | every scope this capability requires has a `granted` `entra_connection_scopes` row |
+| `missing_scopes` | string[] | the scopes still to consent for **this** capability, so the admin page can put the message beside the switch rather than in a global banner |
+| `enabled_at` | timestamp? | |
+
+**`EntraConnectionResponse`** — `GET` and `PUT`
+
+| Field | Type | Notes |
+|---|---|---|
+| `directory_tenant_id` / `client_id` | uuid | |
+| `credential_kind` | `"secret" \| "certificate"` | which credential is stored. Never the value; there is no field on this response that could carry one |
+| `cloud` | enum | |
+| `capabilities` | string[] | reassembled from the capability rows |
+| `capability_states` | CapabilityState[] | one per capability, enabled or not |
+| `allowed_email_domains` | string[] | reassembled from `entra_connection_domains` |
+| `require_verified_domain` | bool | |
+| `sender_mailbox` | string? | |
+| `status` | `"disconnected" \| "active" \| "needs_consent" \| "error"` | `disconnected` is returned with `200`, never `404`, for a tenant that has never connected (FR-F063-13), so the admin page renders the empty state without a special case |
+| `last_error_class` | `"consent" \| "credential" \| "throttled" \| "unreachable" \| "provider"`? | a **class**, never a provider error string; a raw Graph message never reaches a client |
+| `last_test_at` | timestamp? | |
+| `redirect_uri` | string | absolute URL of `GET /auth/entra/callback`, to register in Entra |
+| `last_sync` | `{ at: timestamp, groups: integer, added: integer, removed: integer, status: "ok" \| "needs_review" }`? | `null` before the first sync |
+| `version` | integer | pass as `If-Match` on the next write; `0` while `disconnected` |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | | absent while `disconnected` |
+
+**`TestResponse`** — `POST /api/v1/entra/connection/test`, writes `last_test_at`, `status` and the
+`entra_connection_scopes` rows and nothing else
+
+| Field | Type | Notes |
+|---|---|---|
+| `ok` | bool | conjunction of the token request and the `GET /v1.0/organization` read succeeding and every required scope being granted |
+| `tenant_display_name` | string? | from `organization`; `null` when the read failed |
+| `granted_scopes` / `missing_scopes` | string[] | rebuilt from `entra_connection_scopes` rows, so the admin page and `GET /connection` agree without a second Graph call |
+| `error_class` | enum? | the same closed set as `last_error_class`; `null` when `ok` |
+| `checked_at` | timestamp | |
+
+A provider that is unreachable or refuses consent is `ok: false` with `200`, following F026's rule
+that a failed check is a *result* of the test. `502 unavailable` is reserved for this service being
+unable to perform the test at all.
+
+**`GroupMapRequest`** — the body of the mapping upsert used by the admin page
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `directory_group_id` | string | yes | the Entra group `object_id`; unique per connection, else `409 conflict` |
+| `directory_group_name` | string | yes | 1–256 chars, cached for display only |
+| `target_kind` | `"group" \| "role"` | yes | |
+| `target_id` | uuid | yes | an F002 group when `target_kind` is `"group"`, an F003 role when `"role"`; resolved to `target_group_id` or `target_role_id`. A target in another tenant → `404 not_found` |
+
+**`SyncResponse`** — `POST /api/v1/entra/sync-groups`: `{ run_id, status: "ok" | "needs_review" |
+"partial", groups_processed, members_added, members_removed, halted: [{ directory_group_id,
+target_id, would_remove, member_count }] }`. `halted` lists the mappings the 20% destructive-change
+guard stopped, with the numbers that triggered it, and nothing was changed for those (FR-F063-07).
+`status` is `"needs_review"` when `halted` is non-empty.
+
+**Sign-in routes.** `GET /auth/entra/login?tenant_slug=<slug>` takes one query parameter, answers
+`302` to the Entra authorize endpoint with `code`, S256 PKCE, a `state` bound to the tenant with a
+10-minute expiry, a `nonce`, and scopes `openid profile email`. A slug with no connection, or whose
+connection lacks the `sign_in` capability, answers `302` to `/login` with no Entra affordance —
+never a body that would confirm which tenants run Entra. `GET /auth/entra/callback?code&state` claims
+the `state` row once and answers `302` to the app on success or to
+`/auth/entra/error?code=<reason>&correlation_id=<id>` on failure, where `reason` is one of
+`state_invalid`, `state_expired`, `state_replayed`, `nonce_mismatch`, `signature_invalid`,
+`issuer_mismatch`, `audience_mismatch`, `no_matching_user`, `user_inactive`, `tenant_suspended`,
+`connection_disabled`. Like F026's ACS route these two carry no JSON body and no error envelope: the
+reason code on the redirect is the whole contract, and no claim, token or assertion is ever echoed.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | a malformed GUID, an unknown `cloud` or capability, a duplicate capability, a domain that is not a DNS name, `mail` without `sender_mailbox`, both or neither credential, a reused, expired or foreign-tenant `state` (FR-F063-04), an unlisted field |
+| `403` | `denied` | any `/api/v1/entra` route called by an actor without `identity-admin`; a sign-in whose claim matches no user or matches an inactive one — reported to the browser as a redirect `reason`, not a JSON body |
+| `404` | `not_found` | a group-map or target id of another tenant. `GET /api/v1/entra/connection` never answers `404`: an absent connection is `200` with `status: "disconnected"` |
+| `409` | `conflict` | stale `If-Match`; a domain already claimed here or by an F026 connection; enabling a capability whose scopes are not consented (`field_errors.capabilities`); `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | Graph returned `429` and the retry budget is exhausted; `Retry-After` is propagated from the provider |
+| `502` | `unavailable` | the token exchange or a Graph call failed in a way that is this service's problem to report — the circuit breaker is open, or the authority is unreachable during a sign-in. Carries `error_class`, never the provider's message |
+
+### Use case signatures
+
+In `crates/domain/src/entra/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits and the `GraphClient` trait rather than a pool, connection or HTTP
+client, and returns `DomainError`.
+
+```rust
+fn upsert_connection(ctx: &Ctx, uow: &mut UnitOfWork, expected: Option<Version>, req: UpsertConnection) -> Result<EntraConnection, DomainError>;
+fn get_connection(ctx: &Ctx, repo: &dyn EntraConnectionRepository) -> Result<ConnectionView, DomainError>;
+fn test_connection(ctx: &Ctx, uow: &mut UnitOfWork, graph: &dyn GraphClient) -> Result<TestOutcome, DomainError>;
+fn revoke_connection(ctx: &Ctx, uow: &mut UnitOfWork) -> Result<(), DomainError>;
+fn begin_sign_in(ctx: &Ctx, uow: &mut UnitOfWork, slug: &TenantSlug, now: Timestamp) -> Result<AuthorizeRedirect, DomainError>;
+fn complete_sign_in(ctx: &Ctx, uow: &mut UnitOfWork, graph: &dyn GraphClient, sessions: &dyn SessionService, state: &str, code: &str, now: Timestamp) -> Result<SessionIssued, DomainError>;
+fn match_or_provision_user(ctx: &Ctx, uow: &mut UnitOfWork, claims: &IdTokenClaims, conn: &EntraConnection) -> Result<UserId, DomainError>;
+fn list_directory_groups(ctx: &Ctx, graph: &dyn GraphClient, search: Option<&str>) -> Result<Vec<DirectoryGroup>, DomainError>;
+fn upsert_group_map(ctx: &Ctx, uow: &mut UnitOfWork, req: GroupMapUpsert) -> Result<EntraGroupMap, DomainError>;
+fn run_group_sync(ctx: &Ctx, uow: &mut UnitOfWork, graph: &dyn GraphClient, groups: &dyn GroupRepository, bindings: &dyn RoleBindingRepository) -> Result<SyncOutcome, DomainError>;
+fn send_graph_mail(ctx: &Ctx, graph: &dyn GraphClient, message: &RenderedMessage, target: &ChannelTarget) -> Result<TransportReceipt, TransportError>;
+
+fn required_scopes(capabilities: &[Capability]) -> Vec<Scope>;
+fn diff_membership(directory: &[ExternalUserId], current: &[GroupMember], guard_pct: u8) -> MembershipDiff;
+fn classify_graph_error(status: u16, body_kind: GraphBodyKind) -> ErrorClass;
+```
+
+`required_scopes`, `diff_membership` and `classify_graph_error` are pure — no `ctx`, no repository,
+no HTTP. `diff_membership` is where the 20% guard and the "never touch `source: manual` members"
+rule live, so both are unit tested against fixture lists rather than against a directory.
+`send_graph_mail` is the body of `GraphMailTransport::deliver` and returns F037's `TransportError`,
+not `DomainError`, because F037's retry classifier is what consumes it.
+
+**Transaction boundaries.**
+
+- `upsert_connection` writes the `entra_connections` row, **all** its
+  `entra_connection_capabilities` rows, **all** its `entra_connection_domains` rows, the audit row
+  with the credential redacted, and the `entra.connected.v1` outbox entry in one `UnitOfWork`. Two
+  invariants depend on it: `sender_mailbox` is required exactly when a `mail` capability row exists,
+  a cross-row rule that only holds of a committed set; and the domain-claim uniqueness shared with
+  F026 is enforced by that table's index, so the domain rows and the connection they belong to must
+  become visible together or a concurrent F026 connection could claim the same domain in the gap.
+- `test_connection` rewrites the `entra_connection_scopes` rows wholesale and sets `status`,
+  `last_test_at` and `last_error_class` in one `UnitOfWork` — **after** the Graph calls return, never
+  around them. The invariant: a transaction never stays open across a 10-second provider round trip,
+  and a provider timeout leaves the previous consent state intact rather than a half-written one.
+- `complete_sign_in` claims the `entra_sign_in_states` row (`update … set consumed_at = now() where
+  consumed_at is null and expires_at > now()`), provisions the user when permitted, and issues the
+  F038 session in one `UnitOfWork`. The invariant this protects is single-use `state`: the claim is a
+  conditional update whose zero-row result *is* the replay rejection, so two concurrent callbacks
+  with one `state` cannot both mint a session.
+- `run_group_sync` commits **one `UnitOfWork` per mapped group**, not one per run: the member adds
+  and removals through F002's `GroupRepository` and F003's `RoleBindingRepository`, the per-member
+  audit rows, and that mapping's `last_synced_at`/`last_added`/`last_removed` commit together, and
+  the `entra_connections.delta_token` advances only after every group of the page committed. The
+  invariant: a mapping is either fully applied with its audit trail or untouched, and a crash
+  mid-run resumes from the un-advanced delta token without double-applying — which is what makes
+  NFR-F063-04's "idempotent per delta token, resumable" true. The 20% guard halts a single mapping's
+  transaction before any write, leaving the rest of the run to proceed.
+- `revoke_connection` clears the credential ciphertext, deletes every `entra_sign_in_states` row,
+  sets `status = 'disconnected'`, and writes the `entra.revoked.v1` entry in one `UnitOfWork`, which
+  is what makes "sign-in through Entra stops working immediately" a property of the commit. Capability,
+  domain, scope and map rows cascade. No user, group or role binding is touched (FR-F063-10).
+- `send_graph_mail` opens **no** transaction: it is called by the F037 worker after F037's own
+  delivery row is committed, and its only write is the `entra_mail_log` row appended by
+  `EntraMailLogRepository::append_graph_call` in its own short unit of work, so a logging failure can
+  never fail a delivery.
+- `get_connection` and `list_directory_groups` are reads.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_entra_*.sql` creates `entra_connections(id uuid pk, tenant_id uuid not null unique references tenants(id) on delete cascade, directory_tenant_id uuid not null, client_id uuid not null, credential_key_id text not null, credential_nonce bytea not null, credential_ciphertext bytea not null, cloud text not null check (cloud in ('global','us_gov','china')), require_verified_domain bool not null default true, sender_mailbox text, status text not null default 'disconnected' check (status in ('disconnected','active','needs_consent','error')), last_test_at timestamptz, last_error_class text check (last_error_class is null or last_error_class in ('consent','credential','throttled','unreachable','provider')), delta_token text, version bigint not null default 1, audit fields)`, `entra_group_map(id uuid pk, tenant_id uuid not null references tenants(id) on delete cascade, connection_id uuid not null references entra_connections(id) on delete cascade, directory_group_id text not null, directory_group_name text not null, target_kind text not null check (target_kind in ('group','role')), target_group_id uuid references groups(id) on delete cascade, target_role_id uuid references roles(id) on delete restrict, check ((target_kind = 'group') = (target_group_id is not null) and (target_kind = 'role') = (target_role_id is not null)), last_synced_at timestamptz, last_added int, last_removed int, version bigint not null default 1, audit fields)` — the former polymorphic `target_id uuid` carried no foreign key, so it is split into two declared references with exactly one set — and `entra_mail_log(id uuid pk, tenant_id uuid not null references tenants(id) on delete cascade, connection_id uuid references entra_connections(id) on delete cascade, operation text not null check (operation in ('token','organization','groups_delta','group_members','send_mail')), status_code int, duration_ms int, recipient_domain text, message_id text, occurred_at timestamptz not null)`.

@@ -108,6 +108,235 @@ Excluded: OAuth authorization, the token vault, connection lifecycle, and the th
 - Validation: connector supports `kind` and `direction`; connection `active`; `source_filter` parsed by the connector's filter validator; mapping rules from FR-F030-05; `deletion_column_id` required when `deletion_policy = mark_deleted`; limits from NFR-F030-05.
 - Error mapping: `ConnectorError::UnsupportedKind → 400 invalid`, `::InvalidFilter → 400 invalid`, `::MappingInvalid → 400 invalid`, `::ConnectionNotActive → 409 conflict`, `::RunInProgress → 409 conflict`, `::StaleVersion → 409 conflict`, `::ConflictSettled → 409 conflict`, `::LimitExceeded → 429 rate_limited`, `::ProviderUnavailable → 502 unavailable`, `::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Ids are UUIDv7 strings, timestamps RFC 3339 UTC, `version` an integer incrementing by one per write.
+`T?` is nullable and an absent optional field equals an explicit `null`. Unlisted fields are rejected
+with `400 invalid`. `Page<T>`, the opaque cursor and the error body are F028's; `CellValue` is F007's
+and is not restated here. Every route requires `integration-admin`; mutations require
+`Idempotency-Key`. This feature carries its expected version as the body field `expected_version`
+rather than `If-Match`, because a mapping replacement and a conflict resolution both check the parent
+sync's version from inside the body they are validating.
+
+**`SyncRequest`** — `POST /api/v1/syncs`, and the same shape as `PATCH /api/v1/syncs/{id}` with every
+field optional plus `expected_version` required and at least one other field present.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `connection_id` | uuid | create only | an F029 connection of this tenant in `status: active`; `needs_reauth` or `revoked` → `409 conflict` with `field_errors.connection_id = "connection_not_active"`; immutable after create |
+| `name` | string | yes | 1–200 chars after trim |
+| `kind` | `work\|crm\|file\|analytics\|db_read` | create only | must be in the connector's declared `sync_kinds`, else `400 invalid` with `field_errors.kind = "unsupported"` |
+| `source` | `{ object: string, filter: string? }` | create only for `object` | `object` 1–512 chars; `filter` ≤ 4,000 chars and parsed by the connector's filter validator (JQL for `jira`, allowlisted SOQL `WHERE` for `salesforce`), a rejection giving `field_errors.source.filter = "invalid_filter"` |
+| `target` | `{ sheet_id: uuid }` | create only | the caller must hold edit on the sheet; unreadable → `404 not_found`, readable but not editable → `403 denied`; immutable after create |
+| `direction` | `inbound\|outbound\|bidirectional` | create only | must be in the connector's `directions`, else `field_errors.direction = "unsupported"` |
+| `schedule` | `manual\|every_5m\|every_15m\|hourly\|daily_at_02_00_utc` | no | default `every_15m` |
+| `state` | `paused\|active\|error` | no | create ignores it and returns `paused`; `PATCH` to `active` with an empty mapping set → `400 invalid` with `field_errors.state = "no_mappings"`; `error` is set by the engine and is rejected from a client |
+| `conflict_policy` | `manual\|opshub_wins\|external_wins\|newest_wins` | no | default `manual` |
+| `deletion_policy` | `ignore\|mark_deleted\|soft_delete` | no | default `ignore` |
+| `deletion_column_id` | uuid? | conditional | required when `deletion_policy` is `mark_deleted`, must be a `checkbox` column of the target sheet |
+| `debug_payloads` | bool | no | default `false`; enabling writes an audit event and retains raw provider snapshots 7 days |
+| `database_objects` | DatabaseObject[] | conditional | `database` connector only, 1–50 entries, each `{ object_kind: "table"\|"named_query", object_ref, statement_text? }` with `statement_text` required for `named_query` and parameterized; replaces the allowlist whole |
+| `reset_cursor_to` | timestamp? | no | `PATCH` only; rewinds the inbound cursor and writes `sync.cursor-reset` |
+| `expected_version` | integer | `PATCH` only | stale → `409 conflict` carrying the current `version` |
+
+The 201st live sync in a tenant is `429 rate_limited`. A second live sync with the same
+`(connection_id, source.object, target.sheet_id, direction)` is `409 conflict` with
+`field_errors.source.object = "duplicate_binding"`.
+
+**`SyncResponse`** — `GET /api/v1/syncs/{id}` and the body of create, `PATCH` and pause
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `connection_id`, `name`, `kind`, `direction`, `schedule`, `state` | | |
+| `connector` | `jira\|salesforce\|box\|dropbox\|tableau\|database` | derived from the connection, never sent |
+| `source` / `target` | as request | |
+| `conflict_policy`, `deletion_policy`, `deletion_column_id?`, `debug_payloads` | | |
+| `mappings` | MappingResponse[] | detail read only; omitted from the list route |
+| `cursors` | CursorSnapshot[] | detail read only; one per direction, `{ direction, cursor_kind, cursor_value?, high_water_mark?, updated_at }` |
+| `recent_runs` | RunSummary[] | detail read only; the last five, newest first |
+| `last_run_at` / `last_run_state` | timestamp? / string? | null before the first run |
+| `open_conflicts` | integer | count of `sync_conflicts` in `state: open` |
+| `version`, `created_at`, `created_by`, `updated_at`, `updated_by`, `deleted_at?` | | |
+
+**`GET /api/v1/syncs`** returns `Page<SyncSummary>` — `SyncResponse` without `mappings`, `cursors` and
+`recent_runs` — sorted `updated_at desc`, filtered by `connection_id`, `connector`, `kind` and `state`,
+with F028's `cursor`, `limit` (1–100, default 50) and `include_total`.
+
+**`MappingSetRequest`** — `PUT /api/v1/syncs/{id}/mappings`: `{ expected_version: integer, mappings: MappingRequest[] }`. The set is replaced whole; 0–300 entries, and array order is the stored `position`.
+
+**`MappingRequest`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `external_field` | string | yes | 1–256 chars; must exist in the connector's `describe_fields()`; unique per `(direction)` in the set |
+| `column_id` | uuid | yes | a live column of `target.sheet_id`; unique per `(direction)` in the set |
+| `direction` | `inbound\|outbound` | yes | must be compatible with the sync's `direction` |
+| `transform` | Transform | no | default `{ name: "identity", args: {} }` |
+| `required` | bool | no | default `false`; `true` on a nullable external field with no `default_value` → `400 invalid` with `field_errors["mappings[i].required"] = "needs_default"` |
+| `default_value` | CellValue? | no | must satisfy the column's F007 type |
+
+**`Transform`** — `{ name, args }` where `name` is one of the twelve catalog members and `args` carries
+exactly the argument names that member takes. The pairs are: `identity`, `trim`, `lower`, `upper` take
+none; `date_tz` takes `tz` (IANA name); `datetime_format` takes `pattern`; `number_scale` takes
+`factor` (decimal); `value_map` takes `map` (object of external string to OpsHub string, 1–1,000
+pairs, distinct keys); `join` takes `separator`; `split` takes `separator` and `index` (≥ 0);
+`template` takes `pattern`; `lookup` takes `sheet_id`, `key_column_id` and `value_column_id`. An
+unknown `name`, a missing argument, an extra argument or an unparseable value is `400 invalid` with
+`field_errors["mappings[i].transform"]` naming which. A transform whose output type cannot fill the
+column is `400 invalid` with the same pointer and `"type_mismatch"`.
+
+**`MappingResponse`** is `MappingRequest` plus `{ id, position }`; **`MappingSetResponse`** is
+`{ mappings: MappingResponse[], version }` where `version` is the sync's new version.
+
+**`MappingPreviewResponse`**: `{ records: [{ external_id, source: map<string, string>, mapped: map<uuid, CellValue>, errors: [{ external_field, code, message }] }] }` for the first five source records. A preview reads the provider and writes nothing.
+
+**`POST /api/v1/syncs/{id}/run`** takes no body and returns `202` with `{ run_id, state: "queued" }`. A
+run while one is `queued` or `running` is `409 conflict` with `details.run_id` naming the active one.
+**`POST /api/v1/syncs/{id}/pause`** takes no body and returns `200` with `SyncResponse` in `paused`.
+
+**`RunSummary`** — the item of `Page<RunSummary>` from `GET /api/v1/syncs/{id}/runs`, sorted `started_at desc`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `sync_id` | uuid | |
+| `trigger` | `schedule\|manual\|webhook\|replay` | |
+| `state` | `queued\|running\|completed\|partial\|failed\|cancelled` | `partial` under 10% failed, `failed` at 10% or more |
+| `counters` | `{ records_read, records_created, records_updated, records_skipped, records_conflicted, records_failed }` | assembled from the six integer columns |
+| `cursor_before` / `cursor_after` | string? | null on a run that never checkpointed |
+| `error_class` | `transient\|permanent\|mapping`? | null unless the run ended `failed` |
+| `api_version` | string | the pinned connector API version this run used |
+| `started_at` / `finished_at` / `duration_ms` | | null while `queued` |
+| `failed_samples` | FailedRecord[] | at most 50, newest first; present on the run detail and omitted from the page items |
+
+**`FailedRecord`**: `{ external_id, classification: "transient"|"permanent"|"mapping", provider_code: string?, message_digest: string (lowercase hex SHA-256), occurred_at }`. The message itself is never returned — only its digest — which is what keeps provider payloads out of the API.
+
+**`ReplayRequest`** — `POST /api/v1/sync-runs/{id}/replay`: `{ dry_run: bool = false, only_failed: bool = false }`. With `dry_run: false` the response is `202` with a new `RunSummary` of `trigger: replay`; with `dry_run: true` it is `200` with **`ReplayResponse`** `{ would_create, would_update, would_skip, would_conflict, samples: [{ external_id, action: "create"|"update"|"skip"|"conflict" }] }` capped at 50 samples and writing nothing.
+
+**`ConflictResponse`** — the item of `GET /api/v1/syncs/{id}/conflicts`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `sync_id`, `external_id`, `row_id?` | | `row_id` null when the OpsHub side was deleted |
+| `field_diffs` | `[{ column_id, external_field, opshub_value: CellValue?, external_value: CellValue?, resolved_value: CellValue? }]` | assembled from `sync_conflict_fields`; `resolved_value` null while `open` |
+| `opshub_updated_at` / `external_updated_at` | timestamp? | the two timestamps whose disagreement made this a conflict |
+| `state` | `open\|resolved\|auto_resolved` | |
+| `resolution` | `keep_opshub\|keep_external\|merge\|opshub_wins\|external_wins\|newest_wins`? | the last three are policy outcomes, the first three human ones |
+| `resolved_by?`, `resolved_at?`, `detected_at`, `version` | | |
+
+The list is `Page<ConflictResponse>` sorted `detected_at desc`, filtered by `state`, `limit` 1–100.
+
+**`ResolveConflictRequest`** — `POST /api/v1/sync-conflicts/{id}/resolve`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `resolution` | `keep_opshub\|keep_external\|merge` | yes | a policy name here is `400 invalid`: policies are applied by the engine, not by a person |
+| `field_values` | map<uuid, CellValue> | conditional | required with `merge`, rejected otherwise; keys must cover **every** `field_diffs` entry, else `400 invalid` with `field_errors.field_values = "incomplete"` |
+| `expected_version` | integer | yes | stale → `409 conflict` |
+
+A conflict already `resolved` or `auto_resolved` is `409 conflict` with `field_errors.state = "settled"`.
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | reads, `PATCH`, `PUT` mappings, pause, resolve, dry-run replay |
+| `201` | `POST /api/v1/syncs` |
+| `202` | `POST /api/v1/syncs/{id}/run`, non-dry replay |
+| `400 invalid` | unsupported `kind` or `direction`, `invalid_filter`, any mapping rule, `no_mappings` on activation, `needs_default`, `type_mismatch`, `incomplete` merge, a client-supplied `state: error` |
+| `403 denied` | not `integration-admin`, or no edit permission on `target.sheet_id` |
+| `404 not_found` | sync, run, conflict, connection or sheet in another tenant or invisible to the caller |
+| `409 conflict` | `connection_not_active`, `duplicate_binding`, a run already in flight, stale `expected_version`, a settled conflict, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | 200 syncs per tenant, 5 concurrent runs per tenant, or the route quota |
+| `502 unavailable` | the provider is unreachable or returns 5xx during a preview or a synchronous describe; a provider failure **inside a run** is not an HTTP error but a record classification |
+
+### Use case signatures
+
+In `crates/domain/src/connectors/`; workers in `services/worker/src/connectors/`. `Ctx` is F038's
+`ActorContext`.
+
+```rust
+fn create_sync(ctx: &Ctx, uow: &mut UnitOfWork, req: SyncRequest) -> Result<Sync, DomainError>;
+fn update_sync(ctx: &Ctx, uow: &mut UnitOfWork, id: SyncId, expected: Version, req: SyncPatch) -> Result<Sync, DomainError>;
+fn list_syncs(ctx: &Ctx, repo: &dyn SyncRepository, filter: SyncFilter, page: Cursor) -> Result<Page<SyncSummary>, DomainError>;
+fn get_sync(ctx: &Ctx, repo: &dyn SyncRepository, id: SyncId) -> Result<SyncDetail, DomainError>;
+fn replace_mappings(ctx: &Ctx, uow: &mut UnitOfWork, id: SyncId, expected: Version, set: Vec<MappingRequest>) -> Result<MappingSet, DomainError>;
+fn preview_mapping(ctx: &Ctx, repo: &dyn SyncRepository, id: SyncId, source: &dyn RecordSource) -> Result<Vec<PreviewRecord>, DomainError>;
+fn trigger_run(ctx: &Ctx, uow: &mut UnitOfWork, id: SyncId, trigger: RunTrigger) -> Result<SyncRun, DomainError>;
+fn pause_sync(ctx: &Ctx, uow: &mut UnitOfWork, id: SyncId, expected: Version) -> Result<Sync, DomainError>;
+fn list_runs(ctx: &Ctx, repo: &dyn SyncRunRepository, id: SyncId, page: Cursor) -> Result<Page<RunSummary>, DomainError>;
+fn replay_run(ctx: &Ctx, uow: &mut UnitOfWork, run: RunId, req: Replay) -> Result<ReplayOutcome, DomainError>;
+fn list_conflicts(ctx: &Ctx, repo: &dyn SyncConflictRepository, id: SyncId, filter: ConflictFilter, page: Cursor) -> Result<Page<SyncConflict>, DomainError>;
+fn resolve_conflict(ctx: &Ctx, uow: &mut UnitOfWork, id: ConflictId, expected: Version, req: ResolveConflict) -> Result<SyncConflict, DomainError>;
+fn reset_cursor(ctx: &Ctx, uow: &mut UnitOfWork, id: SyncId, expected: Version, to: Timestamp) -> Result<SyncCursor, DomainError>;
+```
+
+#### Adapter traits
+
+One implementation per provider in `crates/domain/src/connectors/adapters/`, so these are the contract
+between the shared engine and six different vendors. They are defined here in full because a provider
+author implements them without reading the engine.
+
+```rust
+/// Inbound: read changes since a cursor. Implemented by jira, salesforce, box, dropbox, database.
+pub trait RecordSource: Send + Sync {
+    fn cursor_kind(&self) -> CursorKind;
+    /// Records strictly after `cursor`. `page_size` is a hint the adapter may lower to the
+    /// provider's maximum but must never raise.
+    fn list_changes(&self, ctx: &Ctx, cursor: Option<&CursorValue>, page_size: u32) -> Result<ChangePage, ConnectorError>;
+    /// The mappable fields, for the mapping editor and for `validate::check`.
+    fn describe_fields(&self, ctx: &Ctx) -> Result<Vec<ExternalField>, ConnectorError>;
+}
+
+/// Outbound: write records back. Implemented by jira, salesforce, box, dropbox.
+pub trait RecordSink: Send + Sync {
+    /// One outcome per input record, in input order. A partial batch failure is reported
+    /// per record, never as an `Err` for the whole batch.
+    fn upsert(&self, ctx: &Ctx, batch: &[OutboundRecord]) -> Result<Vec<RecordOutcome>, ConnectorError>;
+    /// The non-destructive deletion path: archive or close, never a hard delete.
+    fn archive(&self, ctx: &Ctx, external_id: &ExternalId) -> Result<RecordOutcome, ConnectorError>;
+}
+
+/// File-bearing connectors. Implemented by box and dropbox.
+pub trait FileSource: RecordSource {
+    fn download(&self, ctx: &Ctx, file_id: &ExternalId) -> Result<FileStream, ConnectorError>;
+}
+
+/// Analytics publication. Implemented by tableau, outbound only.
+pub trait ExtractSink: Send + Sync {
+    fn publish(&self, ctx: &Ctx, extract: Extract, target: &DatasourceRef) -> Result<DatasourceLuid, ConnectorError>;
+}
+```
+
+`ChangePage` is `{ records: Vec<ExternalRecord>, next_cursor: Option<CursorValue>, has_more: bool }`;
+`ExternalRecord` is `{ external_id, external_version: Option<String>, external_updated_at: Option<Timestamp>, fields: Map<String, ExternalValue>, deleted: bool }`; `RecordOutcome` is
+`Created | Updated | Skipped | Failed { classification, provider_code, message }`. Every adapter method
+returns `ConnectorError`, never `DomainError`: classification into `Transient | Permanent | Mapping`
+is `classify.rs`'s job, so a new provider cannot decide its own retry policy.
+
+Transaction boundaries:
+
+- `create_sync` and `update_sync` write the `syncs` row, the replaced `sync_database_objects` set, the
+  audit row and the `sync.updated.v1` outbox row in one `UnitOfWork`. The uniqueness index on the
+  binding tuple only means something if the row and its allowlist land together.
+- `replace_mappings` writes the delete of removed `sync_mappings` rows, the insert or update of the
+  kept ones, every `sync_mapping_transform_args` and `sync_mapping_value_map` row, the sync's version
+  bump and the audit row in one boundary. A mapping whose transform arguments are missing would run
+  and silently produce wrong cells, which is worse than not running.
+- The engine's **checkpoint** is the important one: every 500 records, one `UnitOfWork` covers the
+  F006 row writes for those records, their `sync_record_links` upserts, any `sync_conflicts` and
+  `sync_conflict_fields` rows detected, and the `sync_cursors` advance. All four or none — a cursor
+  that advanced past rows that were not written loses data permanently, and record links written
+  without the cursor advance cause the next run to re-apply them.
+- `trigger_run` writes the `sync_runs` row in `queued` and the JetStream message through the outbox in
+  one boundary; the run's finalization writes the six counters, `state`, `finished_at`, every
+  `sync_run_failed_records` row and the completion event in another.
+- `resolve_conflict` writes each `sync_conflict_fields.resolved_value`, the OpsHub cell writes through
+  the F006 repositories, the outbound record write, the conflict's `state`, `resolved_by`,
+  `resolved_at` and the outbox event in one `UnitOfWork`. Resolving one side and failing the other
+  would leave the two systems disagreeing with no conflict row left to say so.
+- `preview_mapping`, `list_*` and a `dry_run` replay open no `UnitOfWork` and take repositories
+  directly; a dry run that could write would not be a dry run.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_connectors_*.sql` creates `syncs(id uuid pk, tenant_id uuid not null, connection_id uuid not null references integration_connections(id) on delete restrict, name text not null, connector text not null check (connector in ('jira','salesforce','box','dropbox','tableau','database')), kind text not null check (kind in ('work','crm','file','analytics','db_read')), source_object text not null, source_filter text, target_sheet_id uuid not null references sheets(id) on delete restrict, direction text not null check (direction in ('inbound','outbound','bidirectional')), schedule text not null default 'every_15m' check (schedule in ('manual','every_5m','every_15m','hourly','daily_at_02_00_utc')), conflict_policy text not null default 'manual' check (conflict_policy in ('manual','opshub_wins','external_wins','newest_wins')), deletion_policy text not null default 'ignore' check (deletion_policy in ('ignore','mark_deleted','soft_delete')), deletion_column_id uuid references columns(id) on delete restrict, debug_payloads boolean not null default false, state text not null default 'paused' check (state in ('paused','active','error')), last_run_id uuid, version bigint not null default 1, audit fields, deleted_at)`, `sync_mappings(id uuid pk, tenant_id, sync_id uuid not null references syncs(id) on delete cascade, external_field text not null, column_id uuid not null references columns(id) on delete restrict, direction text not null check (direction in ('inbound','outbound')), transform_name text not null default 'identity' check (transform_name in ('identity','trim','lower','upper','date_tz','datetime_format','number_scale','value_map','join','split','template','lookup')), required boolean not null default false, default_value jsonb, position int not null)`, `sync_runs(id uuid pk, tenant_id, sync_id uuid not null references syncs(id) on delete cascade, trigger text not null check (trigger in ('schedule','manual','webhook','replay')), state text not null check (state in ('queued','running','completed','partial','failed','cancelled')), records_read bigint not null default 0, records_created bigint not null default 0, records_updated bigint not null default 0, records_skipped bigint not null default 0, records_conflicted bigint not null default 0, records_failed bigint not null default 0, cursor_before text, cursor_after text, error_class text check (error_class is null or error_class in ('transient','permanent','mapping')), api_version text not null, mapping_version bigint, started_at timestamptz, finished_at timestamptz, duration_ms int)`, `sync_cursors(sync_id uuid not null references syncs(id) on delete cascade, direction text not null check (direction in ('inbound','outbound')), cursor_kind text not null check (cursor_kind in ('timestamp','token','page','sequence')), cursor_value text, high_water_mark timestamptz, checkpoint_record_id text, updated_at timestamptz not null, primary key (sync_id, direction))`, `sync_conflicts(id uuid pk, tenant_id, sync_id uuid not null references syncs(id) on delete cascade, external_id text not null, row_id uuid references rows(id) on delete cascade, opshub_updated_at timestamptz, external_updated_at timestamptz, state text not null default 'open' check (state in ('open','resolved','auto_resolved')), resolution text check (resolution is null or resolution in ('keep_opshub','keep_external','merge','opshub_wins','external_wins','newest_wins')), resolved_by uuid references users(id) on delete restrict, resolved_at timestamptz, version bigint not null default 1, detected_at timestamptz not null)`, `sync_record_links(sync_id uuid not null references syncs(id) on delete cascade, external_id text not null, tenant_id, row_id uuid not null references rows(id) on delete cascade, external_version text, external_updated_at timestamptz, opshub_updated_at timestamptz, deleted_external boolean not null default false, primary key (sync_id, external_id))`; `syncs.last_run_id` gains `references sync_runs(id) on delete set null` in a follow-up `alter table` once `sync_runs` exists, since the two tables reference each other.

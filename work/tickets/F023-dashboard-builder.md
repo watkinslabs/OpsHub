@@ -98,6 +98,175 @@ Excluded: KPI, metric comparison, chart, burndown, timeline, and workload resolv
 - Validation limits: name 1..200, description ≤ 4,000, widgets ≤ 40, title ≤ 120, markdown ≤ 8,000, `limit` ≤ 200 rows for table widgets, `column_refs` ≤ 50 per widget, config settings object ≤ 32 KB per widget.
 - Error mapping: `DashboardError::NameTaken → 409 conflict`, `DashboardError::StaleVersion → 409 conflict`, `DashboardError::RefreshActive → 409 conflict`, `DashboardError::LayoutOverlap → 400 invalid`, `DashboardError::InvalidWidgetConfig → 400 invalid`, `DashboardError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `ResolveError::Denied → data status denied`, queue unavailable → `503 unavailable`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and `ListQuery`
+are F028's; the error body and the six codes are the shared ones; `ViewerScope`, `ReportRow` and
+`RowsMeta` are F021's; `MetricValuesResponse` is F022's; `ChartSpec` is F024's; `ActorContext` is
+F038's. Shares and share links are F036's and this feature declares only that a dashboard is a
+`target_kind = dashboard` for them.
+
+**`GridLayout`** `{ columns: 12, row_height_px }` — `columns` is fixed at 12 and any other value is
+`400 invalid`; `row_height_px` is 40–200, default 80. **`DashboardRefreshPolicy`**
+`{ mode: "manual" | "interval" | "on_open", interval_minutes? }` — `interval_minutes` is required
+when `mode` is `interval` and must be 5–1,440, rejected otherwise. Both are fixed-shape objects on
+the wire and typed columns in storage (FR-F023-01).
+
+**`CreateDashboardRequest`** — `POST /api/v1/dashboards`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–200 chars after trim, unique per folder case-insensitively among live dashboards, else `409 conflict` with `field_errors.name` |
+| `workspace_id` | uuid | yes | the caller holds `dashboard-editor` on it, else `403 denied` |
+| `folder_id` | uuid? | no | a folder of that workspace; `null` means workspace root |
+| `description` | string? | no | ≤ 4,000 chars |
+| `refresh_policy` | DashboardRefreshPolicy | yes | as above |
+| `layout` | GridLayout | yes | as above |
+
+The response is a `DashboardResponse` with `version` 1 and `widgets: []`; widgets are never created
+in this call.
+
+**`UpdateDashboardRequest`** — `PATCH /api/v1/dashboards/{id}`, `If-Match` required, every field
+optional and at least one present: `name`, `description`, `folder_id`, `refresh_policy`, `layout`,
+and `audience` (`"workspace" | "shared_only"`). `refresh_policy` and `layout` replace their object
+whole. Widgets are not editable here — they move only through `PUT /widgets`.
+
+**`ReplaceWidgetsRequest`** — `PUT /api/v1/dashboards/{id}/widgets`, `If-Match` required.
+`{ widgets: WidgetInput[] }`, 0–40 entries, the **complete** set: an existing `id` that is present
+keeps its `widget_cache` rows, an entry with no `id` is created, and an id omitted from the array is
+deleted with its cache (FR-F023-02). A `widgets` key that is absent, rather than an empty array, is
+`400 invalid` — clearing a dashboard is `[]`, said explicitly.
+
+**`WidgetInput`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | uuid? | no | an existing widget of this dashboard; an id of another dashboard → `400 invalid` with `field_errors["widgets[i].id"]` |
+| `kind` | WidgetKind | yes | one of the twelve below; on an existing id the `kind` may not change, which is `400 invalid` |
+| `title` | string | yes | 1–120 chars after trim |
+| `position` | GridPosition | yes | below |
+| `config` | object | yes | validated per `kind` by the registry; ≤ 32 KB of presentation settings after the ids are projected out |
+| `refresh_override` | integer? | no | minutes, 5–1,440, and never longer than the dashboard's `interval_minutes` — a longer override is `400 invalid` (FR-F023-07) |
+
+**`GridPosition`** `{ x, y, w, h }` — all integers; `x` 0–11, `y` ≥ 0, `w` 1–12, `h` 1–12, and
+`x + w ≤ 12`. Two widgets whose rectangles intersect are `400 invalid` with
+`field_errors["widgets[i].position"]` naming the later entry, and no widget, source, or column row is
+written for the whole request.
+
+**`WidgetKind` and its `config`** (FR-F023-03). The ids named in `config` are projected into
+`dashboard_widget_sources` rows and `column_refs` into ordered `dashboard_widget_columns` rows in the
+same transaction; the response recomposes the same object, so the wire shape is unchanged.
+
+| `kind` | `config` fields | Constraint |
+|---|---|---|
+| `table` | `report_id` (uuid, required), `column_refs` (string[], optional), `limit` (integer, optional) | `report_id` a live F021 report; `column_refs` ≤ 50 F021 `column_ref` strings of that report, distinct and ordered; `limit` 1–200, default 50 |
+| `report_embed` | the same three | same rules; the resolver returns F021 rows with their group headers rather than a flat table |
+| `text` | `markdown` (string, required) | ≤ 8,000 chars; rendered sanitised, never as raw HTML |
+| `image` | `file_id` (uuid, required), `alt` (string, required) | `file_id` an F017 file that passed its scan, served through a signed download; `alt` ≤ 200 chars, and an empty `alt` is `invalid` rather than a decorative image |
+| `kpi` | `metric_id` (uuid, required) | a live F022 metric |
+| `metric_comparison` | `metric_id` (uuid, required), `compare_metric_id` (uuid, required) | two distinct live metrics; the second is written with `role = 'comparison'` |
+| `bar`, `line`, `pie`, `burndown`, `timeline`, `workload` | exactly one of `chart_id` (uuid) or `chart_spec` (object) | `chart_spec` is F024's `ChartSpec`, validated by F024's resolver; both or neither present is `400 invalid` |
+
+An unknown `kind`, or a `config` failing its per-kind rules, is `400 invalid` with
+`field_errors["widgets[i].config"]`. The eight kinds F023 does not resolve are still storable and
+still validated structurally; their **data** is `unavailable` until F024 registers a resolver
+(FR-F023-04), which is a widget state and not a save-time error.
+
+**`DashboardResponse`** — `GET /api/v1/dashboards/{id}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `workspace_id` | uuid | |
+| `folder_id` | uuid? | |
+| `name`, `description` | string, string? | |
+| `layout` | GridLayout | recomposed from `grid_columns` and `row_height_px` |
+| `refresh_policy` | DashboardRefreshPolicy | recomposed from `refresh_mode` and `refresh_interval_minutes` |
+| `audience` | `"workspace" \| "shared_only"` | |
+| `widgets` | WidgetResponse[] | in `position_index` order |
+| `share_summary` | `{ shared_with_count, link_active }` | F036 data, read through `ShareRepository`; counts principals, not people |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at`, `created_by` / `updated_by` | timestamp, uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted dashboard |
+
+**`WidgetResponse`** `{ id, kind, title, position, config, refresh_override?, cache_summary }` —
+`cache_summary` is `{ status, computed_at?, stale }` for the **caller's** `scope_key`, so two viewers
+of one dashboard legitimately see different summaries; `computed_at` is absent when no cache entry
+exists for that scope.
+
+**`WidgetDataResponse`** — `GET /api/v1/widgets/{id}/data` (FR-F023-05)
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | `"fresh" \| "stale" \| "computing" \| "error" \| "unavailable" \| "denied"` | the closed set matching the `widget_cache.status` check |
+| `payload` | object? | the per-kind rendered result; absent for `computing`, `unavailable`, `denied`, and for `error` |
+| `computed_at` | timestamp? | absent while `computing` |
+| `duration_ms` | integer? | of the run that produced the payload |
+| `source_versions` | map<source_id, integer> | composed from `widget_cache_sources`; `stale` is `true` when any is behind the live source |
+| `error` | `{ message, correlation_id }`? | present only with `status: "error"` |
+| `reason` | string? | present with `unavailable` (`"resolver_not_registered"`) and with `denied` |
+| `scope` | `"viewer" \| "owner"` | which scope produced the payload |
+
+`denied` is a `200` body, not a `403`: a widget the viewer may not read is a tile state on a page the
+viewer may read, and returning a status code would fail the whole dashboard for one tile. A
+**dashboard** the caller may not read is still `404 not_found` on this route, so a widget id never
+confirms a dashboard exists.
+
+**`RefreshResponse`** `{ run_id, status: "queued", widget_count }`, returned `202`. A refresh while
+one is active for the caller's `scope_key` is `409 conflict` carrying that `run_id`.
+
+**List route.** `GET /api/v1/dashboards` returns `Page<DashboardResponse>` in F028's envelope
+`{ items, next_cursor, has_more, total? }` with `widgets` omitted from list items, `sort` = `name` or
+`updated_at` (default `-updated_at`), `limit` 1–100, filters `workspace_id`, `folder_id`, `name`
+(prefix) and `deleted` (bool, default `false`); it returns dashboards the actor can read directly or
+through an F036 share.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `202` | — | a refresh accepted and queued |
+| `400` | `invalid` | any constraint above — overlapping or out-of-range positions, a 41st widget, an unknown `kind`, a `config` failing its per-kind rules, a `refresh_override` longer than the dashboard interval, a `kind` change on an existing widget, an out-of-range `limit` or a cursor from a different query |
+| `403` | `denied` | a viewer or a share-link actor calling `PATCH`, `PUT /widgets`, `DELETE` or `refresh`; share links are read-only on every route (FR-F023-09) |
+| `404` | `not_found` | unknown, foreign-tenant or invisible dashboard, folder or widget id, including on `GET /widgets/{id}/data` |
+| `409` | `conflict` | duplicate `name` in the folder, stale `If-Match` with `current_version`, a refresh while one is active for the scope, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the calling application's F028 token bucket is exhausted |
+| `503` | `unavailable` | the refresh queue or the outbox is unreachable. A widget whose resolver fails does **not** produce this: it is `status: "error"` on that tile alone (NFR-F023-04) |
+
+### Use case signatures
+
+In `crates/domain/src/dashboards/`. Every one takes `ctx: &ActorContext`, takes a `UnitOfWork` for
+writes or a repository trait for reads, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn create_dashboard(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateDashboard) -> Result<Dashboard, DomainError>;
+fn update_dashboard(ctx: &ActorContext, uow: &mut UnitOfWork, id: DashboardId, expected: Version, req: UpdateDashboard) -> Result<Dashboard, DomainError>;
+fn delete_dashboard(ctx: &ActorContext, uow: &mut UnitOfWork, id: DashboardId, expected: Version) -> Result<(), DomainError>;
+fn get_dashboard(ctx: &ActorContext, repo: &dyn DashboardRepository, scope: &ViewerScope, id: DashboardId) -> Result<Dashboard, DomainError>;
+fn list_dashboards(ctx: &ActorContext, repo: &dyn DashboardRepository, filter: DashboardFilter, page: Cursor) -> Result<Page<Dashboard>, DomainError>;
+fn replace_widgets(ctx: &ActorContext, uow: &mut UnitOfWork, registry: &WidgetRegistry, id: DashboardId, expected: Version, widgets: Vec<WidgetInput>) -> Result<Vec<DashboardWidget>, DomainError>;
+fn read_widget_data(ctx: &ActorContext, repo: &dyn WidgetCacheRepository, registry: &WidgetRegistry, scope: &ViewerScope, id: WidgetId) -> Result<WidgetData, DomainError>;
+fn request_refresh(ctx: &ActorContext, uow: &mut UnitOfWork, id: DashboardId, scope: &ScopeKey) -> Result<RefreshHandle, DomainError>;
+fn execute_refresh(ctx: &ActorContext, uow: &mut UnitOfWork, registry: &WidgetRegistry, id: DashboardId, scope: &ScopeKey, run_id: RunId) -> Result<RefreshSummary, DomainError>;
+fn compute_widget_stale(repo: &dyn WidgetCacheRepository, id: WidgetId, scope: &ScopeKey) -> Result<bool, DomainError>;
+```
+
+**Transaction boundaries.** `replace_widgets` is one `UnitOfWork` covering the grid validation's
+accepted set, the inserts, the updates, the deletes of omitted widgets with their cache rows, the
+full rewrite of every surviving widget's `dashboard_widget_sources` and `dashboard_widget_columns`
+rows, the audit row with the added/removed/moved diff, and the `dashboard.updated.v1` entry. The
+invariant is that the layout is never partially applied: overlap is a property of the whole set, so
+committing widget 3 before widget 7 is rejected would leave a grid that violates the rule the
+endpoint exists to enforce, and a widget whose source rows were rewritten separately would be
+permission-checked in FR-F023-05 against sources its `config` no longer names. `execute_refresh`
+takes one `UnitOfWork` per widget — the `widget_cache` entry, its `widget_cache_sources` rows and the
+per-widget outcome — so a failing widget cannot roll back the widgets that already succeeded, and one
+final boundary for the run summary and the `dashboard.refreshed.v1` entry. `read_widget_data` writes
+nothing; a cache miss enqueues a `dashboards.refresh-widget` job in its own boundary.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_dashboards_*.sql` creates `dashboards(id uuid pk, tenant_id, workspace_id, folder_id null, name text, description text, grid_columns smallint not null default 12 check (grid_columns = 12), row_height_px smallint not null default 80 check (row_height_px between 40 and 200), refresh_mode text not null check (refresh_mode in ('manual','interval','on_open')), refresh_interval_minutes int null check (refresh_interval_minutes between 5 and 1440), audience text default 'workspace', version bigint default 1, audit fields, deleted_at)` and `dashboard_widgets(id uuid pk, tenant_id, dashboard_id, kind text, title text, pos_x smallint, pos_y smallint, pos_w smallint, pos_h smallint, config jsonb, refresh_override int null, position_index int, created_at, updated_at, deleted_at)`.

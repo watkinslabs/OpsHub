@@ -95,6 +95,210 @@ Excluded: uploading files (F017 owns uploads and versions), proofing markup (F01
 - Validation: title 1–200 chars, description ≤ 4,000, tags ≤ 50 of ≤ 40 chars, metadata keys must exist as `asset_metadata_fields` rows and `select` values must exist as `asset_metadata_field_options` rows, collection name 1–120 chars unique per parent, `valid_until >= valid_from`, every territory must be an `asset_territory_codes` row (ISO-3166 alpha-2) and every channel one of the four checked values, both rejected by the foreign key and the check constraint as well as by the service.
 - Error mapping: `AssetError::FileNotClean → 400 invalid`, `AssetError::MetadataType → 400 invalid`, `AssetError::EntitlementMissing → 403 denied`, `AssetError::NotFound → 404 not_found`, `AssetError::StaleVersion → 409 conflict`, `AssetError::RenditionNotReady → 409 conflict`, `AssetError::CollectionTooDeep → 400 invalid`, `AssetError::TooManyItems → 400 invalid`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing, except on `SetRightsRequest`, which is a whole-object replace and is
+called out below. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, dates are `YYYY-MM-DD`,
+`version` increments by one per write. Unlisted request fields are rejected with `400 invalid`.
+`Page<T>`, `ListQuery`, the signed cursor, the error body and the six codes are F028's;
+`ActorContext` is F038's; the approval instance and its decision are F020's and this feature stores
+only `approval_id` and the derived `approval_state`.
+
+**`RegisterAssetRequest`** — `POST /api/v1/assets`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `asset-editor` on it |
+| `file_id` | uuid | yes | an F017 file the caller may read whose scan state is `clean`; not clean → `400 invalid` with `field_errors.file_id = "not_scanned"`; unreadable or foreign → `404 not_found` (FR-F057-02) |
+| `title` | string | yes | 1–200 chars after trim |
+| `description` | string? | no | ≤ 4,000 chars |
+| `tags` | string[] | no | 0–50 labels, each 1–40 chars, case-insensitively distinct. Each is resolved to or created as an `asset_tag_definitions` row by slug and written as one `asset_tags` row; the wire shape stays a string array |
+| `metadata` | map<string, MetadataValue> | no | keys are `asset_metadata_fields.key` of this tenant; an unknown key → `400 invalid` with `field_errors.metadata.<key> = "unknown_key"`; a value of the wrong kind → `field_errors.metadata.<key>` with the kind name (FR-F057-12) |
+| `collection_ids` | uuid[] | no | 0–50 collections the caller may write; membership rows are appended at the end of each collection's order |
+
+**`MetadataValue`** — the JSON a `metadata` entry carries, typed by the field's declared `kind`, not
+tagged in the payload. This mirrors F007's `CellValue` convention but is a separate, smaller union
+owned here, because an asset metadata field is not a sheet column.
+
+| Field `kind` | JSON | Stored column |
+|---|---|---|
+| `text` | string, ≤ 2,000 chars | `text_value` |
+| `number` | number, finite | `number_value` |
+| `date` | `YYYY-MM-DD` string | `date_value` |
+| `select` | string equal to a declared `asset_metadata_field_options.option_key` | `option_key` |
+| `person` | uuid of a user of this tenant | `person_id` |
+
+Exactly one typed column is written per value, which is what the `num_nonnulls` check enforces. An
+explicit `null` for a key deletes that `asset_metadata_values` row; omitting the key leaves it.
+
+**`UpdateAssetRequest`** — `PATCH /api/v1/assets/{id}`, `If-Match` required, at least one field
+present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `title` / `description` | as above | no | |
+| `tags` | string[] | no | replaces the whole tag set; absent leaves it unchanged |
+| `metadata` | map<string, MetadataValue?> | no | merged per key: a present key upserts, an explicit `null` deletes, an absent key is untouched |
+| `approval` | `"request"` | no | the only accepted value; creates an F020 approval under the tenant DAM policy and moves `approval_state` to `pending` (FR-F057-06). Requesting again while `pending` is `409 conflict`. There is no `"approve"` value here — a decision is made in F020, never on this route |
+
+**`SetRightsRequest`** — `PUT /api/v1/assets/{id}/rights`, `If-Match` required. A `PUT`: the body is
+the complete rights record and every absent field is cleared, not preserved.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `license` | `"owned" \| "licensed" \| "royalty_free" \| "restricted"` | yes | |
+| `licensor` | string? | no | ≤ 200 chars; required in practice for `licensed`, enforced as `400 invalid` with `field_errors.licensor` when `license` is `licensed` and it is absent |
+| `valid_from` | date? | no | |
+| `valid_until` | date? | no | `>= valid_from` when both present, else `400 invalid` with `field_errors.valid_until` |
+| `territories` | string[]? | no | ISO-3166 alpha-2 codes, uppercase, distinct, each an `asset_territory_codes` row; an unknown code → `400 invalid` with `field_errors.territories`. Absent or `[]` means unrestricted, which is not the same as one territory |
+| `channels` | (`"web" \| "print" \| "social" \| "internal"`)[]? | no | distinct; absent or `[]` means unrestricted |
+| `notes` | string? | no | ≤ 4,000 chars. Excluded from `assets.search` and from every index shared with another module (NFR-F057-02) |
+
+**`RightsResponse`**: the same seven fields plus `rights_state`. `rights_state` is
+`"unset"` when no `asset_rights` row exists, `"expired"` when `valid_until` is before today in the
+tenant timezone, `"pending"` when `valid_from` is in the future, otherwise `"active"`. It is derived
+on read from the typed columns and never stored.
+
+**`RenditionSummary`** — an element of `AssetResponse.renditions`: `{ kind: "thumbnail" | "preview" |
+"web" | "poster", state: "pending" | "ready" | "failed", width?, height?, bytes?, error_code? }`.
+`error_code` is one of `unsupported_format`, `too_large`, `timeout` and is present only when `state`
+is `failed`. No `storage_key` and no URL appear here: a URL is minted only by the redirect route, so
+a stale response can never carry a live signed link.
+
+**`AssetResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` / `file_id` / `current_file_version_id` | uuid | |
+| `title` / `description` | string / string? | |
+| `mime_type` | string | |
+| `mime_prefix` | string | the generated column; the value the `mime_prefix` list filter matches |
+| `byte_size` | integer | |
+| `width` / `height` / `duration_ms` | integer? | present only when the probe extracted them for that media kind |
+| `tags` | string[] | tag labels in `slug` order, reassembled from `asset_tags` |
+| `metadata` | map<string, MetadataValue> | only fields with a stored value; a declared field with no value is absent, not `null` |
+| `approval_state` | `"draft" \| "pending" \| "approved" \| "rejected"` | |
+| `approval_id` | uuid? | the F020 approval; present once one has been requested |
+| `rendition_state` | `"pending" \| "ready" \| "failed"` | the roll-up across kinds |
+| `renditions` | RenditionSummary[] | one per applicable kind for the media type |
+| `rights` | RightsResponse? | `null` when rights were never set |
+| `rights_state` | `"unset" \| "pending" \| "active" \| "expired"` | derived |
+| `usable` | bool | `approval_state == "approved" && rights_state != "expired"`; the single field the library badges on (FR-F057-06) |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | | |
+| `archived_at` | timestamp? | present only on an archived asset; `usable` is then always `false` |
+
+**`GET /api/v1/assets/{id}/renditions/{kind}`** takes no body. `kind` is one of the four enum values;
+any other value is `404 not_found`, not `400`, because the path segment names a resource. A ready
+rendition answers `302` with `Location` set to a signed object URL expiring in 15 minutes and
+`Cache-Control: private, no-store`; the URL is never written to a log or an audit row. A rendition in
+`pending` or `failed` answers `409 conflict` with a body carrying `{ rendition_state, error_code? }`
+so the client can offer `Retry` without a second request.
+
+**`CreateCollectionRequest`** — `POST /api/v1/asset-collections`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | |
+| `name` | string | yes | 1–120 chars, unique per parent (case-insensitive) among live collections, else `409 conflict` |
+| `description` | string? | no | ≤ 2,000 chars |
+| `visibility` | `"private" \| "workspace" \| "tenant"` | no | default `"private"` |
+| `parent_id` | uuid? | no | a live collection of the same workspace; resulting `depth` ≤ 5, else `400 invalid` with `field_errors.parent_id` |
+
+**`ReplaceCollectionAssetsRequest`** — `PUT /api/v1/asset-collections/{id}/assets`, `If-Match`
+required: `{ asset_ids: uuid[] }`, 0–5,000 entries, distinct, array order becomes `position`. The
+caller must be able to read every id: one unreadable id fails the whole request with `404 not_found`
+and no partial membership is written. A 5,001st entry is `400 invalid` with `field_errors.asset_ids`.
+
+**`CollectionResponse`**: `{ id, workspace_id, name, description, visibility, parent_id, depth,
+item_count, version, created_at, created_by, updated_at, updated_by, deleted_at? }`. `item_count`
+counts only assets the caller may read and that are not archived, so it matches what the tree shows.
+
+**List routes.** `GET /api/v1/assets` takes F028's `ListQuery` and returns `Page<AssetResponse>`.
+Sort keys: `updated_at` descending (default), `created_at`, or `title` ascending, each with `id` as
+tiebreak — the value the cursor signs. Filters, all `and`-combined:
+
+| Parameter | Type | Constraint |
+|---|---|---|
+| `q` | string? | 1–200 chars, matched against the `assets.search` tsvector |
+| `tag` | string, repeatable | tag slug; repeated values are `and`-combined through `asset_tags` |
+| `territory` | string, repeatable | ISO-3166 alpha-2; joined through `asset_rights_territories` |
+| `channel` | enum, repeatable | joined through `asset_rights_channels` |
+| `collection_id` | uuid? | |
+| `approval_state` | enum? | |
+| `rights_state` | enum? | evaluated against `valid_from`/`valid_until` at query time |
+| `mime_prefix` | string? | matched against the generated column, e.g. `image`, `video` |
+| `usable` | bool? | the derived predicate, not a stored column |
+
+`GET /api/v1/asset-collections` returns `Page<CollectionResponse>` sorted by `name` ascending within
+`parent_id`, filtered by `workspace_id`, `parent_id` and `visibility`. Assets the caller may not read
+never appear in either page and are not counted anywhere, so neither list is a discovery oracle.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `302` | — | `GET .../renditions/{kind}` when the rendition is `ready` |
+| `400` | `invalid` | file not `clean`, unknown metadata key, metadata type mismatch, undeclared `select` option, unknown territory code, invalid channel, `valid_until < valid_from`, a 51st tag, a 5,001st collection item, collection depth over 5, an unlisted field |
+| `403` | `denied` | the tenant lacks the `dam` entitlement or `F057_FEATURE` is off (`field_errors.entitlement = "dam"`, FR-F057-11), or a viewer called a mutation |
+| `404` | `not_found` | an asset, collection, file or user id of another tenant or invisible to the caller; an unknown rendition `kind`. Never `denied`, so ids do not leak existence |
+| `409` | `conflict` | stale `If-Match` carrying `current_version`, duplicate collection name under a parent, a rendition not yet `ready`, an approval requested while one is `pending`, `Idempotency-Key` replayed with a different body |
+| `503` | `unavailable` | object storage or JetStream unreachable, so a register cannot enqueue rendition work; no `assets` row is written in that case |
+
+### Use case signatures
+
+In `crates/domain/src/assets/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits rather than a pool or connection, and returns `DomainError`.
+
+```rust
+fn register_asset(ctx: &Ctx, uow: &mut UnitOfWork, req: RegisterAsset) -> Result<Asset, DomainError>;
+fn update_asset(ctx: &Ctx, uow: &mut UnitOfWork, id: AssetId, expected: Version, req: UpdateAsset) -> Result<Asset, DomainError>;
+fn archive_asset(ctx: &Ctx, uow: &mut UnitOfWork, id: AssetId, expected: Version) -> Result<(), DomainError>;
+fn get_asset(ctx: &Ctx, repo: &dyn AssetRepository, id: AssetId) -> Result<Asset, DomainError>;
+fn list_assets(ctx: &Ctx, repo: &dyn AssetRepository, filter: AssetFilter, page: Cursor) -> Result<Page<Asset>, DomainError>;
+fn set_rights(ctx: &Ctx, uow: &mut UnitOfWork, id: AssetId, expected: Version, req: SetRights) -> Result<Rights, DomainError>;
+fn rendition_url(ctx: &Ctx, repo: &dyn AssetRenditionRepository, signer: &dyn UrlSigner, id: AssetId, kind: RenditionKind) -> Result<SignedUrl, DomainError>;
+fn request_asset_approval(ctx: &Ctx, uow: &mut UnitOfWork, id: AssetId, expected: Version) -> Result<ApprovalId, DomainError>;
+fn apply_approval_decision(ctx: &Ctx, uow: &mut UnitOfWork, approval: ApprovalId, decision: ApprovalDecision) -> Result<Asset, DomainError>;
+fn create_collection(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateCollection) -> Result<Collection, DomainError>;
+fn replace_collection_assets(ctx: &Ctx, uow: &mut UnitOfWork, id: CollectionId, expected: Version, ids: Vec<AssetId>) -> Result<Collection, DomainError>;
+fn list_collections(ctx: &Ctx, repo: &dyn AssetCollectionRepository, filter: CollectionFilter, page: Cursor) -> Result<Page<Collection>, DomainError>;
+fn store_rendition(ctx: &Ctx, uow: &mut UnitOfWork, asset: AssetId, version: FileVersionId, kind: RenditionKind, result: RenditionResult) -> Result<Rendition, DomainError>;
+
+fn validate_metadata(fields: &[MetadataField], options: &[FieldOption], input: &MetadataInput) -> Result<Vec<MetadataValue>, MetadataErrors>;
+fn derive_rights_state(rights: Option<&Rights>, today: civil::Date) -> RightsState;
+fn derive_usable(approval: ApprovalState, rights: RightsState) -> bool;
+```
+
+The last three are pure over already-loaded schema rows and a date: no `ctx`, no repository, no
+clock, which is why `usable` cannot drift between the list query, the detail read and the badge —
+all three call `derive_usable` on the same two inputs.
+
+**Transaction boundaries.**
+
+- `register_asset` writes the `assets` row, its `asset_tags` rows (creating any missing
+  `asset_tag_definitions` first), its `asset_metadata_values` rows, its `asset_collection_items` rows,
+  the refreshed `assets.search` vector, the audit row and the `asset.created.v1` outbox entry in one
+  `UnitOfWork`. The invariant: `assets.search` is a derived cache, so it must be rewritten in the same
+  transaction as any title, description, tag or metadata write it summarises — a search vector that
+  commits without its source rows would return assets that do not match.
+- `update_asset` and `set_rights` do the same for their sets: `set_rights` replaces the `asset_rights`
+  row together with **all** its `asset_rights_territories` and `asset_rights_channels` rows, because
+  a partially replaced territory set would silently widen or narrow a licence.
+- `replace_collection_assets` deletes and reinserts the collection's `asset_collection_items` rows
+  under the collection's `If-Match` in one `UnitOfWork`, so the ordered list is never half-applied.
+- `store_rendition` writes the `asset_renditions` row, the roll-up `assets.rendition_state`, and the
+  `asset.rendition-ready.v1` outbox entry in one `UnitOfWork`. The invariant the unique
+  `(asset_id, file_version_id, kind)` index protects: a retried job upserts rather than duplicating,
+  which is what makes the worker idempotent per NFR-F057-04.
+- `apply_approval_decision` writes `approval_state` and the audit row in one `UnitOfWork` in the
+  consumer of F020's `approval.decided.v1`; it never writes the approval itself, which F020 owns.
+- `get_asset`, `list_assets`, `list_collections` and `rendition_url` are reads and take repositories,
+  not a `UnitOfWork`; `rendition_url` additionally re-checks F017 file read access on every call, so a
+  revoked file permission stops minting URLs immediately rather than at the next cache expiry.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_assets_*.sql` creates `assets(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, workspace_id uuid not null references workspaces(id) on delete restrict, file_id uuid not null references files(id) on delete restrict, current_file_version_id uuid not null references file_versions(id) on delete restrict, title text not null, description text, mime_type text not null, mime_prefix text generated always as (split_part(mime_type,'/',1)) stored, byte_size bigint not null, width int, height int, duration_ms int, probe jsonb, approval_state text not null default 'draft' check (approval_state in ('draft','pending','approved','rejected')), approval_id uuid references approvals(id) on delete restrict, rendition_state text not null default 'pending' check (rendition_state in ('pending','ready','failed')), rendition_error text check (rendition_error is null or rendition_error in ('unsupported_format','too_large','timeout')), search tsvector not null default ''::tsvector, version bigint not null default 1, created_by, created_at, updated_by, updated_at, archived_at)`, `asset_renditions(id uuid pk, tenant_id, asset_id uuid not null references assets(id) on delete restrict, file_version_id uuid not null references file_versions(id) on delete restrict, kind text not null check (kind in ('thumbnail','preview','web','poster')), storage_key text, checksum text, width int, height int, bytes bigint, state text not null check (state in ('pending','ready','failed')), error_code text check (error_code is null or error_code in ('unsupported_format','too_large','timeout')), attempts smallint not null default 0, created_at, updated_at)`, `asset_rights(asset_id uuid pk references assets(id) on delete cascade, tenant_id, license text not null check (license in ('owned','licensed','royalty_free','restricted')), licensor text, valid_from date, valid_until date, notes text, version bigint, audit fields)`, `asset_collections(id uuid pk, tenant_id, workspace_id uuid not null references workspaces(id) on delete restrict, name text not null, description text, visibility text not null check (visibility in ('private','workspace','tenant')), parent_id uuid references asset_collections(id) on delete restrict, depth smallint not null default 0 check (depth <= 5), version, audit fields, deleted_at)`, `asset_collection_items(collection_id uuid not null references asset_collections(id) on delete cascade, asset_id uuid not null references assets(id) on delete restrict, position integer not null, added_by, added_at, primary key (collection_id, asset_id))`. `asset_collection_items.asset_id` is `restrict` because FR-F057-09 keeps membership rows for an archived asset so restore is exact; `asset_renditions.asset_id` is `restrict` so the F027 purge must delete the object-storage keys before the rows.

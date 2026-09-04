@@ -93,6 +93,203 @@ Excluded: offline document co-editing (section 10), native app stores, offline a
 - Validation: ≤ 500 ops per batch, `recorded_at` within the last 7 days, `payload` ≤ 64 KB per op, `device_name` ≤ 80 chars, `since` cursor signed and ≤ 7 days old.
 - Error mapping: `MobileError::BatchTooLarge → 400 invalid`, `MobileError::CursorExpired → 400 invalid`, `MobileError::DeviceRevoked → 403 denied`, `MobileError::DeviceNotFound → 404 not_found`, `MobileError::BadSignature → 404 not_found`, `MobileError::FlagOff → 404 not_found`; per-op rejections are data in the 200 response, not HTTP errors.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments
+by one per write. Unlisted request fields are rejected with `400 invalid`. `Page<T>`, `ListQuery`, the
+signed cursor, the error body and the six codes are F028's; `CellValue` is F007's; `ActorContext` is
+F038's; the push subscription is F037's and this feature stores only `push_subscription_id`.
+
+**Stability rule for the sync protocol.** A queued operation may be written by one app version and
+applied by the server weeks later, after the app has been upgraded, so every op is **self-describing**:
+`kind` names the operation, `target` names the object by id and never by position or index, `values`
+names each field by its server-side id, and `base_version` names what the client believed. The server
+never infers an op's meaning from its position in the batch, from the device's current subscriptions,
+or from the app version — `op_index` fixes apply *order* only. Adding a new `kind` or a new `target`
+variant is additive: an older client keeps sending what it knows, and a server that receives a `kind`
+it does not implement rejects that single op with code `invalid` rather than failing the batch. No
+field of a queued op is ever reinterpreted after release; a changed meaning requires a new `kind`.
+
+**`RegisterDeviceRequest`** — `POST /api/v1/mobile/devices`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `platform` | `"android" \| "ios" \| "web"` | yes | any other value → `400 invalid` |
+| `push_subscription` | PushSubscription? | no | F037's Web Push subscription object, passed through unchanged; when present the server creates the F037 subscription and records a `push` capability row |
+| `app_version` | string | yes | 1–32 chars, semver-shaped; recorded so an old client's ops can be explained in support |
+| `device_name` | string | yes | 1–80 chars after trim |
+| `keystore_handle` | string? | no | opaque handle proving a non-extractable WebCrypto key exists; presence records the `secure_keystore` capability (FR-F058-02) |
+
+The device is bound to the calling session and user from `ActorContext`; there is no `user_id` or
+`session_id` field, and sending one is `400 invalid`. Registering twice on one session returns the
+existing device rather than a second row, which the partial unique index on
+`(user_id, session_id) where revoked_at is null` enforces.
+
+**`DeviceResponse`**: `{ id, platform, app_version, device_name, capabilities: ("push" |
+"offline_queue" | "install_prompt" | "secure_keystore")[], last_sync_cursor: string?, revoked_at?,
+version, created_at, updated_at }`. `capabilities` is reassembled from `mobile_device_capabilities`
+rows in enum order. The push subscription itself is never echoed back.
+
+**`SyncOp`** — one queued operation, the element of `SyncBatchRequest.ops`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `client_op_id` | uuid | yes | generated on the device; unique per device forever. It is the idempotency identity: a replay of the same `client_op_id` returns the original outcome and applies nothing (FR-F058-06). Duplicates inside one batch are `400 invalid` |
+| `kind` | `"cell_edit" \| "form_submit"` | yes | an unrecognised value rejects that op with code `invalid`, not the batch |
+| `target` | OpTarget | yes | shape decided by `kind`; see below |
+| `base_version` | integer? | conditional | required for `cell_edit` — the row `version` the device last saw; omitted for `form_submit`, which creates a new submission and has nothing to be stale against |
+| `values` | OpValue[] | yes | 1–200 entries; the fields this op sets |
+| `recorded_at` | timestamp | yes | when the device captured the edit; must be within the last 7 days and not more than 5 minutes in the future, else the op is rejected with code `invalid`. It orders nothing — `op_index` does — but it is written to the audit row (FR-F058-13) |
+
+**`OpTarget`** — discriminated by the op's `kind`, not by a field of its own:
+
+| `kind` | Shape | Constraint |
+|---|---|---|
+| `cell_edit` | `{ sheet_id: uuid, row_id: uuid }` | both required; the row must belong to the sheet |
+| `form_submit` | `{ form_id: uuid }` | required; a published F014 form |
+
+**`OpValue`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid? | conditional | present exactly for `cell_edit`; a live column of the target sheet |
+| `form_field_id` | uuid? | conditional | present exactly for `form_submit`; a field of the target form |
+| `value` | CellValue | yes | F007's typed union for a column, or the form field's answer type. Serialized size ≤ 64 KB per op across all values |
+
+Exactly one of `column_id` and `form_field_id` is present, which is what the `num_nonnulls` check on
+`mobile_sync_op_values` enforces; both or neither rejects the op with code `invalid`.
+
+**`SyncBatchRequest`** — `POST /api/v1/mobile/sync`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `device_id` | uuid | yes | a device of the calling user that is not revoked, else `403 denied`; another user's device → `404 not_found` |
+| `batch_id` | uuid | yes | client-generated; unique per device. A replay with the same `batch_id` returns the stored outcome verbatim and applies nothing; the same `batch_id` with different ops is `409 conflict` |
+| `ops` | SyncOp[] | yes | 1–500 entries; array order is `op_index` and is the apply order. A 501st entry is `400 invalid` with `field_errors.ops` |
+
+**`AppliedOp`** — an element of `SyncBatchResponse.applied`
+
+| Field | Type | Notes |
+|---|---|---|
+| `client_op_id` | uuid | echoed so the client can dequeue without matching by position |
+| `version` | integer | the target row's new `version` after the op, or the submission's `version` for `form_submit`; the client stores it as the next `base_version` |
+| `applied_at` | timestamp | server time the op committed |
+
+**`RejectedOp`** — an element of `SyncBatchResponse.rejected`. This is the shape a client parses
+weeks after queueing, so every field it needs to render a conflict card is here and nothing has to be
+fetched to explain the rejection.
+
+| Field | Type | Notes |
+|---|---|---|
+| `client_op_id` | uuid | echoed |
+| `code` | `"conflict" \| "denied" \| "not_found" \| "invalid"` | the closed set of `mobile_sync_rejections.code`. `conflict`: `base_version` is stale and the targeted cell changed. `denied`: the actor may no longer edit the target — permission is evaluated at sync time, never at record time (NFR-F058-02). `not_found`: the row, sheet, form, column or field is gone or invisible. `invalid`: the op is malformed, its `kind` is unknown to this server, or `recorded_at` is outside the window |
+| `server_value` | CellValue? | the current server-side value of the conflicting field; present only for `conflict`, and only for a field the actor may read. `null` for every other code, so a rejection is never an oracle for a value the actor cannot see |
+| `server_version` | integer? | the target's current `version`; present for `conflict` and for `denied`-after-change, `null` otherwise. It is what `Keep mine` resubmits against |
+| `field` | string? | `column_id` or `form_field_id` of the offending value when the rejection is field-specific; `null` when the whole op failed |
+
+`RejectedOp` deliberately carries no message string: the client renders text from its own F049
+catalog, so an old app never displays a phrase a newer server invented.
+
+**`SyncBatchResponse`** — `200` for every well-formed batch, including one where every op was rejected
+
+| Field | Type | Notes |
+|---|---|---|
+| `batch_id` | uuid | echoed |
+| `applied` | AppliedOp[] | in `op_index` order |
+| `rejected` | RejectedOp[] | in `rejection_index` order |
+| `applied_count` / `rejected_count` | integer | equal to the array lengths; sent so a client can check it parsed the whole body |
+| `cursor` | string | the pull cursor to use next; opaque and signed, F028's cursor construction |
+
+A per-op failure is **data in a `200`**, never an HTTP error (FR-F058-05). The HTTP status describes
+the batch envelope only. A replay rebuilds this body from `mobile_sync_batch_ops`,
+`mobile_sync_applied_ops` and `mobile_sync_rejections` and is byte-identical to the first response,
+`cursor` included.
+
+**Pull** — `GET /api/v1/mobile/sync?since={cursor}&limit={n}`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `since` | string | yes | a cursor from a previous response; malformed, re-signed, issued for another device, or older than 7 days → `400 invalid` with `field_errors.since = "expired"`, and the client performs a full refresh (FR-F058-07) |
+| `limit` | integer | no | 1–500, default 200 |
+
+**`PullResponse`**: `{ rows: MobileRow[], deleted_row_ids: uuid[], removed_sheet_ids: uuid[], cursor,
+has_more }`. `MobileRow` is `{ sheet_id, row_id, version, cells: map<uuid, CellValue>, updated_at }`
+for rows the caller may currently read in a sheet the device opened in the last 30 days.
+`deleted_row_ids` carries rows soft-deleted since the cursor; `removed_sheet_ids` carries sheets the
+caller has lost access to, so the client purges its encrypted cache rather than keeping stale data it
+may no longer read. This is not a `Page<T>`: the cursor is a change cursor over time, not a position
+in a sorted list, so it carries no sort key and cannot be reordered.
+
+**Deep links.** `GET /m/{deep_link}` where `deep_link` is `<kind>.<id>.<sig>`, `kind` one of `row`,
+`sheet`, `form`, `notification`, `id` a UUIDv7, and `sig` an HMAC over `kind`, `id`, `tenant_id` and
+the 30-day expiry under the tenant signing key. There is no query string and no tenant identifier in
+the path. A bad signature, an expired link, a target in another tenant, a target the caller cannot
+read, and `F058_FEATURE` off all return the same `404 not_found` page, so the link is not an oracle.
+An unauthenticated caller is sent through F038 login with the deep link as `return_to`.
+
+**`GET /manifest.webmanifest`** returns `application/manifest+json` with `name`, `short_name`, `icons`
+(192 and 512 px), `start_url: "/m/home"`, `display: "standalone"`, `theme_color` and
+`background_color` from tenant settings. It requires no session and reveals only branding the login
+page already shows.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | a 501st op, a duplicate `client_op_id` within one batch, an expired or foreign `since` cursor, `limit` out of range, an op payload over 64 KB, an unlisted field |
+| `403` | `denied` | the device is revoked, or `device_id` belongs to the caller but its session was revoked. A per-op permission loss is **not** this: it is `code: "denied"` inside a `200` |
+| `404` | `not_found` | a `device_id` of another user or tenant, a bad or expired deep-link signature, an unreadable deep-link target, and every sync or deep-link route while `F058_FEATURE` is off (FR-F058-14) |
+| `409` | `conflict` | the same `batch_id` replayed with a different `ops` array; `Idempotency-Key` replayed with a different body. A per-op version conflict is **not** this: it is `code: "conflict"` inside a `200` |
+| `429` | `rate_limited` | the device exceeds the sync bucket, carrying `Retry-After`; the client backs off 1 s to 60 s |
+| `503` | `unavailable` | the database or F008 change log is unreachable; the client keeps the queue and retries |
+
+### Use case signatures
+
+In `crates/domain/src/mobile/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits rather than a pool or connection, and returns `DomainError`.
+
+```rust
+fn register_device(ctx: &Ctx, uow: &mut UnitOfWork, req: RegisterDevice) -> Result<MobileDevice, DomainError>;
+fn revoke_device(ctx: &Ctx, uow: &mut UnitOfWork, id: DeviceId) -> Result<(), DomainError>;
+fn apply_sync_batch(ctx: &Ctx, uow: &mut UnitOfWork, grid: &dyn CellEditService, forms: &dyn FormSubmitService, req: SyncBatch) -> Result<SyncOutcome, DomainError>;
+fn pull_changes(ctx: &Ctx, devices: &dyn MobileDeviceRepository, changes: &dyn ChangeLogRepository, id: DeviceId, since: Cursor, limit: u16) -> Result<PullView, DomainError>;
+fn resolve_deep_link(ctx: &Ctx, verifier: &dyn LinkSigner, link: &str, now: Timestamp) -> Result<DeepLinkTarget, DomainError>;
+fn sign_deep_link(signer: &dyn LinkSigner, tenant: TenantId, kind: DeepLinkKind, id: Uuid, now: Timestamp) -> String;
+fn wipe_on_revoke(ctx: &Ctx, uow: &mut UnitOfWork, session: SessionId) -> Result<Vec<DeviceId>, DomainError>;
+fn render_manifest(ctx: &Ctx, settings: &TenantBranding) -> Manifest;
+
+fn classify_op(op: &SyncOp, row: Option<&RowSnapshot>, perms: &OpPermissions, now: Timestamp) -> OpDecision;
+```
+
+`classify_op` is pure — an op, the current row snapshot, the actor's permissions and a clock, in;
+`OpDecision::Apply` or `OpDecision::Reject(code, server_value, server_version)`, out. Every rejection
+code in the table above is produced by this one function, which is why the conflict rules are unit
+tested without a database and why the API and the replay path cannot disagree about an outcome.
+
+**Transaction boundaries.**
+
+- `register_device` writes the `mobile_devices` row, its `mobile_device_capabilities` rows, the audit
+  row and the `mobile-device.registered.v1` outbox entry in one `UnitOfWork`. The invariant: push
+  eligibility is a join on capability rows, so a device must never be readable without them.
+- `apply_sync_batch` runs the **whole batch** in one `UnitOfWork` with **one savepoint per op**. Each
+  op's F008 cell write or F014 submission, its `mobile_sync_batch_ops` outcome, its
+  `mobile_sync_applied_ops` dedupe row or its `mobile_sync_rejections` row, and its audit row are
+  applied inside that op's savepoint; a rejected op rolls back to the savepoint and the batch
+  continues. The `mobile_sync_batches` header with `applied_count`, `rejected_count` and `cursor`,
+  and the single `mobile-sync.applied.v1` entry plus one `mobile-sync.rejected.v1` per rejection,
+  commit with the outer transaction. Two invariants depend on this exact shape: (a) the header counts
+  always equal the `mobile_sync_batch_ops` rows by outcome, which the check constraint asserts and
+  which a partially committed batch would break; and (b) a `client_op_id` is either recorded as
+  applied *and* its data written, or neither — an op whose cell write committed without its dedupe
+  row would be applied twice on the next replay, silently overwriting a later edit.
+- `wipe_on_revoke` revokes every device of the session and deletes its push subscription in one
+  `UnitOfWork`, so a revoked session cannot receive a deep link between the two writes.
+- `pull_changes`, `resolve_deep_link` and `render_manifest` are reads; `pull_changes` additionally
+  touches `last_opened_at` through its own short `UnitOfWork` rather than the caller's, because a
+  failed touch must not fail a successful pull.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_mobile_*.sql` creates `mobile_devices(id uuid pk, tenant_id uuid not null, user_id uuid not null references users(id) on delete restrict, session_id uuid not null references sessions(id) on delete restrict, platform text not null check (platform in ('android','ios','web')), push_subscription_id uuid references push_subscriptions(id) on delete set null, app_version text not null, device_name text not null, last_sync_cursor text, revoked_at timestamptz, version bigint not null default 1, created_by, created_at, updated_by, updated_at)`, `mobile_sync_batches(id uuid pk, tenant_id, device_id uuid not null references mobile_devices(id) on delete restrict, batch_id uuid not null, applied_count int not null default 0 check (applied_count >= 0), rejected_count int not null default 0 check (rejected_count >= 0), cursor text not null, correlation_id uuid not null, created_at)`, and `mobile_sync_rejections(id uuid pk, tenant_id, sync_batch_id uuid not null references mobile_sync_batches(id) on delete cascade, op_id uuid not null references mobile_sync_batch_ops(id) on delete cascade, device_id uuid not null references mobile_devices(id) on delete restrict, rejection_index int not null check (rejection_index >= 0), client_op_id uuid not null, code text not null check (code in ('conflict','denied','not_found','invalid')), server_value jsonb, server_version bigint, created_at)`.

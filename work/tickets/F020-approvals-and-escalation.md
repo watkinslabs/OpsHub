@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f020-approvals-and-escalation`
 - Capability area: review and sign-off (spec 5.4b COLLAB-04 and the approval-instance low-level rule; 5.5 AUTO-02 approvals and routing; section 8 MVP scenario "routes it for approval")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7; `docs/capability-contracts.md` row F020
+- Aggregate: `approval`
 - Module slug: `approvals`
 
 ## 2. Requirement specification
@@ -91,6 +92,183 @@ Excluded: notification channel delivery and preferences (F037); workflow authori
 - Authorization: create by `workflow-editor` or the F019 service actor; decide by a current approver in `Pending` state; reassign by requester, `workflow-editor`, or the replaced approver; cancel by requester or `workflow-editor`; policies by `workflow-editor`; reads by target ACL or approver membership; explicit deny wins.
 - Validation: approvers 1–20 references, expanded set ≤ 50; `count` within range; `due_at` ≥ now + 15 minutes; reason required on reject; `escalate_after_minutes` ≥ 5; `max_escalations` 1–3. Idempotency in `idempotency_keys` for 24 hours; `If-Match` checked inside the transaction.
 - Error mapping: `ApprovalError::NotApprover → 403 denied`, `ApprovalError::AlreadyDecided → 409 conflict`, `ApprovalError::NotPending → 409 conflict`, `ApprovalError::StaleVersion → 409 conflict`, `ApprovalError::NotFound → 404 not_found`, validation → `400 invalid` with `field_errors`, `AuthzError::Denied → 403 denied`.
+
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and `ListQuery`
+are F028's; the error body and the six codes are the shared ones; `ActorContext` is F038's. Every
+mutation requires `Idempotency-Key`, and `decide`, `reassign`, `cancel` and the policy `PUT` require
+`If-Match` (FR-F020-14).
+
+**`ApprovalTarget`** `{ type: "row" | "document" | "file", id: uuid }` — the record the decision
+gates. The caller must hold `read` on it through its own ACL; a target it cannot read is
+`404 not_found`, never `denied`, so an approval never confirms that a record exists.
+
+**`CreateApprovalRequest`** — `POST /api/v1/approvals`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target` | ApprovalTarget | yes | as above |
+| `approvers` | ApproverRef[] | yes | 1–20 references before expansion; the expanded user set must be 1–50, else `400 invalid` with `field_errors.approvers`; a user with no `read` on `target` → `400 invalid` |
+| `quorum` | QuorumRule | yes | see below |
+| `due_at` | timestamp? | no | at least 15 minutes ahead, else `field_errors.due_at`; absent means the policy's `default_due_minutes`, and no due date at all when neither is set |
+| `policy_id` | uuid? | no | a live `approval_policies` row of the tenant |
+| `context` | `{ title, message? }` | yes | `title` 1–200 chars after trim, `message` ≤ 2,000 chars; stored as `context_title` / `context_message` |
+
+**`ApproverRef`** `{ kind: "user" | "group", id: uuid }`. A `user` becomes one `approval_approvers`
+row with `source = "direct"`; a `group` is expanded at creation to its current members, each written
+with `source = "group"` and `source_group_id` set, so later membership edits never add an approver
+(NFR-F020-02). A group expanding to zero members is `400 invalid`; the same user reached twice is
+written once, keeping the first `source`.
+
+**`QuorumRule`** `{ kind: "any" | "all" | "count", count? }` — `count` is required when `kind` is
+`count` and must be between 1 and the expanded approver count, rejected otherwise; both mismatches
+are `400 invalid` with `field_errors.quorum`.
+
+**`DecideRequest`** — `POST /api/v1/approvals/{id}/decide`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `decision` | `"approved" \| "rejected"` | yes | any other value → `400 invalid` |
+| `reason` | string? | conditional | required when `decision` is `rejected`, else `400 invalid` with `field_errors.reason`; ≤ 2,000 chars either way |
+
+**`ReassignRequest`** `{ from_user_id: uuid, to_user_id: uuid, reason: string }` — `from_user_id`
+must have a live `approval_approvers` row (`removed_at is null`), `to_user_id` must hold `read` on
+the target (`400 invalid` with `field_errors.to_user_id` otherwise) and must not already be an active
+approver, `reason` ≤ 2,000 chars. **`CancelRequest`** `{ reason: string }`, ≤ 2,000 chars, required.
+
+**`ApprovalResponse`** — the list item and the envelope of `decide`, `reassign` and `cancel`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `workspace_id` | uuid | |
+| `target` | ApprovalTarget | |
+| `requested_by` | uuid | |
+| `quorum` | QuorumRule | composed from `quorum_kind` / `quorum_count` |
+| `context` | `{ title, message? }` | composed from the two typed columns |
+| `policy_id` | uuid? | |
+| `due_at` | timestamp? | |
+| `overdue` | bool | `true` when `due_at` has passed and `status` is still `pending` (FR-F020-09) |
+| `status` | `"pending" \| "approved" \| "rejected" \| "cancelled"` | |
+| `outcome` | `"approved" \| "rejected"`? | present only on a resolved approval; `cancelled` carries none |
+| `decided_at` | timestamp? | set with `outcome` |
+| `escalation_level` | integer | 0 until the first escalation, at most `max_escalations` |
+| `approver_summary` | `{ total, approved, rejected, pending }` | counts over live approver rows, so an inbox row needs no second call |
+| `correlation_id` | uuid | shared with the originating F019 run's chain when there is one |
+| `run_id` | uuid? | the F019 run whose `request_approval` step created this, `null` for a human request |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at`, `created_by` / `updated_by` | timestamp, uuid | |
+
+**`ApprovalDetailResponse`** — `GET /api/v1/approvals/{id}`: every field above plus
+
+| Field | Type | Notes |
+|---|---|---|
+| `approvers` | Approver[] | every row including removed ones, in `position` order, so the escalation history reads from the same list |
+| `decisions` | Decision[] | append-only, in `decided_at` order |
+| `timers` | Timer[] | the approval's `escalation_timers` rows |
+
+**`Approver`** `{ id, user_id, position, source: "direct" | "group" | "escalation", source_group_id?,
+escalation_level, state: "pending" | "approved" | "rejected" | "replaced", added_at, removed_at?,
+replaced_by_approver_id? }`. `source_group_id` is present only when `source` is `group`;
+`replaced_by_approver_id` only on a reassigned row. `state` is derived: `replaced` when `removed_at`
+is set, otherwise the approver's own decision or `pending`.
+
+**`Decision`** `{ id, approver_id, decision: "approved" | "rejected", reason?, decided_at,
+system: bool }`. `system` is `true` for the expiry decision of FR-F020-09, whose `reason` is the
+fixed string `expired`; decisions are immutable and never returned edited.
+
+**`Timer`** `{ id, kind: "reminder" | "escalate" | "expire", level, fire_at, fired_at? }` — `fired_at`
+`null` while pending; cancelling an approval leaves the rows and cancels them, so the history stays.
+
+**`UpsertPolicyRequest`** — `PUT /api/v1/approval-policies/{id}`, the whole policy, replaced not
+merged (FR-F020-07)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per tenant case-insensitively, else `409 conflict` with `field_errors.name` |
+| `default_due_minutes` | integer? | no | ≥ 15, matching the `due_at` floor |
+| `reminder_before_minutes` | integer[] | no | 0–10 entries, each ≥ 5, distinct; replaces the `approval_policy_reminders` rows whole |
+| `escalate_after_minutes` | integer | yes | ≥ 5 |
+| `escalate_to` | EscalationTarget[] | yes | 1–10 entries, ordered; replaces the `approval_policy_escalation_targets` rows whole |
+| `max_escalations` | integer | yes | 1–3 |
+| `on_expiry` | `"none" \| "auto_reject" \| "auto_approve"` | yes | closed set |
+
+**`EscalationTarget`** `{ kind: "user" | "group" | "manager", id? }` — `id` is required for `user` and
+`group` and must be absent for `manager`, which resolves from the F002 profile at fire time; either
+mismatch is `400 invalid` with `field_errors.escalate_to`. **`PolicyResponse`** returns the same
+seven fields plus `id`, `version`, and audit fields.
+
+**List route.** `GET /api/v1/approvals` returns `Page<ApprovalResponse>` in F028's envelope
+`{ items, next_cursor, has_more, total? }`, `sort` = `due_at` or `created_at` (default `-created_at`;
+approvals without a `due_at` sort last under `due_at`), `limit` 1–200. Filters: `status`
+(ApprovalStatus), `target_type` (the three members), `target_id` (uuid, rejected without
+`target_type`), `assigned_to_me` (bool — a join on `approval_approvers` for the caller where
+`removed_at is null`), `requested_by_me` (bool), `overdue` (bool). A value outside its set is
+`400 invalid` with `field_errors.filter`.
+
+**`approval.decided.v1` payload.** Five features consume this per `docs/event-map.md` — F019 to
+resume the run that requested it, F032 to open a stage gate, F040, F054 and F057 — so its shape is a
+contract beyond this ticket and a field added to it amends theirs in the same pull request. Beyond
+the envelope every event carries, it holds: `approval_id`, `tenant_id`, `target` (the same
+`ApprovalTarget` object), `outcome` (`approved` or `rejected`), `decided_at`, `quorum` (the same
+`QuorumRule`), `decisions` (the full `Decision[]` at resolution, so a consumer needs no read-back),
+`requested_by`, `run_id` (nullable, how F019 finds the waiting run), `correlation_id`, and
+`escalation_level` at resolution. A `cancelled` approval publishes `approval.cancelled.v1` and never
+this event, so a consumer branching on `outcome` never sees a third value.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above — 21 references, an expansion over 50, `count` outside the approver range, `due_at` under 15 minutes ahead, a missing reject reason, a reassignment target without target access, a `manager` entry carrying an `id` |
+| `403` | `denied` | a decide by someone who can read the target but holds no live approver row; a reassign or cancel by someone who is neither the requester, a `workflow-editor`, nor the outgoing approver; a policy write without `workflow-editor` |
+| `404` | `not_found` | unknown, foreign-tenant, or invisible approval, target, or policy; a caller with neither target read nor approver membership (FR-F020-11) |
+| `409` | `conflict` | a second decision by the same approver, decide or reassign on a non-`pending` approval, stale `If-Match`, duplicate policy `name`, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the calling application's F028 token bucket is exhausted |
+| `503` | `unavailable` | the outbox or the F037 notification service is unreachable |
+
+### Use case signatures
+
+In `crates/domain/src/approvals/`. Every one takes `ctx: &ActorContext` — the F019 service actor on
+the create path and the system expiry actor on the timer path — takes a `UnitOfWork` for writes or a
+repository trait for reads, never a pool or a connection, and returns the shared `DomainError`.
+
+```rust
+fn create_approval(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateApproval) -> Result<Approval, DomainError>;
+fn decide(ctx: &ActorContext, uow: &mut UnitOfWork, id: ApprovalId, expected: Version, req: Decide) -> Result<Approval, DomainError>;
+fn resolve_quorum(rule: &QuorumRule, approvers: &[Approver], decisions: &[ApprovalDecision]) -> QuorumOutcome;
+fn reassign(ctx: &ActorContext, uow: &mut UnitOfWork, id: ApprovalId, expected: Version, req: Reassign) -> Result<Approval, DomainError>;
+fn cancel(ctx: &ActorContext, uow: &mut UnitOfWork, id: ApprovalId, expected: Version, req: Cancel) -> Result<Approval, DomainError>;
+fn upsert_policy(ctx: &ActorContext, uow: &mut UnitOfWork, id: PolicyId, expected: Option<Version>, req: UpsertPolicy) -> Result<ApprovalPolicy, DomainError>;
+fn schedule_timers(ctx: &ActorContext, uow: &mut UnitOfWork, approval: &Approval, policy: Option<&ApprovalPolicy>) -> Result<Vec<EscalationTimer>, DomainError>;
+fn fire_timer(ctx: &ActorContext, uow: &mut UnitOfWork, timer: EscalationTimer) -> Result<(), DomainError>;
+fn escalate(ctx: &ActorContext, uow: &mut UnitOfWork, id: ApprovalId, level: u8) -> Result<Approval, DomainError>;
+fn expire(ctx: &ActorContext, uow: &mut UnitOfWork, id: ApprovalId) -> Result<Approval, DomainError>;
+fn get_approval(ctx: &ActorContext, repo: &dyn ApprovalRepository, id: ApprovalId) -> Result<ApprovalDetail, DomainError>;
+fn list_approvals(ctx: &ActorContext, repo: &dyn ApprovalRepository, filter: ApprovalFilter, page: Cursor) -> Result<Page<Approval>, DomainError>;
+```
+
+`resolve_quorum` takes no `ctx` and no repository: it is a pure fold over a loaded approver set and
+decision list, which is what lets the same function decide the outcome inside the `decide`
+transaction and inside the expiry sweep without a second reading of the rule.
+
+**Transaction boundaries.** `create_approval` is one `UnitOfWork` covering the `approvals` row, every
+expanded `approval_approvers` row, the `escalation_timers` rows, the F037 `NotificationService::create`
+calls that enlist in it, the audit row and the `approval.requested.v1` outbox entry — the snapshot of
+group membership and the notifications that announce it must land together, or an approver is told
+about an approval whose approver set does not contain them. `decide` is one `UnitOfWork` that locks
+the approval row `FOR UPDATE`, writes the `approval_decisions` row, runs `resolve_quorum` inside that
+lock, applies the status transition, cancels pending timers and enqueues `approval.decided.v1`; the
+lock is the invariant, because two approvers deciding at the same instant would otherwise both read a
+count one short of the quorum and both believe they completed it. `reassign` writes the `removed_at`
+and `replaced_by_approver_id` stamps, the replacement row and its notification in one boundary, so
+the active-approver partial unique index is never briefly violated. `fire_timer` claims its row with
+`FOR UPDATE SKIP LOCKED`, and the escalation approver rows, the `escalation_level` bump, the
+reschedule, the notifications and the `approval.escalated.v1` entry commit with `fired_at` in that
+same boundary, so a worker restart cannot fire an escalation twice (NFR-F020-04).
 
 ### PostgreSQL/SQLx
 

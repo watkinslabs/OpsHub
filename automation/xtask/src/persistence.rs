@@ -419,6 +419,78 @@ pub(crate) fn check_completeness() -> Result<(), String> {
         return Ok(());
     }
     errors.sort();
-    for error in errors.iter().take(30) { eprintln!("BLOCKED: {error}"); }
+    for error in errors.iter().take(200) { eprintln!("BLOCKED: {error}"); }
     Err(format!("completeness audit failed: {complete}/{total} complete, {} gap(s)", errors.len()))
+}
+
+/// One vocabulary for "which records". The same predicate was spelled five ways across the
+/// backlog — `ne` and `neq`, `before` beside `lt`, `gte` present in one list and missing from the
+/// next — and five spellings of one concept cannot round-trip a saved filter between the features
+/// that read it. Every filtering ticket names the subset it accepts; this refuses a sixth spelling.
+pub(crate) fn check_filters() -> Result<(), String> {
+    const DOC: &str = "docs/filter-vocabulary.md";
+    let doc = fs::read_to_string(DOC).map_err(|e| format!("missing {DOC}: {e}"))?;
+    let Some(section) = doc.split("## Operators").nth(1).and_then(|rest| rest.split("##").next()) else {
+        return Err(format!("{DOC}: no `## Operators` section"));
+    };
+    // Only the fenced block counts. Reading backticks would let a name the prose merely mentions —
+    // `neq`, `before` — enter the vocabulary as an operator, which is the exact failure this gate exists to stop.
+    let vocabulary = section
+        .split("```")
+        .nth(1)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    if vocabulary.is_empty() { return Err(format!("{DOC}: `## Operators` defines nothing")); }
+
+    let mut errors = Vec::new();
+    let (mut declaring, mut named) = (0usize, 0usize);
+    for path in ticket_files() {
+        let Ok(text) = fs::read_to_string(&path) else { continue; };
+        let label = path.display().to_string();
+        // A ticket that carries a filter AST, an operator enum, or a filter table is filtering.
+        let filters = text.contains("FilterNode")
+            || text.contains("FilterOp")
+            || text.contains("operator in (")
+            || text.contains("ConditionOp");
+        let Some(line) = text.lines().find(|l| l.trim_start().starts_with("- Filter operators:")) else {
+            if filters {
+                errors.push(format!(
+                    "filter.undeclared {label}: filters records but names no subset; add `- Filter operators: \\`{DOC}\\`, subset ...`"
+                ));
+            }
+            continue;
+        };
+        declaring += 1;
+        if !line.contains(DOC) {
+            errors.push(format!("filter.uncited {label}: the subset line does not cite {DOC}"));
+        }
+        // The operator list runs from `subset` to the em-dash that introduces the rationale, so a
+        // sentence explaining *why* a feature is narrow cannot be mistaken for the list itself.
+        let Some(subset) = line.split("subset").nth(1).map(|rest| rest.split(" \u{2014} ").next().unwrap_or(rest)) else {
+            errors.push(format!("filter.no-subset {label}: the line names no `subset`"));
+            continue;
+        };
+        if subset.trim() == "all" { named += vocabulary.len(); continue; }
+        let operators = subset.split('`').skip(1).step_by(2).collect::<Vec<_>>();
+        if operators.is_empty() {
+            errors.push(format!("filter.empty-subset {label}: `subset` lists no operator and is not `all`"));
+        }
+        for operator in operators {
+            named += 1;
+            if !vocabulary.contains(operator) {
+                errors.push(format!(
+                    "filter.unknown {label}: `{operator}` is not in {DOC}; it is a sixth spelling of an operator the product already has, or a new one that belongs in the vocabulary first"
+                ));
+            }
+        }
+    }
+    if errors.is_empty() {
+        println!("filter checks passed: {} operators defined, {declaring} filtering features, {named} references", vocabulary.len());
+        return Ok(());
+    }
+    errors.sort();
+    for error in &errors { eprintln!("BLOCKED: {error}"); }
+    Err(format!("filter audit failed: {} finding(s)", errors.len()))
 }

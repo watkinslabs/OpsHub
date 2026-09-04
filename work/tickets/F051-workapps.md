@@ -101,6 +101,169 @@ Canonical contract: `docs/capability-contracts.md` row F051 (aggregate `work-app
 - Validation: slug regex and tenant uniqueness; pages ≤ 50 and ≤ `max_pages_per_app`; roles 1–20; `visible_to_roles` must reference role IDs in the same manifest; `position` unique per app; text pages ≤ 20,000 chars; `note` ≤ 500 chars.
 - Error mapping: `WorkAppError::SlugTaken → 409 conflict`, `WorkAppError::SourceMissing → 400 invalid`, `WorkAppError::EmptyManifest → 400 invalid`, `WorkAppError::LimitReached → 409 conflict`, `WorkAppError::StaleVersion → 409 conflict`, `WorkAppError::NotFound → 404 not_found`, `WorkAppError::NoRole → 404 not_found`, `AuthzError::Denied → 403 denied`, validation → `400 invalid` with `field_errors`.
 
+### Interface
+
+Exact shapes for every route above. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version`
+increments by one per write. Unlisted request fields are rejected with `400 invalid` naming the
+field in `field_errors`. `Page<T>`, the signed cursor and the error body with its six codes are
+F028's; `ActorContext` is F038's; the embedded surfaces' own payloads belong to F006, F013, F014,
+F021, F023 and F050 and are never proxied or restated here.
+
+**`CreateWorkAppRequest`** — `POST /api/v1/workapps` (FR-F051-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `app-admin` on it, else `403 denied`; foreign tenant → `404 not_found` |
+| `name` | string | yes | 1–120 chars after trim |
+| `slug` | string | yes | matches `^[a-z0-9-]{3,40}$`, unique per tenant among live apps → otherwise `409 conflict` with `field_errors.slug` |
+| `icon` | string? | no | a Lucide icon name from the F062 set; an unknown name → `400 invalid` |
+| `description` | string? | no | ≤ 2,000 chars |
+
+The created app is `status: "draft"`, `version` 1, `published_version: null`. Exceeding the tenant
+`max_apps` limit is `409 conflict` with `field_errors.limit`.
+
+**`UpdateWorkAppRequest`** — `PATCH /api/v1/workapps/{id}` (FR-F051-07), `If-Match` and
+`Idempotency-Key` required, every field optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` / `icon` / `description` | string / string? / string? | no | as above; `slug` is not patchable, because a published URL must stay stable |
+| `status` | `"archived"` | no | the only status this route accepts; `draft` and `published` are consequences of publishing, not of a patch. An archived app returns `404` from `/apps/{slug}` and keeps its versions |
+
+**`SetPagesRequest`** — `PUT /api/v1/workapps/{id}/pages` (FR-F051-02). The draft page list is
+replaced whole; an omitted page is deleted.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `pages` | `PageInput` array | yes | 0–50 entries and at most the tenant `max_pages_per_app`; a 51st → `400 invalid` with `field_errors.pages = "max_50"`, over the limit → `409 conflict` with `field_errors.limit` |
+
+**`PageInput`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | uuid? | no | present to keep an existing page's identity across a replace; absent mints a new page |
+| `title` | string | yes | 1–80 chars after trim |
+| `kind` | enum | yes | `sheet`, `form`, `report`, `dashboard`, `dynamic-view`, `text` |
+| `source_id` | uuid? | conditional | required unless `kind` is `text`; must exist in the same tenant and workspace and match the kind — `sheet` an F006 sheet or F013 view, `form` a published F014 form, `report` an F021 report, `dashboard` an F023 dashboard, `dynamic-view` an F050 view — otherwise `400 invalid` with `field_errors.pages[n].source_id` |
+| `body` | string? | conditional | `text` pages only, ≤ 20,000 chars of markdown; present on any other kind → `400 invalid` |
+| `position` | integer | yes | unique within the app; a duplicate → `400 invalid` with `field_errors.pages[n].position` |
+| `visible_to_roles` | uuid array | yes | role ids of this same app; an id outside the manifest → `400 invalid` with `field_errors.pages[n].visible_to_roles`. Stored as one `workapp_page_roles` row per entry, returned as an array |
+
+**`SetRolesRequest`** — `PUT /api/v1/workapps/{id}/roles` (FR-F051-03). Replaced whole, same as
+pages.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `roles` | `RoleInput` array | yes | 1–20 entries; outside that range → `400 invalid` with `field_errors.roles` |
+
+**`RoleInput`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | uuid? | no | present to preserve identity across a replace |
+| `name` | string | yes | 1–60 chars, case-insensitively unique within the app → otherwise `400 invalid` with `field_errors.roles[n].name` |
+| `members` | `{ kind, id }` array | yes | `kind` is `user` or `group`; `id` is a live F002 user or group in the tenant; a duplicate member → `400 invalid`. May be empty on a draft, which publishing reports as a warning rather than an error. Stored as one `workapp_role_members` row per entry with a real foreign key, returned as an array |
+| `default_landing_page_id` | uuid | yes | a page of the same manifest whose `visible_to_roles` contains this role → otherwise `400 invalid` with `field_errors.roles[n].default_landing_page_id` |
+
+**`PublishRequest`** — `POST /api/v1/workapps/{id}/publish` (FR-F051-04), `If-Match` and
+`Idempotency-Key` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `note` | string? | no | ≤ 500 chars, recorded on the version |
+| `version_number` | integer? | no | when present, copies that earlier snapshot's rows into a new version (rollback) and leaves the draft untouched; an unknown number → `404 not_found` |
+
+Publishing a draft with zero pages or zero roles is `400 invalid` with `field_errors.pages` or
+`field_errors.roles`. `PublishResponse` is `{ version_number, warnings }` where `warnings` names each
+role published with no members.
+
+**`WorkAppResponse`** — create, get, patch, and `Page<T>.items` of `GET /api/v1/workapps`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `workspace_id` | uuid | |
+| `name` / `slug` / `icon` / `description` | string / string / string? / string? | |
+| `status` | `"draft" \| "published" \| "archived"` | |
+| `published_version` | integer? | null until the first publish |
+| `draft_dirty` | bool | `true` when the draft page or role set differs from the published snapshot (FR-F051-08) |
+| `pages` | `PageInput` array | the draft manifest, ordered by `position` |
+| `roles` | `RoleInput` array | the draft manifest, ordered by `name` |
+| `versions` | `{ version_number, note, created_by, created_at, page_count, role_count }` array | the five most recent, newest first |
+| `version` | integer | the aggregate version for `If-Match`, distinct from `published_version` |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | | |
+
+`GET /api/v1/workapps` returns `Page<WorkAppResponse>` sorted by `name` with `id` as tiebreak,
+`limit` 1–200 (default 50), filters `workspace_id` (required), `status` and `name` prefix. Only
+`app-admin` callers see rows; anyone else gets an empty page rather than `403 denied`.
+
+**`ViewerManifestResponse`** — `GET /apps/{slug}` (FR-F051-05). The server resolves the caller's
+roles by joining `workapp_version_role_members` through direct user membership and F002 group
+membership, then joins `workapp_version_page_roles` to filter pages. A caller holding no role
+receives `404 not_found`, so an app's existence is not discoverable by slug.
+
+| Field | Type | Notes |
+|---|---|---|
+| `app` | `{ id, slug, name, icon, description, status }` | the values frozen in the version, not the live draft |
+| `version_number` | integer | the version being served; absent from the draft form an admin sees |
+| `pages` | `ViewerPage` array | only pages visible to a role the caller holds, in `position` order |
+| `landing_page_id` | uuid | the `default_landing_page_id` of the caller's first held role in `name` order |
+| `roles_held` | `{ id, name }` array | the caller's own roles only; other roles and every role's membership are never returned (NFR-F051-02) |
+
+**`ViewerPage`**: `{ id, title, kind, source_id?, body?, position, availability }` where
+`availability` is `"available"` or `"unavailable"` — the latter when the embedded source has been
+soft-deleted since the snapshot, which the shell renders as an empty state. The manifest carries no
+data from the embedded surface: the shell fetches it from the source feature's own endpoint under
+the viewer's own session, so a source the viewer cannot read renders that feature's denied state and
+the app widens nothing (FR-F051-06).
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above, a source of the wrong kind, a landing page not visible to its role, publishing an empty manifest |
+| `403` | `denied` | a workspace member without `app-admin` on any mutation, and a tenant without the `workapps` entitlement (`field_errors.module`) |
+| `404` | `not_found` | unknown or foreign-tenant app id or slug, a draft read by a non-admin, an archived app's slug, an unpublished app's slug for a non-admin, a caller holding no role in the published manifest, an unknown `version_number` |
+| `409` | `conflict` | duplicate `slug`, stale `If-Match`, `max_apps` or `max_pages_per_app` reached (`field_errors.limit`), an `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the F038 limiter for the route; carries `Retry-After` |
+| `503` | `unavailable` | a source feature's read service is down while validating a manifest |
+
+### Use case signatures
+
+In `crates/domain/src/workapps/`. Every use case takes `ctx` carrying tenant, actor and correlation
+id, and a `UnitOfWork` for writes or a repository trait for reads — never a pool or a connection —
+and returns the shared `DomainError` mapped by the table above.
+
+```rust
+fn create_app(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateWorkApp) -> Result<WorkApp, DomainError>;
+fn update_app(ctx: &Ctx, uow: &mut UnitOfWork, id: AppId, expected: Version, req: UpdateWorkApp) -> Result<WorkApp, DomainError>;
+fn list_apps(ctx: &Ctx, repo: &dyn WorkAppRepository, filter: AppFilter, page: Cursor) -> Result<Page<WorkApp>, DomainError>;
+fn get_app(ctx: &Ctx, repo: &dyn WorkAppRepository, id: AppId) -> Result<Manifest, DomainError>;
+fn set_pages(ctx: &Ctx, uow: &mut UnitOfWork, id: AppId, expected: Version, pages: Vec<PageInput>, sources: &dyn SourceResolver) -> Result<Vec<Page>, DomainError>;
+fn set_roles(ctx: &Ctx, uow: &mut UnitOfWork, id: AppId, expected: Version, roles: Vec<RoleInput>) -> Result<Vec<AppRole>, DomainError>;
+fn publish(ctx: &Ctx, uow: &mut UnitOfWork, id: AppId, expected: Version, req: PublishRequest) -> Result<AppVersion, DomainError>;
+fn resolve_viewer_manifest(ctx: &Ctx, repo: &dyn WorkAppVersionRepository, slug: Slug) -> Result<ViewerManifest, DomainError>;
+fn list_versions(ctx: &Ctx, repo: &dyn WorkAppVersionRepository, id: AppId, page: Cursor) -> Result<Page<AppVersionSummary>, DomainError>;
+fn validate_manifest(manifest: &Manifest, sources: &SourceIndex) -> Result<Warnings, FieldErrors>;
+fn filter_for_viewer(manifest: &Manifest, roles_held: &[RoleId]) -> ViewerManifest;
+```
+
+`validate_manifest` and `filter_for_viewer` are pure and take no context, so the role-and-page tables
+in the unit suite prove the filtering rather than trusting a handler; `resolve_viewer_manifest` reads
+only the version tables and can therefore never serve draft rows.
+
+Transaction boundaries. `publish` holds one `UnitOfWork` over the `workapp_versions` row, every
+`workapp_version_pages`, `workapp_version_roles`, `workapp_version_page_roles` and
+`workapp_version_role_members` row, the `workapps.published_version` repoint, the audit row and the
+`workapp.published.v1` enqueue. That boundary is what NFR-F051-04's "a failed snapshot never advances
+`published_version`" means, and it is why `GET /apps/{slug}` can join five snapshot tables without
+ever observing a half-copied version. `set_pages` holds one `UnitOfWork` over the
+`workapp_pages` replacement and its `workapp_page_roles` rows, and `set_roles` one over
+`workapp_roles` and `workapp_role_members`; both rely on `workapp_roles.default_landing_page_id`
+being a deferred foreign key so the two sets may be rewritten in either order within the same
+transaction and are only required to agree at commit. `create_app` and `update_app` write the app
+row, the audit row and the outbox entry in one `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_workapps_*.sql` creates the four catalog tables `workapps`, `workapp_pages`, `workapp_roles`, `workapp_versions` and five child tables for the sets they used to hold in arrays and documents:

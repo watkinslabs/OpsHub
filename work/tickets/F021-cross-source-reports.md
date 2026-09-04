@@ -94,6 +94,7 @@ Excluded: metrics and KPI values (F022), dashboards and widgets (F023), charts a
 - Use cases: `create_report`, `update_report`, `delete_report`, `restore_report`, `list_reports`, `get_report`, `validate_definition` (aliases, join tree, operator/type matrix, F035 parse), `request_refresh`, `execute_refresh` (worker), `read_rows` (permission filter + group at read), `compute_stale`.
 - Query compiler `crates/domain/src/reports/compiler.rs`: turns a `ValidatedDefinition` into a `CompiledQuery` — a per-source read plan (sheet, projected columns, filter predicates) plus the join graph — and holds no SQL string, `sqlx::query*` call, or connection; the F006/F008 `rows`/`cells` reads are executed by those features' repositories under the plan, and the joined stream feeds the calculated-field evaluator `crates/domain/src/reports/calc.rs` calling `formulas::evaluate` with a `RowScope`.
 - Persistence (`crates/persistence/src/reports/`): `ReportRepository` owns `reports`, `report_sources`, `report_source_columns`, `report_joins`, `report_filters`, `report_group_by`, `report_aggregates`, `report_calculated_fields`; `ReportSnapshotRepository` owns `report_snapshots`, `report_snapshot_sources`, `report_snapshot_rows`, `report_snapshot_row_sources`. Each implements the shared `Repository` contract (`get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, `purge`) and adds named queries `load_definition(report_id)`, `replace_definition(report_id, definition)`, `list_reports_using_sheet(sheet_id)`, `list_reports_using_column(column_id)`, `page_reports(filter, cursor)`, `claim_refresh(report_id, run_id)`, `find_active_run(report_id)`, `latest_succeeded(report_id)`, `page_snapshot_rows(snapshot_id, cursor, limit)`, `mark_snapshots_stale(report_id)`, `prune_snapshots(report_id, keep)`; the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the base contract. Replacing a definition (all eight definition tables plus the stale marking) and writing a snapshot (header, `report_snapshot_sources`, rows, `report_snapshot_row_sources`) each run in one `UnitOfWork` that owns the transaction. The permission-aware row read composes a query executed by `ReportSnapshotRepository` under the caller's `ViewerScope`. Per decision 2.1 the use cases above depend on these repository traits and contain no SQL: no SQL string, `sqlx::query*` call, or connection exists in `crates/domain/src/reports`, `services/api/src/reports`, `services/worker/src/reports`, or the F021 tests.
+- Filter operators: `docs/filter-vocabulary.md`, subset all — a report filters across sources with the same vocabulary a view filters one.
 - Permission filter `crates/domain/src/reports/scope.rs`: `ViewerScope { readable_sheets: HashSet<SheetId>, hidden_columns: HashSet<ColumnId>, scope_key: Sha256 }` built from the F003 engine per request and cached 60 s per `(actor_id, report_id)`.
 - Worker `services/worker/src/reports/{refresh_job.rs, scheduler.rs}`: consumes the `reports.refresh` JetStream subject, calls `ReportRepository::claim_refresh(report_id, run_id)` to take the run, hands batches of 5,000 rows (with their `report_snapshot_row_sources` entries) to `ReportSnapshotRepository`, enforces the 60 s job timeout, and emits `report.refreshed.v1`; the scheduler selects due interval reports through `page_reports` over `refresh_mode`/`refresh_interval_minutes` and holds no SQL of its own.
 - API endpoints (`services/api/src/reports/`): `GET /api/v1/reports`, `POST /api/v1/reports`, `GET /api/v1/reports/{id}`, `PATCH /api/v1/reports/{id}`, `DELETE /api/v1/reports/{id}`, `GET /api/v1/reports/{id}/rows`, `POST /api/v1/reports/{id}/refresh`; DTOs `CreateReportRequest`, `UpdateReportRequest`, `ReportResponse`, `ReportRowsResponse { rows, meta: RowsMeta, next_cursor }`, `RefreshResponse { run_id, status }`.
@@ -101,6 +102,220 @@ Excluded: metrics and KPI values (F022), dashboards and widgets (F023), charts a
 - Authorization: `report-editor` on the workspace for mutations and refresh; `report-viewer` or report ACL `read` for reads; source sheet reads use the sheet ACL per viewer; explicit deny wins; missing report access maps to `not_found`.
 - Validation limits: name 1..200, description ≤ 4,000, sources ≤ 20, joins ≤ 19, predicates ≤ 50, depth ≤ 4, group levels ≤ 3, aggregates ≤ 20, calculated fields ≤ 25, `limit` ≤ 500; the `definition` object in the request body ≤ 256 KB before it is decomposed into rows.
 - Error mapping: `ReportError::NameTaken → 409 conflict`, `ReportError::StaleVersion → 409 conflict`, `ReportError::RefreshActive → 409 conflict`, `ReportError::InvalidDefinition(field, msg) → 400 invalid`, `ReportError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `FormulaError::Parse → 400 invalid`, job queue unavailable → `503 unavailable`.
+
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>`, the opaque cursor and `ListQuery`
+are F028's; the error body and the six codes are the shared ones; `CellValue` and `columns.type` are
+F007's; `FilterNode` is F013's; `ActorContext` is F038's.
+
+**`ColumnRef`** `{ alias, column_id }` — how every part of a definition names a column: the source
+`alias` plus the F007 `columns.id`. On the wire in `cells` and `hidden_columns` the same pair is the
+string `"<alias>.<column_id>"`, which is what the `column_ref` key of a row object is.
+
+**`ReportDefinition`** — the shape F021 owns; F022 metrics, F023 widgets, F024 charts and F025
+exports all read snapshots produced from it. `GET` and `PATCH` carry it as one nested object;
+`ReportRepository` decomposes it into the eight definition tables and composes it back.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sources` | ReportSource[] | yes | 1–20 entries; `sources[0]` is the join tree root (FR-F021-02) |
+| `joins` | ReportJoin[] | no | 0–19; must connect every source to the root without a cycle |
+| `filters` | FilterNode? | no | absent or `null` means no filter |
+| `group_by` | GroupLevel[] | no | 0–3, outermost first |
+| `aggregates` | AggregateSpec[] | no | 0–20 |
+| `calculated_fields` | CalculatedField[] | no | 0–25, evaluated in array order |
+| `sorts` | SortSpec[] | no | 0–5; F013's `SortSpec` shape with `column_id` replaced by a `ColumnRef`, precedence in array order |
+
+The whole `definition` object is ≤ 256 KB before decomposition; a larger body is `400 invalid`.
+
+**`ReportSource`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `alias` | string | yes | matches `^[a-z][a-z0-9_]{0,31}$`, unique within `sources`; otherwise `400 invalid` with `field_errors["definition.sources[i]"]` |
+| `sheet_id` | uuid | yes | a live sheet of the tenant; a foreign or unknown sheet is the same `field_errors` path, so a definition never confirms a sheet exists |
+| `column_ids` | uuid[] | yes | 1–500 live columns of that sheet, ordered, distinct; a column of another sheet → `invalid` |
+
+**`ReportJoin`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `left` | ColumnRef | yes | `alias` must name a source already connected to the root |
+| `right` | ColumnRef | yes | `alias` must name a not-yet-connected source; a second join onto the same source is a cycle → `field_errors["definition.joins[i]"]` |
+| `kind` | `"inner" \| "left"` | yes | closed set matching the `report_joins.kind` check |
+
+Join keys match by stable id (FR-F021-03): a `link` column on one side matches the row `id` of the
+other source, and `text`, `number`, `select` and `person` columns match on F007's `normalized` value
+with the same `columns.type` on both sides. Any other type pairing, or two different types, is
+`400 invalid` at the same path.
+
+**`filters`** is F013's `FilterNode` — the same branch (`type` `and`/`or` with `children`) and leaf
+(`type` `leaf` with `column_id`, `op`, `value`) discrimination, the same `FilterValue` rules, and the
+same "absent is not an empty branch" rule. F021 changes exactly two things and states them rather
+than forking the type: each leaf's `column_id` is a `ColumnRef`, because a report names columns across
+sources; and the tree limits are this feature's — depth ≤ 4 and ≤ 50 leaves (FR-F021-04), not F013's
+8 and 50. **Operator divergence, stated not reconciled:** FR-F021-04 declares
+`eq, neq, in, not_in, contains, starts_with, gt, gte, lt, lte, between, is_empty, is_not_empty` plus
+the relative-date tokens `today`, `start_of_week`, `-7d`, `+30d` evaluated in `refresh_timezone`.
+F013's `FilterOp` has neither `not_in`, `starts_with`, `gte`, `lte`, `is_not_empty` nor the date
+tokens, and carries `before`, `after` and `is_me`, which this feature does not. The two sets are not
+merged here: F021 validates against its own list, and an operator legal in a view is not necessarily
+legal in a report. Narrowing F021 onto F013's operators, or widening F013's, is a change to F013's
+contract and belongs in a ticket against F013, not a quiet edit on this side. Operator-to-column-type
+legality follows F013's matrix for the operators the two share.
+
+**`GroupLevel`** `{ alias, column_id, order: "asc" | "desc" }` — `order` defaults to `"asc"`; the
+array position is the `report_group_by.level`, 1-based, at most 3.
+
+**`AggregateSpec`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `label` | string | yes | 1–80 chars, unique case-insensitively across `aggregates` and `calculated_fields`, else `400 invalid` |
+| `alias` | string | yes | an alias declared in `sources` |
+| `column_id` | uuid? | conditional | required for every `fn` except `count`, which counts rows and rejects a `column_id` |
+| `fn` | `"count" \| "count_distinct" \| "sum" \| "avg" \| "min" \| "max"` | yes | `sum` and `avg` require a `number`, `currency` or `duration` column (FR-F021-05) |
+
+**`CalculatedField`** `{ label, expression, result_type }` — `label` under the same uniqueness rule;
+`expression` an F035 formula over `{alias.column_id}` references and earlier calculated-field labels,
+parsed at save under F035's 10,000 AST node limit with no cycles, a parse failure returning
+`400 invalid` at `field_errors["definition.calculated_fields[i].expression"]` with the parser's
+message; `result_type` one of F007's `text`, `number`, `currency`, `date`, `datetime`, `boolean`.
+
+**`RefreshPolicy`** `{ mode: "manual" | "interval", interval_minutes?, timezone }` — `interval_minutes`
+is required when `mode` is `interval` and must be 5–1,440, rejected when `mode` is `manual`;
+`timezone` is a required IANA name. The three land in the typed `refresh_mode`,
+`refresh_interval_minutes` and `refresh_timezone` columns (FR-F021-08).
+
+**`CreateReportRequest`** — `POST /api/v1/reports`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–200 chars after trim, unique per folder case-insensitively among live reports, else `409 conflict` with `field_errors.name = "taken"` |
+| `workspace_id` | uuid | yes | the caller holds `report-editor` on it, else `403 denied` |
+| `folder_id` | uuid? | no | a folder of that workspace; `null` means workspace root |
+| `description` | string? | no | ≤ 4,000 chars |
+| `definition` | ReportDefinition | yes | as above |
+| `refresh_policy` | RefreshPolicy | yes | as above |
+| `aggregate_policy` | `"viewer" \| "owner"` | no | default `"viewer"`; `"owner"` is accepted only when tenant policy `reports.aggregate_hidden_values` is `true` (FR-F021-11), else `400 invalid` |
+
+**`UpdateReportRequest`** — `PATCH /api/v1/reports/{id}`, `If-Match` required, every field optional
+and at least one present: `name`, `description`, `folder_id`, `definition`, `refresh_policy`,
+`aggregate_policy`, each under the constraints above. `definition` and `refresh_policy` replace their
+object whole, never merged; replacing `definition` marks every existing snapshot `stale`.
+
+**`ReportResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `workspace_id` | uuid | |
+| `folder_id` | uuid? | |
+| `name` | string | |
+| `description` | string? | |
+| `definition` | ReportDefinition | composed from the eight definition tables |
+| `refresh_policy` | RefreshPolicy | composed from the three typed columns |
+| `aggregate_policy` | `"viewer" \| "owner"` | |
+| `latest_snapshot` | SnapshotSummary? | `null` until the first refresh finishes |
+| `version` | integer | pass as `If-Match` |
+| `created_at` / `updated_at`, `created_by` / `updated_by` | timestamp, uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted report |
+
+**`SnapshotSummary`** `{ snapshot_id, run_id, status: "queued" | "running" | "succeeded" | "failed",
+row_count?, duration_ms?, computed_at?, error?, stale }` — `row_count`, `duration_ms` and
+`computed_at` are present only on `succeeded`, `error` only on `failed`.
+
+**`RefreshResponse`** `{ run_id: uuid, status: "queued" }`, returned `202` (FR-F021-07). A refresh
+requested while one is `queued` or `running` is `409 conflict` whose body carries the active `run_id`
+in `field_errors.run_id`.
+
+**Rows route.** `GET /api/v1/reports/{id}/rows` takes `cursor`, `limit` (1–500, default 100, above
+F028's usual cap because this route documents one) and `snapshot_id` (uuid, an older retained
+snapshot; one no longer retained is `404 not_found`). It returns **`ReportRowsResponse`**
+`{ rows: ReportRow[], meta: RowsMeta, next_cursor: string? }` — the rows of the latest succeeded
+snapshot in definition sort order, paged by the same opaque cursor F028 defines. It is not a
+`Page<T>`: the envelope carries `meta` instead of `has_more` and `total`, because a report's totals
+are the group aggregates in `meta`, computed per viewer, and a count that ignored permission
+filtering would be the wrong number.
+
+**`ReportRow`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `"row" \| "group"` | group header rows are interleaved in the stream, outermost first (FR-F021-05) |
+| `row_id` | uuid | the snapshot row's stable id, present on `kind: "row"`; F025 drill-through addresses it |
+| `sources` | map<alias, uuid?> | the contributing source row id per alias; `null` for the unmatched right side of a `left` join |
+| `cells` | map<column_ref, `{ raw, display }`> | one entry per selected column the viewer may read; the pair is F007's `CellValue.raw` and `.display` |
+| `calculated` | map<label, `{ raw, display }`> | one entry per calculated field |
+| `depth`, `key`, `aggregates`, `row_count` | integer, object, map<label, value>, integer | present only on `kind: "group"`: nesting depth, the group-by values, the aggregate results, and the visible rows beneath |
+
+**`RowsMeta`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `snapshot_id`, `computed_at`, `duration_ms` | uuid, timestamp, integer | the snapshot being read |
+| `source_versions` | map<sheet_id, integer> | composed from `report_snapshot_sources` |
+| `stale` | bool | `true` when any current sheet `version` exceeds the recorded `sheet_version` (FR-F021-09) |
+| `restricted_sources` | uuid[] | sheet ids the viewer cannot read; their rows are dropped for `inner` joins and nulled for `left` (FR-F021-10) |
+| `hidden_columns` | string[] | `column_ref` strings removed from every `cells` map for this viewer |
+| `aggregate_scope` | `"viewer" \| "owner"` | present only when the report's `aggregate_policy` is `owner` and tenant policy allows it (FR-F021-11) |
+
+**List route.** `GET /api/v1/reports` returns `Page<ReportResponse>` in F028's envelope
+`{ items, next_cursor, has_more, total? }`, `sort` = `name` or `updated_at` (default `-updated_at`),
+`limit` 1–100, filters `workspace_id` (uuid), `folder_id` (uuid), `name` (string prefix, ≤ 200 chars)
+and `deleted` (bool, default `false`).
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `202` | — | a refresh accepted and queued |
+| `400` | `invalid` | any constraint above — a bad alias, a join cycle or disconnected source, a type-mismatched join, an operator illegal for the column type, a formula parse failure, `sum` on a non-numeric column, an interval under 5 minutes, `owner` aggregates without tenant policy, an oversize definition, an out-of-range `limit` or a cursor from a different query |
+| `403` | `denied` | a `report-viewer` calling `PATCH`, `DELETE` or `refresh`, which need `report-editor` on the workspace |
+| `404` | `not_found` | unknown, foreign-tenant or invisible report, folder or snapshot id; every route on a soft-deleted report |
+| `409` | `conflict` | duplicate `name` in the folder, stale `If-Match` with `current_version` in the body, a refresh while one is active, `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the calling application's F028 token bucket is exhausted |
+| `503` | `unavailable` | the `reports.refresh` queue or the outbox is unreachable |
+
+### Use case signatures
+
+In `crates/domain/src/reports/`. Every one takes `ctx: &ActorContext`, takes a `UnitOfWork` for
+writes or a repository trait for reads, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn create_report(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateReport) -> Result<Report, DomainError>;
+fn update_report(ctx: &ActorContext, uow: &mut UnitOfWork, id: ReportId, expected: Version, req: UpdateReport) -> Result<Report, DomainError>;
+fn delete_report(ctx: &ActorContext, uow: &mut UnitOfWork, id: ReportId, expected: Version) -> Result<(), DomainError>;
+fn restore_report(ctx: &ActorContext, uow: &mut UnitOfWork, id: ReportId) -> Result<Report, DomainError>;
+fn get_report(ctx: &ActorContext, repo: &dyn ReportRepository, id: ReportId) -> Result<Report, DomainError>;
+fn list_reports(ctx: &ActorContext, repo: &dyn ReportRepository, filter: ReportFilter, page: Cursor) -> Result<Page<Report>, DomainError>;
+fn validate_definition(ctx: &ActorContext, columns: &ColumnMetadata, def: &ReportDefinition) -> Result<ValidatedDefinition, FieldErrors>;
+fn request_refresh(ctx: &ActorContext, uow: &mut UnitOfWork, id: ReportId) -> Result<RefreshHandle, DomainError>;
+fn execute_refresh(ctx: &ActorContext, uow: &mut UnitOfWork, id: ReportId, run_id: RunId) -> Result<ReportSnapshot, DomainError>;
+fn read_rows(ctx: &ActorContext, repo: &dyn ReportSnapshotRepository, scope: &ViewerScope, id: ReportId, page: RowsQuery) -> Result<ReportRows, DomainError>;
+fn compute_stale(repo: &dyn ReportSnapshotRepository, snapshot: SnapshotId) -> Result<bool, DomainError>;
+```
+
+`read_rows` is the entry point F022, F023, F024 and F025 call for snapshot rows; it takes the
+`ViewerScope` explicitly rather than deriving it, so a caller can never read rows under a scope other
+than the one it was authorized for.
+
+**Transaction boundaries.** `create_report` and `update_report` each take one `UnitOfWork` covering
+the `reports` row under the expected version, the full replacement of all eight definition tables,
+`mark_snapshots_stale(report_id)`, the audit row and the outbox entry. That boundary is what makes a
+definition atomic: joins reference `report_sources` rows and filters reference columns, so a partial
+replace would leave a join pointing at a source that no longer exists, and a snapshot that stayed
+`stale = false` would be served as current for a definition it was never computed from.
+`execute_refresh` takes one `UnitOfWork` for the snapshot header, its `report_snapshot_sources` rows,
+every batch of `report_snapshot_rows` and their `report_snapshot_row_sources` entries, the snapshot
+prune to the last 3 succeeded, and the `report.refreshed.v1` entry — a snapshot must never become
+readable with its source versions or its per-row source map missing, because `stale` and F025's
+drill-through are both computed from exactly those rows. `read_rows` and `compute_stale` write
+nothing and open no transaction.
 
 ### PostgreSQL/SQLx
 
@@ -195,6 +410,14 @@ Scenario: Stale snapshot detected
 - External dependencies: NATS JetStream for `reports.refresh`
 - Risks and mitigations: join fan-out on non-unique keys can multiply rows, so the compiler caps intermediate results at 1,000,000 rows and fails the run with `error = "join_fanout_exceeded"`; per-viewer aggregation at read time costs CPU, so group results are cached 60 s per `(snapshot_id, scope_key)`; formula budget exhaustion is reported per row as a `#BUDGET` display value rather than failing the snapshot.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset of `docs/filter-vocabulary.md` declared in section 4 and the operator names aligned to it | the report operator list in FR-F021-04 is now the shared vocabulary, so a filter moves between a view and a report unchanged |
 
 ## 7.1 Agent handoff
 

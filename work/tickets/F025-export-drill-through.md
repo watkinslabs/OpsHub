@@ -98,11 +98,188 @@ Excluded: sheet and view exports and the import pipeline (F010), report definiti
 - Renderers `crates/domain/src/report_exports/render/{csv.rs, xlsx.rs, pdf.rs, png.rs}` behind `trait ExportRenderer { fn format(&self) -> ExportFormat; async fn render(&self, ctx: RenderContext, sink: &mut dyn ObjectSink) -> Result<RenderSummary, RenderError>; }`; `csv` and `xlsx` stream 5,000-row pages from F021 `read_rows`; `pdf` and `png` drive the headless Chromium pool in `services/worker/src/report_exports/browser.rs` against an internal print route with a service token bound to `scope_key`.
 - API endpoints (`services/api/src/report_exports/`): `POST /api/v1/reports/{id}/exports`, `POST /api/v1/dashboards/{id}/exports`, `GET /api/v1/report-exports/{id}`, `GET /api/v1/report-exports/{id}/download`, `GET /api/v1/reports/{id}/drill/{row_id}`. DTOs `CreateReportExportRequest`, `CreateDashboardExportRequest`, `ExportJobResponse`, `DrillResponse`, `DrillRowsPage`.
 - Persistence (`crates/persistence/src/report_exports/`): `ReportExportRepository` owns `report_exports`, `report_export_columns`, and `report_export_widgets`. It implements the shared `Repository` contract (`get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, `purge`) and adds the named queries `create_if_absent(tenant_id, requested_by, idempotency_key, export)`, `get_for_actor(export_id, actor)`, `page_for_actor(actor, cursor)`, `claim_next_queued(limit)`, `update_progress(export_id, progress_pct)`, `complete(export_id, artifact)`, `fail(export_id, error)`, `claim_expired(cutoff, limit)`, `count_running_for_tenant(tenant_id)`, and `count_requests_since(actor, cutoff)`; the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the base contract. `count_running_for_tenant` and `count_requests_since` back FR-F025-11's 3-concurrent-per-tenant and 20-per-hour-per-actor limits, which are unchanged. Creating an export (the `report_exports` row plus its `report_export_columns` and `report_export_widgets` rows plus the `report-export.requested.v1` outbox event) and completing one (the artifact fields plus the `report-export.completed.v1` outbox event) each run in one `UnitOfWork` that owns the transaction. Drill-through reads F021 snapshots through `ReportSnapshotRepository`, F023 widgets and cache through `DashboardWidgetRepository` and `WidgetCacheRepository`, and sheets and rows through the F006/F007 repositories. Object storage stays in the storage adapter. Per decision 2.1 the use cases above depend on these repository traits and contain no SQL: no SQL string, `sqlx::query*` call, or connection exists in `crates/domain/src/report_exports`, `services/api/src/report_exports`, `services/worker/src/report_exports`, or the F025 test lanes.
+- Filter operators: `docs/filter-vocabulary.md`, subset all — inherited unchanged from the F021 definition being drilled into or exported.
 - Worker `services/worker/src/report_exports/{render_job.rs, browser.rs, expiry_job.rs}`: consumes `report-exports.render`, claims and updates rows only through `ReportExportRepository::claim_next_queued`, `update_progress`, `complete`, `fail`, and `claim_expired`, enforces a 120 s timeout for `csv` and `xlsx` and 180 s for `pdf` and `png`, retries 3 times, dead-letters on the fourth failure, and runs the nightly expiry sweep.
 - Events: `report-export.requested.v1`, `report-export.completed.v1` (adds `row_count`, `page_count`, `byte_size`, `duration_ms`, `partial`), `report-export.failed.v1` (adds `error_code`, `attempts`), `drill-through.opened.v1`.
 - Authorization: `read` on the report or dashboard for drill; `resource-exporter` plus `read` on the source for both export creators; requester or `tenant-admin` for status and download; share-link actors from F036 may drill but never export; foreign-tenant ids map to `not_found`.
 - Validation: `format` allowed per source kind; `page` required for `pdf` and forbidden otherwise; `timezone` a valid IANA name; `columns` a subset of the report's visible columns and at most 200; `widget_ids` a subset of the dashboard's widgets; `limit` 1..200 on group drill; `Idempotency-Key` 16..128 characters.
 - Error mapping: `DrillError::UnknownRow → 404 not_found`, `DrillError::SnapshotExpired → 409 conflict`, `DrillError::BadKey → 400 invalid`, `ExportError::UnsupportedFormat → 400 invalid`, `ExportError::RateLimited → 429 rate_limited`, `ExportError::NotReady → 409 conflict`, `ExportError::Expired → 404 not_found`, `ExportError::StorageUnavailable → 503 unavailable`, `AuthzError::Denied → 403 denied`.
+
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC. Unlisted fields are rejected with
+`400 invalid`. `Page<T>`, the opaque cursor and `ListQuery` are F028's; the error body and the six
+codes are the shared ones; `CellValue` is F007's; `ViewerScope`, `ReportRow` and the report
+`column_ref` string are F021's; `dashboard_widgets` and `widget_cache` are F023's; `ActorContext` is
+F038's.
+
+**Which filter this feature carries, stated not reconciled.** `ExportOptions.filter` is F021's report
+filter tree — F013's `FilterNode` shape with F021's own operator list — and F025 passes it straight
+through to the report query without interpreting it. That list already diverges from F013's
+`FilterOp`, and F021's Interface section records the divergence deliberately rather than merging the
+two. F025 adopts F021's list unchanged and adds nothing: a filter legal on `GET /reports/{id}/rows`
+is legal here and no other. This is a **third** shape in the product, and it is worth naming the
+other one so nobody assumes they are the same: F010's `export_job_filters` is a flat conjunction of
+`ExportFilterClause` rows with its own nine-operator set and no branch node, and that ticket's
+Interface section says so explicitly. F010 exports a sheet or a view; F025 exports a report snapshot.
+Neither is reconciled here — collapsing the three onto one vocabulary is a change to F013's contract
+and belongs in a ticket against F013, not a quiet widening on the export side.
+
+**`DrillTarget`.** `GET /api/v1/reports/{id}/drill/{row_id}` addresses one of two things through the
+same path segment. A plain uuid is a snapshot row (FR-F025-01). The literal prefix `group:` followed
+by base64url is a **`DrillKey`** (FR-F025-02): the canonical JSON of
+`{ widget_id, dimension_values, filters, snapshot_id }` plus a truncated SHA-256 tag. The key is
+user-visible, so it is verified and then **re-authorized server side** — a valid tag proves the key
+was minted here, never that this caller may read what it names. A bad tag or unparsable body is
+`400 invalid`; a `snapshot_id` no longer retained is `409 conflict` with `reason: "snapshot_expired"`
+and the current `snapshot_id` in the body.
+
+Query parameters: `snapshot_id` (uuid, optional, pins an older retained snapshot), and for a group
+target `cursor` and `limit` (1–200, default 50).
+
+**`DrillResponse`** — row target
+
+| Field | Type | Notes |
+|---|---|---|
+| `target` | `{ kind: "row", row_id, snapshot_id }` | |
+| `sources` | DrillSource[] | one per report source alias contributing to the row |
+| `hidden_columns` | string[] | F021 `column_ref` strings removed from every `cells` map for this viewer |
+| `restricted_sources` | string[] | aliases whose sheet the viewer cannot read |
+| `meta` | `{ computed_at, scope: "viewer", correlation_id, aggregate_scope?, hidden_row_count? }` | `scope` is always `viewer`: an export or a drill is never produced under the report owner's authority. `aggregate_scope` and `hidden_row_count` appear only when the report's F021 `aggregate_policy` is `owner`, and they exist so the UI can say plainly that the aggregate counts rows this viewer cannot open (FR-F025-03) |
+
+**`DrillSource`** `{ alias, sheet_id, sheet_name, source_row_id, access: "allowed" | "denied",
+deep_link, cells }` — on `denied` the `cells` key is absent (not an empty object) and `deep_link` is
+`null`; on `allowed` `deep_link` is
+`/w/{workspace_id}/sheets/{sheet_id}?row={source_row_id}` and `cells` is a map of `column_ref` to
+`{ raw, display }`, F007's `CellValue` pair. `source_row_id` is `null` for the unmatched right side
+of a `left` join.
+
+**`DrillRowsPage`** — group target: `{ target: { kind: "group", widget_id, dimensions, snapshot_id },
+rows, meta }` where `dimensions` is an array of `{ field, value }`, `rows` is an array of
+`{ row_id, sources }` using the same `DrillSource` shape, and `meta` is
+`{ total, returned, truncated, next_cursor, computed_at, scope, correlation_id, aggregate_scope?,
+hidden_row_count? }`. `total` counts only rows this viewer can see and is capped at 5,000, with
+`truncated: true` beyond it; that cap is why this route returns its own envelope rather than F028's
+`Page<T>`, whose `total` carries no such ceiling.
+
+**`CreateReportExportRequest`** — `POST /api/v1/reports/{id}/exports`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `format` | `"csv" \| "xlsx" \| "pdf"` | yes | `png` is dashboard-only, matching the `source_kind`/`format` checks |
+| `snapshot_id` | uuid? | no | a retained snapshot; absent means the latest succeeded one |
+| `columns` | string[]? | no | 0–200 F021 `column_ref` strings, distinct, ordered, all visible to the caller; an unreadable column → `400 invalid` with `field_errors.columns`. Absent means every column the caller may read |
+| `filter` | FilterNode? | no | F021's tree as above; applied on top of the report's own filters |
+| `include_group_headers` | bool | no | default `false` |
+| `include_aggregates` | bool | no | default `false`; `true` with no group-by on the report is `400 invalid` |
+| `timezone` | string | yes | IANA name; every date and datetime in the file is rendered in it |
+| `locale` | string? | no | BCP 47; defaults to the caller's; drives F049 number and date formatting |
+| `page` | `{ size: "a4" \| "letter", orientation: "portrait" \| "landscape" }`? | conditional | **required** for `pdf` and **rejected** for `csv` and `xlsx`, both `400 invalid` with `field_errors.page` (FR-F025-05) |
+
+**`CreateDashboardExportRequest`** — `POST /api/v1/dashboards/{id}/exports`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `format` | `"pdf" \| "png"` | yes | `csv` and `xlsx` are report-only |
+| `widget_ids` | uuid[]? | no | a subset of the dashboard's live widgets, ordered as they should appear; absent means every widget in grid order; an id of another dashboard → `400 invalid` |
+| `timezone` | string | yes | as above |
+| `page` | PageSetup? | conditional | required for `pdf`, rejected for `png`, which renders at 1440×1024 CSS px at DPR 2 |
+| `refresh` | bool | no | default `false`; `true` enqueues an F023 refresh first and waits up to 120 s (FR-F025-06) |
+
+Both creators require `resource-exporter` plus `read` on the source and an `Idempotency-Key` of
+16–128 characters. Both return `202` **`{ export_id, status: "queued", expires_at }`** in under
+500 ms. A repeated `Idempotency-Key` with the same body returns the existing `export_id`; with a
+different body it is `409 conflict`.
+
+**`ExportJobResponse`** — `GET /api/v1/report-exports/{id}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `export_id` | uuid | |
+| `source_kind` | `"report" \| "dashboard"` | |
+| `source_id` | uuid | |
+| `format` | `"csv" \| "xlsx" \| "pdf" \| "png"` | |
+| `status` | `"queued" \| "running" \| "completed" \| "failed" \| "expired"` | `expired` is a listed status, not a disappearance: the nightly sweep produces it and the export centre shows it with `Re-run` (FR-F025-16) |
+| `progress_pct` | integer | 0–100, updated every 5 s or 10,000 rows |
+| `row_count` | integer? | on `completed`, for `csv`, `xlsx` and report `pdf` |
+| `page_count` | integer? | on `completed`, for `pdf` |
+| `byte_size` | integer? | on `completed` |
+| `partial` | bool? | `true` when a dashboard export rendered a widget as "Not available" after the refresh wait (FR-F025-06) |
+| `requested_by` | uuid | |
+| `requested_at` | timestamp | |
+| `completed_at` | timestamp? | |
+| `expires_at` | timestamp | 7 days after completion |
+| `error` | `{ code, message, correlation_id }`? | present only on `failed`; composed from the `error_code`, `error_message` and `error_correlation_id` columns |
+
+`error.code` is exactly `source_unavailable`, `limit_exceeded`, `render_timeout`,
+`storage_unavailable`, `internal` — the same closed list as the column check, so a client branches on
+it and never on `message`. `storage_key` and `checksum` are never returned: the file is reached only
+through the download route.
+
+**Download.** `GET /api/v1/report-exports/{id}/download` returns no body. On `completed` it is `302`
+with `Location` set to a signed object-storage URL valid 15 minutes, and the redirect writes the
+`report-export.download` audit row.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `202` | — | an export accepted and queued |
+| `302` | — | a download of a `completed` export by the requester or a `tenant-admin` |
+| `400` | `invalid` | any constraint above — a malformed or tampered drill key, `page` missing on `pdf` or present on `csv`/`xlsx`/`png`, a format illegal for the source kind, 201 columns, an unreadable column or a widget of another dashboard, an invalid IANA `timezone`, an out-of-range `limit` |
+| `403` | `denied` | a caller without `resource-exporter` on either export creator; a download by anyone but the requester or a `tenant-admin`; an F036 share-link actor creating an export — such an actor may drill but never export |
+| `404` | `not_found` | unknown, foreign-tenant or invisible report, dashboard or export; a `row_id` absent from the snapshot; a download after `expires_at` or of a `failed` export, so an expiry is never distinguishable from an id that never existed |
+| `409` | `conflict` | a download while `queued` or `running`, carrying the current `status`; a drill key whose snapshot is no longer retained, carrying `reason: "snapshot_expired"` and the current `snapshot_id`; `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | more than 20 export requests per actor per hour or 3 concurrently `running` per tenant; carries `Retry-After` (FR-F025-11) |
+| `503` | `unavailable` | object storage or the render queue is unreachable at request time |
+
+A row or size cap breached **during** the render is not an HTTP status at all: the export finishes
+`failed` with `error.code = "limit_exceeded"` and a message naming the cap, because by then the
+`202` has long been returned.
+
+### Use case signatures
+
+In `crates/domain/src/report_exports/`. Every one takes `ctx: &ActorContext`, takes a `UnitOfWork`
+for writes or a repository trait for reads, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn drill_row(ctx: &ActorContext, snapshots: &dyn ReportSnapshotRepository, rows: &dyn RowRepository, scope: &ViewerScope, report: ReportId, target: RowTarget) -> Result<DrillResult, DomainError>;
+fn drill_group(ctx: &ActorContext, snapshots: &dyn ReportSnapshotRepository, rows: &dyn RowRepository, scope: &ViewerScope, report: ReportId, key: DrillKey, page: Cursor) -> Result<DrillRows, DomainError>;
+fn encode_drill_key(target: &DrillTarget, secret: &SigningKey) -> DrillKey;
+fn decode_drill_key(key: &str, secret: &SigningKey) -> Result<DrillTarget, DomainError>;
+fn create_report_export(ctx: &ActorContext, uow: &mut UnitOfWork, report: ReportId, req: CreateReportExport) -> Result<ExportJob, DomainError>;
+fn create_dashboard_export(ctx: &ActorContext, uow: &mut UnitOfWork, dashboard: DashboardId, req: CreateDashboardExport) -> Result<ExportJob, DomainError>;
+fn get_export(ctx: &ActorContext, repo: &dyn ReportExportRepository, id: ExportId) -> Result<ExportJob, DomainError>;
+fn sign_download(ctx: &ActorContext, repo: &dyn ReportExportRepository, store: &dyn ObjectStore, id: ExportId) -> Result<SignedUrl, DomainError>;
+fn claim_render(ctx: &ActorContext, uow: &mut UnitOfWork, run_id: RunId) -> Result<Option<ExportJob>, DomainError>;
+fn run_render(ctx: &ActorContext, uow: &mut UnitOfWork, renderer: &dyn ExportRenderer, store: &dyn ObjectStore, id: ExportId) -> Result<RenderSummary, DomainError>;
+fn fail_render(ctx: &ActorContext, uow: &mut UnitOfWork, id: ExportId, error: ExportFailure) -> Result<ExportJob, DomainError>;
+fn expire_exports(ctx: &ActorContext, uow: &mut UnitOfWork, store: &dyn ObjectStore, cutoff: Timestamp, limit: usize) -> Result<usize, DomainError>;
+```
+
+`encode_drill_key` and `decode_drill_key` take no `ctx` and no repository: they are pure over the
+signing key, which is what keeps authorization out of them — a decoded key is a request, and
+`drill_group` re-authorizes it against the caller's scope before touching a row.
+
+**Transaction boundaries.** `create_report_export` and `create_dashboard_export` each take one
+`UnitOfWork` covering `create_if_absent` on `(tenant_id, requested_by, idempotency_key)`, the ordered
+`report_export_columns` or `report_export_widgets` rows, the audit row and the
+`report-export.requested.v1` entry. The invariant is that a `queued` row is never claimable with half
+its selection: the worker reads those child rows to decide the header order and the tile order, so an
+export whose columns committed separately would render a different file from the one that was
+requested. `claim_render` is its own boundary — the status move to `running` with `run_id` and
+`started_at` under the row lock — so two workers never claim one export. `run_render` streams to a
+temporary object key outside any transaction, then `complete(export_id, artifact)` takes one
+`UnitOfWork` for `storage_key`, `checksum`, `byte_size`, `row_count`, `page_count`, `expires_at`, the
+`completed` status and the `report-export.completed.v1` entry, after the object has been moved into
+place; bytes before the row means a re-claimed job publishes no partial file. `update_progress` is
+deliberately outside that boundary, a single-row write per tick, so progress reporting never holds a
+transaction open across a 120-second render. `fail_render` and `expire_exports` each take one
+boundary over their status move, their event, and — for expiry — the object deletion that precedes
+it.
 
 ### PostgreSQL/SQLx
 
@@ -196,6 +373,14 @@ Scenario: Viewer without the exporter role cannot export
 - External dependencies: S3-compatible object storage (MinIO locally); headless Chromium for PDF and PNG rendering; NATS JetStream for `report-exports.render`
 - Risks and mitigations: a browser-rendered dashboard could authenticate as the wrong actor, so the print route accepts only a short-lived service token that carries the requester's `scope_key` and the render aborts on mismatch; a large PDF can exhaust worker memory, so pages are streamed and capped at 200 pages and 200 MB; a re-claimed job could publish a partial object, so bytes are written to a temporary key and moved on success; drill keys are user-visible, so they carry a truncated SHA-256 tag and are re-authorized server side rather than trusted; snapshot retention of 3 in F021 can expire a key mid-review, so `409 snapshot_expired` returns the current snapshot for a one-click reload.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Filter vocabulary unification (F013) | Subset of `docs/filter-vocabulary.md` declared in section 4 and the operator names aligned to it | the drill and export filters are the F021 definition's, which are now the shared vocabulary |
 
 ## 7.1 Agent handoff
 

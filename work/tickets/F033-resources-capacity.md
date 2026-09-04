@@ -93,6 +93,162 @@ Excluded: workload aggregation across resources and persistent conflict records 
 - Validation: limits from FR-F033-01 through FR-F033-09; dates validated against the resource's calendar; range ≤ 366 days for capacity and allocations. Idempotency via `idempotency_keys` for 24 hours. Concurrency: `If-Match` on resource and allocation.
 - Error mapping: `ResourceError::UserAlreadyLinked → 409 conflict`, `ResourceError::HasFutureAllocations → 409 conflict`, `ResourceError::StaleVersion → 409 conflict`, `ResourceError::NotFound → 404 not_found`, `ResourceError::OverlappingAvailability(i) → 400 invalid`, `AllocationError::PlannedAmbiguous → 400 invalid`, `AllocationError::RangeTooLong → 400 invalid`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Ids are UUIDv7 strings, timestamps RFC 3339 UTC, dates `YYYY-MM-DD`, decimals are JSON numbers with
+the scale each field states, `version` increments by one per write. `T?` is nullable and an absent
+optional field equals an explicit `null`. Unlisted fields are rejected with `400 invalid`. `Page<T>`,
+the opaque cursor and the error body are F028's. Mutations require `Idempotency-Key`; `PATCH`, `PUT`
+and `DELETE` require `If-Match: <version>`.
+
+Cost is field-level filtered, not route-level: `cost_rates`, `cost_rate_snapshot` and `planned_cost`
+are **absent** from every response to an actor without `resource-admin`. Absent, not null — a null
+would tell a viewer that a rate exists.
+
+**`CreateResourceRequest`** — `POST /api/v1/resources`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `display_name` | string | yes | 1–200 chars after trim |
+| `kind` | `"person" \| "placeholder"` | yes | `placeholder` must not carry `user_id` |
+| `user_id` | uuid? | no | an active F002 user of this tenant; a second **active** resource for the same user is `409 conflict` with `field_errors.user_id = "linked"` |
+| `role_title` | string? | no | ≤ 100 chars |
+| `working_calendar_id` | uuid? | no | an F011 calendar of this tenant; default the tenant's default calendar |
+| `fte` | decimal | no | `0.05..=1.00`, two decimals, default `1.00` |
+| `timezone` | string | yes | IANA name |
+| `status` | `"active" \| "inactive"` | no | default `"active"` |
+| `cost_rates` | CostRate[] | no | `resource-admin` only; a viewer sending it gets `403 denied`; ranges must not overlap |
+
+**`UpdateResourceRequest`** — `PATCH /api/v1/resources/{id}`, every field optional, at least one
+present: the create fields plus `cost_rates` (replaces the set whole) and `end_allocations` (bool,
+default `false`). Setting `status: "inactive"` while allocations end after today is `409 conflict`
+with `field_errors.status` listing those allocation ids in `details.allocation_ids`, unless
+`end_allocations: true`, which sets their `end_date` to today in the same transaction.
+
+**`CostRate`**: `{ id: uuid (response only), hourly_rate: decimal (0–100,000, two decimals), currency: string (ISO 4217 alpha-3, uppercase), effective_from: date, effective_to: date? }`. Ranges are inclusive and must not overlap for one resource, else `400 invalid` with `field_errors.cost_rates[i] = "overlap"`; `effective_to` null means open-ended.
+
+**`ReplaceSkillsRequest`** — `PUT /api/v1/resources/{id}/skills`: `{ skills: [{ skill: string (1–80 chars), level: integer (1–5) }] }`, 0–50 entries. Names are matched case-insensitively per tenant; a repeated name is `400 invalid` with `field_errors.skills[i] = "duplicate"`. The set is replaced whole.
+
+**`ReplaceAvailabilityRequest`** — `PUT /api/v1/resources/{id}/availability`: `{ availability: AvailabilityEntry[] }`, 0–500 entries, replaced whole.
+
+**`AvailabilityEntry`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | uuid | response only | |
+| `kind` | `"leave" \| "holiday" \| "reduced"` | yes | |
+| `start_date` / `end_date` | date | yes | `end_date >= start_date`; entries must not overlap for one resource, else `400 invalid` with `field_errors.availability[i] = "overlap"` |
+| `hours_per_day` | decimal? | conditional | required for `reduced`, `0..=23.75` with two decimals; rejected for `leave` and `holiday` |
+| `note` | string? | no | ≤ 500 chars |
+
+**`ResourceResponse`**: the profile fields plus `{ id, skills: [{ skill, level }] (ordered by skill name), availability: AvailabilityEntry[] (ordered by start_date, detail read only), cost_rates: CostRate[] (admin only, ordered by effective_from), version, created_at, created_by, updated_at, updated_by, deleted_at? }`.
+
+**`GET /api/v1/resources`** returns `Page<ResourceResponse>` without `availability`, sorted by `sort` = `display_name` or `updated_at` (default `display_name`), with F028's `cursor`, `limit` (1–200, default 50) and `include_total`, and these filters:
+
+| Parameter | Type | Constraint |
+|---|---|---|
+| `status` | `"active"\|"inactive"`? | |
+| `kind` | `"person"\|"placeholder"`? | |
+| `skill` | string? | a skill name; `min_level` (1–5) may accompany it and is ignored without it |
+| `role_title` | string? | prefix match, case-insensitive |
+| `available_between` | `{ from: date, to: date, min_hours: decimal }`? | matches resources whose `remaining_hours` over the range is at least `min_hours`; `to − from` ≤ 366 days |
+
+**`CapacityResponse`** — `GET /api/v1/resources/{id}/capacity?from&to&granularity`
+
+| Field | Type | Notes |
+|---|---|---|
+| `granularity` | `"day" \| "week"` | required parameter; `week` periods start on the calendar's week start |
+| `periods` | CapacityPeriod[] | one per period in the range, ascending; `to − from` ≤ 366 days, else `400 invalid` with `field_errors.to = "range"` |
+| `totals` | CapacityPeriod | the same fields summed over the range, with `start`/`end` equal to `from`/`to` and `over_allocated` true when any period is |
+
+**`CapacityPeriod`**: `{ start: date, end: date, calendar_hours: decimal, fte_hours: decimal, leave_hours: decimal, holiday_hours: decimal, reduced_hours: decimal, available_hours: decimal, allocated_hours: decimal, remaining_hours: decimal, over_allocated: bool, warnings: string[] }`. All hours have two decimals. `available_hours = max(0, fte_hours − leave_hours − holiday_hours − reduced_hours)`; `remaining_hours = available_hours − allocated_hours` and may be negative; `over_allocated` is `allocated_hours > available_hours`. `warnings` carries `no_working_days` for a period an allocation spans with no working day in it.
+
+**`CreateAllocationRequest`** — `POST /api/v1/allocations`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `resource_id` | uuid | yes | an `active` resource of this tenant; an `inactive` one is `409 conflict` with `field_errors.resource_id = "inactive"` |
+| `project_sheet_id` | uuid | yes | a project sheet the caller may read; unreadable → `404 not_found` |
+| `row_id` | uuid? | no | a live row of `project_sheet_id`, else `400 invalid` with `field_errors.row_id = "different_sheet"` |
+| `start_date` / `end_date` | date | yes | `end_date >= start_date` and the span ≤ 366 days, else `field_errors.end_date = "range"` |
+| `planned_hours` | decimal? | conditional | `0.25..=10000`, two decimals |
+| `planned_percent` | integer? | conditional | `1..=100` |
+| `role` | string? | no | ≤ 100 chars |
+| `confidence` | `committed\|likely\|tentative` | no | default `"committed"` |
+| `note` | string? | no | ≤ 1,000 chars |
+
+Exactly one of `planned_hours` and `planned_percent` must be present; both or neither is
+`400 invalid` with `field_errors.planned = "ambiguous"`.
+
+**`UpdateAllocationRequest`** — `PATCH /api/v1/allocations/{id}`: the same fields, all optional, at
+least one present; `resource_id` may change, which recomputes capacity for both resources.
+
+**`AllocationResponse`**: the request fields plus `{ id, cost_rate_snapshot: { cost_rate_id, hourly_rate, currency, effective_from }? (admin only; null when no rate was effective on start_date), planned_cost: decimal? (admin only; planned_hours × hourly_rate, null when either input is), over_allocated_periods: CapacityPeriod[], version, created_at, created_by, updated_at, updated_by, deleted_at? }`. `over_allocated_periods` is the subset of the affected resource's periods that this write pushed over, returned on create, update and delete so a caller sees the conflict without a second request; it is empty on a read.
+
+**`GET /api/v1/allocations`** returns `Page<AllocationResponse>` sorted `start_date` then `id`, with `limit` 1–500 (default 100) and filters `resource_id`, `project_sheet_id`, `row_id`, `confidence`, and `from`/`to` which match by **overlap**, not containment. `DELETE /api/v1/allocations/{id}` soft-deletes and returns `200` with the response body, because the caller still needs `over_allocated_periods`.
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | reads, `PATCH`, `PUT` skills, `PUT` availability, `DELETE` |
+| `201` | `POST /api/v1/resources`, `POST /api/v1/allocations` |
+| `400 invalid` | any field bound above, `overlap`, `duplicate`, `ambiguous`, `range`, `different_sheet`, `limit` out of range |
+| `403 denied` | a `resource-viewer` on any mutation, or any actor without `resource-admin` sending `cost_rates` |
+| `404 not_found` | resource, allocation, sheet, row or calendar in another tenant, or invisible to the caller |
+| `409 conflict` | `linked`, `inactive`, deactivation with future allocations, stale `If-Match`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant write quota exceeded |
+
+There is no `502` on these routes: F033 calls no external service.
+
+### Use case signatures
+
+In `crates/domain/src/resources/`. `Ctx` is F038's `ActorContext`; the calendar comes from F011's
+repository trait, never from this feature's SQL.
+
+```rust
+fn create_resource(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateResource) -> Result<Resource, DomainError>;
+fn update_resource(ctx: &Ctx, uow: &mut UnitOfWork, id: ResourceId, expected: Version, req: UpdateResource) -> Result<Resource, DomainError>;
+fn list_resources(ctx: &Ctx, repo: &dyn ResourceRepository, filter: ResourceFilter, page: Cursor) -> Result<Page<Resource>, DomainError>;
+fn get_resource(ctx: &Ctx, repo: &dyn ResourceRepository, id: ResourceId) -> Result<Resource, DomainError>;
+fn replace_skills(ctx: &Ctx, uow: &mut UnitOfWork, id: ResourceId, expected: Version, skills: Vec<SkillEntry>) -> Result<Resource, DomainError>;
+fn replace_availability(ctx: &Ctx, uow: &mut UnitOfWork, id: ResourceId, expected: Version, entries: Vec<AvailabilityEntry>) -> Result<Resource, DomainError>;
+fn compute_capacity(ctx: &Ctx, repos: &CapacityInputs<'_>, id: ResourceId, range: DateRange, granularity: Granularity) -> Result<Capacity, DomainError>;
+fn create_allocation(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateAllocation) -> Result<(Allocation, Vec<CapacityPeriod>), DomainError>;
+fn update_allocation(ctx: &Ctx, uow: &mut UnitOfWork, id: AllocationId, expected: Version, req: UpdateAllocation) -> Result<(Allocation, Vec<CapacityPeriod>), DomainError>;
+fn delete_allocation(ctx: &Ctx, uow: &mut UnitOfWork, id: AllocationId, expected: Version) -> Result<(Allocation, Vec<CapacityPeriod>), DomainError>;
+fn list_allocations(ctx: &Ctx, repo: &dyn AllocationRepository, filter: AllocationFilter, page: Cursor) -> Result<Page<Allocation>, DomainError>;
+fn deactivate_resource(ctx: &Ctx, uow: &mut UnitOfWork, id: ResourceId, expected: Version, end_allocations: bool) -> Result<Resource, DomainError>;
+```
+
+`CapacityInputs<'_>` bundles the four traits `compute_capacity` reads — the F011 calendar repository
+and this feature's resource, availability and allocation repositories — so the calculator takes one
+argument instead of four and cannot be handed a pool. Cost filtering is not a use-case concern: the
+handler applies `ResponseScope::with_costs(actor)` to the returned entity, so a use case never has two
+shapes.
+
+Transaction boundaries:
+
+- `create_resource` and `update_resource` write the `resources` row, any `skills` rows the names
+  resolve to, the `resource_skills` replacement, the `cost_rates` replacement, the audit row and the
+  `resource.updated.v1` outbox row in one `UnitOfWork`. The non-overlap exclusion constraint on
+  `cost_rates` is only meaningful if the whole set lands at once.
+- `replace_skills` and `replace_availability` each open one boundary covering the delete of removed
+  rows, the insert of the rest, the resource's version bump and the audit row. A half-replaced
+  availability set would compute a capacity nobody agreed to.
+- `create_allocation`, `update_allocation` and `delete_allocation` each open one `UnitOfWork` covering
+  the allocation write, the cost-rate snapshot read and copy, the capacity recompute for the affected
+  resource and span, the audit row, the `allocation.*.v1` event and the `capacity.computed.v1` event.
+  Capacity is recomputed **inside** the write transaction, not by a follow-up job, which is the
+  invariant that stops a caller reading an allocation that its capacity does not yet reflect. An
+  update that moves an allocation to another resource recomputes both resources in that same
+  boundary.
+- `deactivate_resource` with `end_allocations: true` writes the status change and every affected
+  allocation's new `end_date` in one boundary; otherwise a resource could be inactive while still
+  consuming capacity.
+- `compute_capacity` opens no `UnitOfWork` and takes repositories directly — a read that could write
+  would make the capacity endpoint unsafe for a `resource-viewer`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_resources_*.sql` creates `resources(id uuid pk, tenant_id uuid not null, user_id uuid null references users(id) on delete restrict, display_name text not null, kind text not null check (kind in ('person','placeholder')), role_title text, working_calendar_id uuid not null references working_calendars(id) on delete restrict, fte numeric(3,2) not null default 1.00, timezone text not null, status text not null default 'active' check (status in ('active','inactive')), version bigint, audit fields, deleted_at)`, `resource_availability(id uuid pk, tenant_id, resource_id uuid not null references resources(id) on delete cascade, kind text not null check (kind in ('leave','holiday','reduced')), start_date date not null, end_date date not null, hours_per_day numeric(4,2), note text)`, `cost_rates(id uuid pk, tenant_id, resource_id uuid not null references resources(id) on delete cascade, hourly_rate numeric(12,2) not null, currency char(3) not null, effective_from date not null, effective_to date)`, `allocations(id uuid pk, tenant_id, resource_id uuid not null references resources(id) on delete restrict, project_sheet_id uuid not null references sheets(id) on delete restrict, row_id uuid null references rows(id) on delete restrict, start_date date not null, end_date date not null, planned_hours numeric(10,2), planned_percent smallint, role text, confidence text not null check (confidence in ('committed','likely','tentative')), cost_rate_id uuid null references cost_rates(id) on delete restrict, snapshot_hourly_rate numeric(12,2), snapshot_currency char(3), snapshot_effective_from date, note text, version bigint, audit fields, deleted_at)`.

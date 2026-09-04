@@ -98,6 +98,220 @@ Excluded: new-row intake and form building (F014 owns forms, tokens, and CAPTCHA
 - Validation: `title` 1–200, `message` ≤ 2,000, `comment` ≤ 2,000, `row_ids` 1–200 and all in `sheet_id`, `column_ids` 1–20 and all writable, `recipients` 1–20 with RFC 5322 email syntax or a tenant `user_id`, `due_at` in the future, `expires_at` ≤ creation + 90 days, cell values validated by the F007 column validator, payload capped at 1 MB.
 - Error mapping: `UpdateRequestError::ColumnNotWritable | ::ScopeInvalid | ::ExpiryTooFar → 400 invalid`, `::Incomplete → 400 invalid (reason incomplete)`, `::UnknownToken | ::TokenRevoked | ::TokenExpired | ::OutOfScope → 404 not_found`, `::StaleRow → 409 conflict`, `::Closed | ::AlreadyCompleted → 409 conflict`, `::RemindRateLimited | ::SubmitRateLimited → 429 rate_limited`, `::RequesterDenied → 400 invalid`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments
+by one per write. Unlisted request fields are rejected with `400 invalid`. `Page<T>`, `ListQuery`, the
+signed cursor, the error body and the six codes are F028's; `CellValue` is F007's; `ActorContext` is
+F038's; `NotificationRequest` is F037's and this feature only calls `NotificationService::create`
+with one. Two surfaces live here and the difference is the feature: `/api/v1/update-requests*` is
+authenticated, `/public/update-requests/{token}*` is not and is constrained below.
+
+**`RecipientSpec`** — an element of `CreateUpdateRequest.recipients`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `user_id` | uuid? | conditional | a user of this tenant; mutually exclusive with `email` — exactly one of the two, else `400 invalid` with `field_errors.recipients[i]` |
+| `email` | string? | conditional | RFC 5322 syntax, ≤ 254 chars, lower-cased for uniqueness; the external-recipient path |
+| `display_name` | string? | no | ≤ 120 chars; ignored when `user_id` is given, where the user's own name is used |
+
+Two entries naming the same party — the same `user_id`, or the same `email` case-insensitively — are
+`400 invalid`, which the unique index on `(request_id, coalesce(user_id::text, lower(email)))`
+also enforces.
+
+**`ReminderPolicy`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `cadence` | `"none" \| "daily" \| "every_3_days" \| "weekly"` | no | default `"none"` |
+| `max_reminders` | integer | no | 0–5, default 0; must be 0 when `cadence` is `"none"`, else `400 invalid` |
+| `stop_on_response` | bool | no | default `true` |
+
+Creation expands this into `max_reminders` `update_request_reminder_offsets` rows once
+(FR-F061-10); the policy is never re-derived per send, so changing the cadence later would not
+retroactively move an existing schedule — and there is no route that changes it.
+
+**`CreateUpdateRequest`** — `POST /api/v1/update-requests`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `requester` on it, else `403 denied`; another tenant's → `404 not_found` |
+| `title` | string | yes | 1–200 chars after trim. Shown to unauthenticated recipients, so it must not be assumed private |
+| `message` | string? | no | ≤ 2,000 chars; also shown to recipients |
+| `row_ids` | uuid[] | yes | 1–200, distinct, all live rows of `sheet_id`, else `400 invalid` with `field_errors.row_ids` |
+| `column_ids` | uuid[] | yes | 1–20, distinct, all live columns of `sheet_id` on which the caller holds `cell.write`; a read-only, system or F035 formula column → `400 invalid` with `field_errors.column_ids` |
+| `recipients` | RecipientSpec[] | yes | 1–20 entries |
+| `due_at` | timestamp | yes | in the future |
+| `expires_at` | timestamp? | no | default `due_at + 7 days`; must be after `due_at` and at most 90 days after creation, else `400 invalid` with `field_errors.expires_at` |
+| `allow_partial` | bool | no | default `true` |
+| `reminder_policy` | ReminderPolicy? | no | defaults as above |
+
+**`RecipientSummary`** — an element of `UpdateRequestResponse.recipients`
+
+| Field | Type | Notes |
+|---|---|---|
+| `recipient_id` | uuid | |
+| `display_name` | string | |
+| `email_masked` | string | `a***@example.com`. The full address is returned only to the requester; every other reader, including a `sheet.admin`, sees the mask (FR-F061-13) |
+| `status` | `"pending" \| "opened" \| "partial" \| "completed" \| "revoked" \| "expired"` | |
+| `opened_at` / `last_reminded_at` / `completed_at` | timestamp? | |
+| `reminder_count` | integer | 0–8: at most 5 scheduled plus 3 manual per 24 hours |
+
+No token, token hash or link URL appears here or in any authenticated response. The link is
+delivered once, by F037, to the recipient (FR-F061-02).
+
+**`ChangeEntry`** — an element of `UpdateRequestResponse.changes`: `{ row_key, field_key,
+column_label, old_value: CellValue?, new_value: CellValue, recipient_id, applied_at }`. Built from
+`update_request_response_values` joined to F008 `cell_history` on the shared `correlation_id`, so the
+attribution is the audit trail's, not a second copy of it.
+
+**`UpdateRequestResponse`**: `{ id, sheet_id, workspace_id, requested_by, title, message, status:
+"open" | "completed" | "cancelled" | "expired", allow_partial, due_at, expires_at, reminder_policy,
+scope: { row_count, column_count, removed_count }, recipients: RecipientSummary[], changes:
+ChangeEntry[], cancelled_at?, cancelled_by?, cancel_reason?, version, created_at, created_by,
+updated_at, updated_by }`. `removed_count` is the number of scoped rows since soft-deleted
+(FR-F061-03). `changes` is omitted from the list projection and present only on
+`GET /api/v1/update-requests/{id}`.
+
+**`CancelRequest`** — `POST /api/v1/update-requests/{id}/cancel`: `{ reason: string? }`, ≤ 500 chars.
+Idempotent: cancelling an already-cancelled request returns `200` with the unchanged body; cancelling
+a `completed` request is `409 conflict`.
+
+**`RemindRequest`** — `POST /api/v1/update-requests/{id}/remind`: `{ recipient_ids: uuid[]? }`,
+0–20 entries, absent meaning every eligible recipient. **`RemindResponse`**: `{ sent: uuid[],
+skipped: [{ recipient_id, reason: "completed" | "revoked" | "expired" | "rate_limited" }] }`. A
+skipped recipient is data in a `200`; the route answers `429 rate_limited` only when *every* named
+recipient is over the 3-per-24-hours cap.
+
+**List route.** `GET /api/v1/update-requests` takes F028's `ListQuery` and returns
+`Page<UpdateRequestSummary>` — `UpdateRequestResponse` without `changes` and with `recipients`
+reduced to counts per status. `limit` is capped at 100 here rather than F028's 200. Sort key
+`due_at` ascending with `id` as tiebreak, or `created_at` descending. Filters: `status` (enum),
+`sheet_id` (uuid), `requested_by` (uuid), `due_before` (timestamp).
+
+#### The unauthenticated surface
+
+**What an anonymous caller sends.** Both public routes take **one** credential: the token in the
+path. No tenant slug, workspace id, sheet id, request id or recipient id appears in the path, the
+query string or the body, and no cookie or `Authorization` header participates — the presented value
+is SHA-256 hashed, compared in constant time against `update_request_recipients.token_hash`, and that
+single lookup resolves tenant, request and recipient. A submission body addresses cells **only** by
+the opaque `row_key` and `field_key` values of the scope snapshot, which are `[a-z0-9]{12}` strings
+minted per request; a caller cannot construct one and cannot carry one from another request, because
+the composite foreign keys make an out-of-scope key literally unstorable (FR-F061-05).
+
+**What the response reveals.** `PublicScopeResponse` carries the request `title` and `message`, the
+requester's `display_name`, `due_at`, `expires_at`, `status`, `allow_partial`, `removed_count`, and
+the scoped rows. Each row carries `row_key`, a `label` that is the sheet's **primary column value
+only**, `row_version`, and its fields; each field carries `field_key`, `label`, `type`, `options?`,
+`required`, `current_value` and `validation`. Nothing else: no `tenant_id`, tenant name or slug, no
+`workspace_id`, `sheet_id`, `row_id` or `column_id`, no user id, no requester email, no other
+recipient, no comment thread, no attachment, no link into the app, and no column of the row outside
+the scope. The scope snapshot is the entire authority of the token, so a recipient learns the
+existence of exactly the 200 rows × 20 columns they were asked about and nothing about the tenant
+that holds them.
+
+**No existence oracle.** Every failure on both public routes returns the same bare `404 not_found`
+with no body detail and no timing difference beyond the constant-time compare: an unknown token, a
+well-formed token never issued, an expired token, a revoked token after a cancel, a token whose
+request is `completed`, `cancelled` or `expired`, a `row_key` or `field_key` outside the scope, and
+every request while `F061_FEATURE` is off. A caller cannot tell "never existed" from "existed and was
+revoked", and cannot discover that a tenant, a sheet or a colleague exists by guessing. Responses
+carry `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` and `Cache-Control: no-store` so the
+link does not leak through a referer header or a search index.
+
+**`SubmitResponseRequest`** — `POST /public/update-requests/{token}/responses`, `Idempotency-Key`
+required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `values` | map<row_key, map<field_key, CellValue>> | yes | every key must exist in the scope snapshot, else `404 not_found`; every value must pass the F007 validator for that column, else `400 invalid` with `field_errors.<row_key>.<field_key>`. Total body ≤ 1 MB |
+| `row_versions` | map<row_key, integer> | yes | one entry per `row_key` present in `values`; must equal the row's current `version`, else `409 conflict` (FR-F061-08). A missing entry for a submitted row is `400 invalid` |
+| `comment` | string? | no | ≤ 2,000 chars, stored on the response row and shown to the requester |
+| `submit` | bool | yes | `false` stores a draft and writes no cell; `true` applies. With `allow_partial: false`, a `true` submission missing any scoped cell is `400 invalid` with reason `incomplete` and writes nothing |
+
+**`SubmitResponseResult`**: `{ response_id, cells_updated, recipient_status, request_status }` on
+success. On a version conflict the `409` body carries, beside the standard error envelope,
+`{ stale_rows: [{ row_key, current_version, current_values: map<field_key, CellValue> }] }` — the
+current values only for fields inside the scope, so the conflict panel can be rendered without
+widening what the token may read.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | a non-writable, formula or system column, a 201st row or 21st column, a duplicate recipient, `expires_at` beyond 90 days or before `due_at`, `max_reminders` with `cadence: "none"`, a cell value failing the F007 validator, a missing `row_versions` entry, an incomplete submission when `allow_partial` is `false` (reason `incomplete`), a requester whose `cell.write` was revoked before apply (reason `requester_denied`), an unlisted field |
+| `403` | `denied` | on `/api/v1` only: a member without `requester` creating, or without `requester`/`sheet.admin` reading. The public routes never answer `403` — a `denied` there would confirm the token is real |
+| `404` | `not_found` | an authenticated id of another tenant; and every public-route failure enumerated above, including an out-of-scope `row_key` or `field_key` |
+| `409` | `conflict` | a stale `row_versions` entry (body carries `stale_rows`); a submission to a request that is `completed`, `cancelled` or `expired` (reason `closed`); cancelling a `completed` request; `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | 121st public scope read per hour per token and IP, 31st submission per hour or 301st per day per token, 4th manual reminder per recipient per 24 hours; carries `Retry-After` |
+| `503` | `unavailable` | F008's cell-apply path or the database is unreachable; the response row stays `received` with `error_code` and the same `Idempotency-Key` retries without a second notification (NFR-F061-04) |
+
+### Use case signatures
+
+In `crates/domain/src/update-requests/`. Each takes `ctx: &Ctx` carrying tenant, actor and
+correlation id — on the public routes an anonymous `Ctx` whose actor is the resolved recipient, never
+a user — depends on repository traits rather than a pool or connection, and returns `DomainError`.
+
+```rust
+fn create_request(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateRequest) -> Result<(UpdateRequest, Vec<PlaintextToken>), DomainError>;
+fn list_requests(ctx: &Ctx, repo: &dyn UpdateRequestRepository, filter: RequestFilter, page: Cursor) -> Result<Page<UpdateRequest>, DomainError>;
+fn get_request(ctx: &Ctx, repo: &dyn UpdateRequestRepository, responses: &dyn UpdateRequestResponseRepository, id: RequestId) -> Result<RequestDetail, DomainError>;
+fn cancel_request(ctx: &Ctx, uow: &mut UnitOfWork, id: RequestId, reason: Option<String>) -> Result<UpdateRequest, DomainError>;
+fn remind_now(ctx: &Ctx, uow: &mut UnitOfWork, notify: &dyn NotificationService, id: RequestId, recipients: Option<Vec<RecipientId>>) -> Result<RemindOutcome, DomainError>;
+fn load_public_scope(recipients: &dyn UpdateRequestRecipientRepository, requests: &dyn UpdateRequestRepository, cells: &dyn CellRepository, presented: &str, now: Timestamp) -> Result<PublicScope, DomainError>;
+fn save_draft(ctx: &Ctx, uow: &mut UnitOfWork, recipient: RecipientId, req: SubmitResponse) -> Result<Response, DomainError>;
+fn submit_response(ctx: &Ctx, uow: &mut UnitOfWork, cells: &dyn CellEditService, recipient: RecipientId, req: SubmitResponse) -> Result<SubmitOutcome, DomainError>;
+fn evaluate_completion(ctx: &Ctx, uow: &mut UnitOfWork, id: RequestId) -> Result<CompletionState, DomainError>;
+fn schedule_reminders(ctx: &Ctx, uow: &mut UnitOfWork, id: RequestId, policy: &ReminderPolicy, due_at: Timestamp) -> Result<Vec<ReminderSchedule>, DomainError>;
+fn run_due_reminders(ctx: &Ctx, uow: &mut UnitOfWork, notify: &dyn NotificationService, now: Timestamp, limit: u32) -> Result<usize, DomainError>;
+fn expire_requests(ctx: &Ctx, uow: &mut UnitOfWork, now: Timestamp, limit: u32) -> Result<usize, DomainError>;
+
+fn reminder_offsets(cadence: Cadence, max_reminders: u8) -> Vec<(u8, i32)>;
+fn mask_email(email: &str) -> String;
+```
+
+`reminder_offsets` and `mask_email` are pure, which is what lets the DST cadence cases and the
+masking rule be unit tested without a database. `load_public_scope` returns `DomainError::NotFound`
+for every failure class — unknown hash, expired, revoked, closed request — so no caller can branch on
+the reason and no handler can accidentally surface it. `PlaintextToken` is returned by
+`create_request` only to be handed straight to F037's delivery; it is never stored, logged or
+returned on the HTTP response.
+
+**Transaction boundaries.**
+
+- `create_request` writes the `update_requests` row, **all** its `update_request_scope_rows` and
+  `update_request_scope_fields` rows, its `update_request_recipients` rows with their token hashes,
+  its `update_request_reminder_offsets` rows, the `reminder_schedules` rows for sequence 1, the audit
+  row and the `update-request.sent.v1` outbox entry in one `UnitOfWork`. The invariant: the scope
+  snapshot is the entire authority of every token, so a token must never be resolvable before its
+  scope rows commit — a recipient reaching a request with a half-written scope would see, and could
+  write, a set of cells nobody authorised.
+- `submit_response` runs the response row, its `update_request_response_values` and
+  `update_request_response_row_versions` children, the recipient status change, the cancellation of
+  that recipient's pending `reminder_schedules` rows, the F008 `apply_cell_edits` writes with their
+  `cell_history` rows and `cell.updated.v1` events, the audit row and the
+  `update-request.responded.v1` entry in **one** `UnitOfWork` shared with F008's and F003's
+  repositories. Three invariants depend on it: the stored submission and the cells it produced carry
+  the same `correlation_id`, which is what makes FR-F061-14's joined audit query answerable; a
+  stale-row rejection writes *no* cell of that submission, which requires the version check and every
+  cell write to be in one transaction; and a recipient can never be marked `completed` while a cell
+  of that submission failed to apply.
+- `save_draft` writes only the `draft` response and its value rows in one `UnitOfWork` and takes no
+  cell service at all — a draft cannot write a cell because the code path has no way to.
+- `cancel_request` sets the request status, nulls `token_hash` and sets `revoked_at` on **every**
+  recipient, and cancels every pending schedule row in one `UnitOfWork`, which is what makes
+  FR-F061-12's "every public route then returns 404" a property of the commit rather than of a job.
+- `run_due_reminders` claims rows with `for update skip locked` and commits one `UnitOfWork` per
+  claimed row: the F037 `NotificationService::create` call enlists in that same transaction (F037's
+  stated expectation), so a notification and the `state: sent` transition and the next sequence row
+  commit together. The `(recipient_id, sequence)` unique key plus F037's `dedupe_key` make a
+  restarted worker unable to double-send.
+- `list_requests`, `get_request` and `load_public_scope` are reads and take repositories, not a
+  `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_update-requests_*.sql` creates `update_requests(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete cascade, workspace_id uuid not null references workspaces(id) on delete restrict, requested_by uuid not null references users(id) on delete restrict, title text not null, message text, status text not null default 'open' check (status in ('open','completed','cancelled','expired')), allow_partial bool not null default true, due_at timestamptz not null, expires_at timestamptz not null, cadence text not null default 'none' check (cadence in ('none','daily','every_3_days','weekly')), max_reminders smallint not null default 0 check (max_reminders between 0 and 5), stop_on_response bool not null default true, cancelled_at timestamptz, cancelled_by uuid references users(id) on delete restrict, cancel_reason text, version bigint not null default 1, audit fields, deleted_at)`, `update_request_recipients(id uuid pk, tenant_id, request_id uuid not null references update_requests(id) on delete cascade, user_id uuid references users(id) on delete restrict, email text, display_name text, token_hash bytea, status text not null default 'pending' check (status in ('pending','opened','partial','completed','revoked','expired')), opened_at timestamptz, last_reminded_at timestamptz, reminder_count smallint not null default 0, completed_at timestamptz, revoked_at timestamptz, created_at)`, `update_request_responses(id uuid pk, tenant_id, request_id uuid not null references update_requests(id) on delete cascade, recipient_id uuid not null references update_request_recipients(id) on delete cascade, status text not null check (status in ('draft','received','applied','rejected')), reason text check (reason is null or reason in ('stale_row','incomplete','closed','requester_denied')), comment text, ip_hash bytea, user_agent text, idempotency_key text not null, cells_applied int not null default 0, error_code text, received_at timestamptz not null, applied_at timestamptz, draft_expires_at timestamptz)`, `reminder_schedules(id uuid pk, tenant_id, request_id uuid not null references update_requests(id) on delete cascade, recipient_id uuid not null references update_request_recipients(id) on delete cascade, sequence smallint not null check (sequence >= 1), kind text not null default 'scheduled' check (kind in ('scheduled','manual')), state text not null default 'pending' check (state in ('pending','sent','cancelled','skipped')), next_run_at timestamptz not null, sent_at timestamptz, attempt smallint not null default 0, notification_id uuid references notifications(id) on delete restrict, created_at)`.

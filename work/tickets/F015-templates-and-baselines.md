@@ -98,6 +98,236 @@ Excluded: workflow, report, and dashboard instantiation (F018, F021, F023), port
 - Validation: manifest schema via typed `serde` structs with `deny_unknown_fields`; key uniqueness per sheet; dependency keys resolve within the same sheet; column types from the F007 enum; limits per FR-F015-03; baseline measures must map to numeric or duration columns.
 - Error mapping: `TemplateError::NameTaken → 409 conflict`, `VersionImmutable → 409 conflict`, `NotPublished → 400 invalid`, `ManifestInvalid → 400 invalid`, `BuiltinReadOnly → 403 denied`, `BaselineLimit → 409 conflict`, `StaleVersion → 409 conflict`, `NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, worker overload → `503 unavailable` on provision.
 
+### Interface
+
+Exact shapes. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, dates are `YYYY-MM-DD`, `version`
+increments by one per write. `T?` is nullable and an absent optional field equals an explicit `null`.
+Unlisted fields are rejected with `400 invalid`; the manifest is parsed with `deny_unknown_fields`, so
+this is a parse failure there rather than a separate check. `Page<T>` and the opaque cursor are
+F028's; error bodies are F028's `{ code, message, field_errors, correlation_id }`.
+
+**`CreateTemplateRequest`** — `POST /api/v1/project-templates`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per tenant case-insensitively among live templates, else `409 conflict` with `field_errors.name = "taken"` |
+| `category` | TemplateCategory | yes | `pmo\|it\|incidents\|onboarding\|change\|vendors\|marketing\|crm\|budget\|compliance\|custom` |
+| `description` | string? | no | ≤ 2,000 chars |
+| `tags` | string[] | no | ≤ 10 entries, each 1–40 chars, distinct case-insensitively; each becomes one `project_template_tags` row |
+| `copy_from` | uuid? | no | a published built-in template; the new draft copies its manifest and tags. A tenant-owned id here is `400 invalid` with `field_errors.copy_from = "not_builtin"` |
+
+**`CreateVersionRequest`** — `POST /api/v1/project-templates/{id}/versions`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `action` | `"draft" \| "publish"` | yes | `draft` creates a new draft from `manifest`; `publish` publishes an existing draft named by `version_id` |
+| `manifest` | TemplateManifest? | conditional | required when `action` is `draft`, rejected when `publish` |
+| `version_id` | uuid? | conditional | required when `action` is `publish`, rejected when `draft`; must be a `draft` version of `{id}`, else `409 conflict` with `field_errors.status = "immutable"` |
+
+#### `TemplateManifest`
+
+The document a provisioning run replays. It is closed and self-contained: every reference inside it is
+a **manifest key**, never a database id, so the same manifest provisions in any tenant. A key is 1–64
+characters of `[a-z0-9_-]`, and keys are unique within their scope (sheet keys across the manifest;
+column, row and form-field keys within their sheet or form). An unresolved or duplicate key is
+`400 invalid` with `field_errors.manifest.<json pointer> = "unknown_key"` or `"duplicate_key"`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheets` | SheetSpec[] | yes | 1–20 entries, distinct `key`; more → `field_errors.manifest.sheets = "sheet_limit"` |
+| `forms` | FormSpec[] | no | default `[]`; ≤ 20 |
+| `workflows` | RefSpec[] | no | default `[]`; recorded and skipped until F018 exists |
+| `reports` | RefSpec[] | no | default `[]`; recorded and skipped until F021 exists |
+| `dashboard` | RefSpec? | no | recorded and skipped until F023 exists |
+| `roles` | RoleSpec[] | no | default `[]`; ≤ 20, distinct `role` |
+| `metadata` | ManifestMetadata | yes | |
+
+Serialized manifest size ≤ 2,097,152 bytes (`manifest_bytes`), total `default_rows` across all sheets
+≤ 5,000, total `dependencies` ≤ 20,000; each breach is `400 invalid` naming `manifest_bytes`,
+`row_limit` or `dependency_limit`.
+
+**`SheetSpec`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `key` | string | yes | manifest key, unique across `sheets` |
+| `name` | string | yes | 1–200 chars; F006's sheet name rule applies at provision time |
+| `description` | string? | no | ≤ 4,000 chars |
+| `columns` | ColumnSpec[] | yes | 1–500, distinct `key`, exactly one with `is_primary` true and `type` `text` |
+| `schedule_settings` | ScheduleSpec? | no | absent means the provisioned sheet has no schedule and the sheet's `dependencies` must be empty |
+| `default_rows` | RowSpec[] | no | default `[]`; provisioned in array order |
+| `dependencies` | DependencySpec[] | no | default `[]`; requires `schedule_settings` |
+
+**`ColumnSpec`** — the manifest form of F007's `CreateColumnRequest`; F007 owns `ColumnType`,
+`ColumnSettings`, `ValidationRule` and `ColumnOption`, and this feature does not restate them.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `key` | string | yes | manifest key, unique within the sheet |
+| `type` | ColumnType | yes | one of F007's twelve; `formula` and `link` provision as shells |
+| `label` | string | yes | 1–120 chars, unique within the sheet case-insensitively |
+| `is_primary` | bool | no | default `false`; exactly one per sheet |
+| `required`, `width`, `hidden` | as F007 | no | F007's defaults |
+| `settings` | ColumnSettings? | no | validated against `type` by F007's rules |
+| `validation` | ValidationRule[] | no | ≤ 16, each applicable to `type` |
+| `options` | ColumnOption[] | no | select types only, 1–200 |
+
+**`ScheduleSpec`** — resolved into F011's `PutScheduleSettingsRequest` at provision time.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `start_column_key` | string | yes | a `date` column key of this sheet |
+| `end_column_key` | string | yes | a `date` column key of this sheet, different from `start_column_key` |
+| `duration_column_key` | string? | no | a `number` or `duration` column key |
+| `milestone_column_key` | string? | no | a `checkbox` column key |
+| `percent_complete_column_key` | string? | no | a `number` column key |
+| `calendar` | `"tenant_default"` | no | default `"tenant_default"`; templates never carry a tenant's calendar, so provisioning binds F011's default calendar |
+| `timezone` | string? | no | IANA name; null takes the calendar's timezone |
+
+**`RowSpec`** — dates in a manifest are offsets, never absolute, so one manifest provisions on any
+start date.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `key` | string | yes | manifest key, unique within the sheet |
+| `parent_key` | string? | no | another `RowSpec` key of this sheet, declared earlier in the array; a forward or cyclic reference is `field_errors.manifest.<pointer> = "unknown_key"`; depth ≤ 10 (F009's limit) |
+| `start_offset_days` | integer | no | working days from the run's `start_date` on the bound calendar; `0..=3650`; required when the sheet has `schedule_settings` and the row is a leaf |
+| `duration_days` | integer | no | working days, `0..=3650`; `0` is a milestone |
+| `cells` | map<string, RawValue> | no | keyed by **column key**, not column id; values are F007's `RawValue` for that column's type and are normalized by F007 at provision |
+
+**`DependencySpec`** — replayed through F012's `create_dependency`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `predecessor_key` / `successor_key` | string | yes | `RowSpec` keys of the same sheet, different from each other, neither a row with children |
+| `type` | `"FS" \| "SS" \| "FF" \| "SF"` | yes | F012's `DependencyKind` |
+| `lag_days` | integer | no | default `0`, `−3650..=3650`; the manifest expresses lag in days only |
+
+**`FormSpec`**: `{ key, sheet_key, name, fields: FormFieldSpec[] }` where `FormFieldSpec` is
+`{ column_key, label?, required?, help_text? }`; F014 owns the published-form shape and every field is
+replayed through its create use case as a **draft**. **`RefSpec`**: `{ key, name }` — a named
+placeholder for a module that does not exist yet; it is recorded as a skipped step and creates
+nothing. **`RoleSpec`**: `{ role, placeholder }` where `role` is a role name from
+`docs/authorization-model.md` and `placeholder` is the label shown in the provision dialog.
+**`ManifestMetadata`**: `{ schema_version: 1, author?, summary?, estimated_days? }`; a
+`schema_version` this build does not know is `400 invalid` with `field_errors.manifest.metadata.schema_version = "unsupported"`.
+
+**`TemplateResponse`**: `{ id, name, category, description?, tags: string[], is_builtin, current_version_id: uuid?, published_at: timestamp?, version, created_at, created_by, updated_at, updated_by, deleted_at? }`. `deleted_at` appears only when reading a soft-deleted template.
+
+**`VersionResponse`**: `{ id, template_id, version_number, status: "draft"|"published", manifest: TemplateManifest, manifest_bytes, published_at: timestamp?, published_by: uuid?, created_at, created_by }`. The list route returns versions without `manifest`; the detail route includes it.
+
+**`GET /api/v1/project-templates`** returns `Page<TemplateResponse>` sorted by `updated_at desc`, with
+`category`, `tag` (repeatable, OR set), `q` (name prefix), `include_builtins` (bool, default `true`)
+and `deleted` (bool, default `false`) as filters, plus F028's `cursor`, `limit` (1–100, default 50)
+and `include_total`.
+
+**`ProvisionRequest`** — `POST /api/v1/project-templates/{id}/provision`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `version_id` | uuid | yes | a `published` version of `{id}`; a draft → `400 invalid`, `field_errors.version_id = "not_published"` |
+| `workspace_id` | uuid | yes | caller holds `workspace-admin`, else `403 denied`; unreadable → `404 not_found` |
+| `project_name` | string | yes | 1–200 chars; prefixes each provisioned sheet name |
+| `start_date` | date | yes | the day every `start_offset_days` counts from |
+| `role_assignments` | map<string, uuid> | no | keys are `RoleSpec.role` values of the manifest, values are principals of this tenant; an unknown role key or foreign principal → `400 invalid` |
+| `options` | ProvisionOptions | no | `{ include_forms: bool = true, include_views: bool = true }` |
+
+The response is `202` with `ProvisioningRunResponse` in status `queued`.
+
+**`ProvisioningRunResponse`** — `GET /api/v1/provisioning-runs/{id}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `template_version_id`, `workspace_id` | uuid | |
+| `project_name` | string | |
+| `start_date` | date | |
+| `status` | `"queued"\|"running"\|"completed"\|"failed"\|"rolled_back"` | |
+| `steps` | StepResult[] | one per `provisioning_run_steps` row, in the fixed step order |
+| `created_ids` | map<string, uuid[]> | keyed by `object_kind`, assembled from `provisioning_run_artifacts`; empty until a step completes |
+| `error_code` / `error_message` | string? | present only in `failed` and `rolled_back` |
+| `correlation_id` | uuid | the id to quote in a support request |
+| `version` | integer | |
+| `started_at` / `finished_at` | timestamp? | null until the worker claims and finishes the run |
+
+**`StepResult`**: `{ step, status: "pending"|"running"|"completed"|"failed"|"skipped"|"rolled_back", reason: string?, attempt: integer, created_count: integer, started_at: timestamp?, finished_at: timestamp?, error_code: string?, error_message: string? }`. `reason` is `"module_unavailable"` on the `workflows`, `reports` and `dashboard` steps.
+
+**`CaptureBaselineRequest`** — `POST /api/v1/sheets/{sheet_id}/baselines`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars, unique per sheet case-insensitively among live baselines, else `409 conflict` with `field_errors.name = "taken"` |
+| `measures` | Measure[] | yes | non-empty distinct subset of `start\|end\|duration\|effort\|cost`; `effort` and `cost` require a numeric column bound in the sheet's schedule settings, else `400 invalid` with `field_errors.measures = "unmapped"` |
+
+The 21st live baseline on a sheet is `409 conflict` with `field_errors.name = "limit"`.
+
+**`BaselineResponse`**: `{ id, sheet_id, name, measures: Measure[], row_count, captured_at, captured_by, version, deleted_at? }`. A baseline is immutable: there is no update route, and `GET /api/v1/sheets/{sheet_id}/baselines` returns `Page<BaselineResponse>` sorted `captured_at desc` with `limit` 1–100.
+
+**`VarianceRow`**: `{ row_id, baseline_start: date?, current_start: date?, start_variance_days: integer?, baseline_end: date?, current_end: date?, finish_variance_days: integer?, measures: map<Measure, { baseline: number?, current: number?, delta: number? }>, status: "on_track"|"slipped"|"early"|"added"|"removed" }`. Variance days are positive when the current date is later than the baseline and are counted on the sheet's working calendar. `added` is a row present now and absent from the baseline (every date field is null on the baseline side); `removed` is the reverse.
+
+**`GET /api/v1/baselines/{id}/variance`** returns `Page<VarianceRow>` sorted by row `position`, `limit` 1–500 default 100, filterable by `status`, with one extra top-level field beside the envelope: `totals: { rows_slipped, rows_early, rows_added, rows_removed, max_finish_variance_days }`, computed over the whole baseline and not just the page.
+
+Status codes:
+
+| Code | Produced by |
+|---|---|
+| `200` | any successful read, and `POST .../versions` |
+| `201` | `POST /api/v1/project-templates`, `POST /api/v1/sheets/{sheet_id}/baselines` |
+| `202` | `POST /api/v1/project-templates/{id}/provision` |
+| `400 invalid` | manifest parse or key failure, any limit above, `not_published`, unknown role key, `not_builtin`, unsupported `schema_version`, `limit` out of range |
+| `403 denied` | mutating a built-in, provisioning without `workspace-admin` on the target, capturing a baseline without `portfolio-admin` |
+| `404 not_found` | template, version, run, sheet or baseline in another tenant or invisible to the caller |
+| `409 conflict` | duplicate template or baseline name, publishing or editing a published version, baseline count limit, stale `If-Match`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant provisioning quota exceeded |
+| `503 unavailable` | the JetStream work stream will not accept the provision message; the run row is not created |
+
+### Use case signatures
+
+In `crates/domain/src/templates/`; the worker's step executors live in
+`services/worker/src/templates/`. `Ctx` is F038's `ActorContext`.
+
+```rust
+fn create_template(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateTemplate) -> Result<ProjectTemplate, DomainError>;
+fn copy_builtin(ctx: &Ctx, uow: &mut UnitOfWork, source: TemplateId, req: CreateTemplate) -> Result<ProjectTemplate, DomainError>;
+fn list_templates(ctx: &Ctx, repo: &dyn ProjectTemplateRepository, filter: TemplateFilter, page: Cursor) -> Result<Page<ProjectTemplate>, DomainError>;
+fn get_template(ctx: &Ctx, repo: &dyn ProjectTemplateRepository, id: TemplateId) -> Result<ProjectTemplate, DomainError>;
+fn validate_manifest(manifest: &TemplateManifest) -> Result<ManifestBytes, Vec<ManifestFieldError>>;
+fn create_version(ctx: &Ctx, uow: &mut UnitOfWork, template: TemplateId, manifest: TemplateManifest) -> Result<TemplateVersion, DomainError>;
+fn publish_version(ctx: &Ctx, uow: &mut UnitOfWork, version: VersionId, expected: Version) -> Result<TemplateVersion, DomainError>;
+fn request_provision(ctx: &Ctx, uow: &mut UnitOfWork, template: TemplateId, req: Provision) -> Result<ProvisioningRun, DomainError>;
+fn get_run(ctx: &Ctx, repo: &dyn ProvisioningRunRepository, id: RunId) -> Result<ProvisioningRun, DomainError>;
+fn run_step(ctx: &Ctx, uow: &mut UnitOfWork, run: RunId, step: ProvisioningStep) -> Result<StepResult, DomainError>;
+fn rollback_run(ctx: &Ctx, uow: &mut UnitOfWork, run: RunId) -> Result<(), DomainError>;
+fn capture_baseline(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: CaptureBaseline) -> Result<Baseline, DomainError>;
+fn list_baselines(ctx: &Ctx, repo: &dyn BaselineRepository, sheet: SheetId, page: Cursor) -> Result<Page<Baseline>, DomainError>;
+fn compute_variance(ctx: &Ctx, repo: &dyn BaselineRepository, id: BaselineId, filter: VarianceFilter, page: Cursor) -> Result<(Page<VarianceRow>, VarianceTotals), DomainError>;
+```
+
+`validate_manifest` is pure: it takes no `ctx`, no repository and no connection, because a manifest is
+valid or not independently of who submits it — which is what lets the same function guard the API
+route, the built-in seed fixtures and the worker's pre-flight check.
+
+Transaction boundaries:
+
+- `create_template` and `copy_builtin` write the `project_templates` row, every
+  `project_template_tags` row, the audit row and the outbox event in one `UnitOfWork`, so a template
+  never exists without the tags its catalog filter indexes.
+- `publish_version` writes the version's `status` and `published_at` **and** the parent template's
+  `current_version_id` in one boundary under the template's `If-Match`. Split, a reader could see a
+  template pointing at a draft.
+- `request_provision` writes the `provisioning_runs` row, all eleven `provisioning_run_steps` rows in
+  `pending`, and the JetStream message through the outbox in one boundary: the message must not exist
+  without the run, and the run must not exist without its steps.
+- `run_step` opens one `UnitOfWork` per step covering the step row's claim and completion, the objects
+  that step creates through the F006/F007/F011/F012/F013/F014 use cases, their
+  `provisioning_run_artifacts` rows and their audit rows. Per step, not per run: a run of twenty
+  sheets in one transaction would hold locks for a minute, and the artifact rows are what make a
+  replayed step idempotent rather than a shared transaction.
+- `rollback_run` soft-deletes in one boundary per artifact, in `created_at desc` order, marking each
+  step `rolled_back` — reverse order because a column cannot be removed after its sheet.
+- `capture_baseline` writes the `baselines` header, its `baseline_measures` rows, every
+  `baseline_rows` row and every `baseline_row_measures` row in one `UnitOfWork`. A baseline is a
+  point-in-time snapshot; a partial one would compare a plan against two different moments.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_templates_*.sql` creates `project_templates(id uuid pk, tenant_id uuid not null, name text not null, category text not null, description text, is_builtin bool not null default false, current_version_id uuid, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `project_template_tags(id uuid pk, tenant_id uuid not null, template_id uuid not null references project_templates(id) on delete cascade, tag text not null, created_by uuid not null, created_at timestamptz not null)`, `template_versions(id uuid pk, tenant_id uuid not null, template_id uuid not null references project_templates(id) on delete restrict, version_number int not null, status text not null check (status in ('draft','published')), manifest jsonb not null, manifest_bytes int not null, published_at timestamptz, published_by uuid, created_by, created_at)`, `provisioning_runs(id uuid pk, tenant_id uuid not null, template_version_id uuid not null references template_versions(id), workspace_id uuid not null, project_name text not null, start_date date not null, status text not null, error_code text, error_message text, correlation_id uuid not null, version bigint not null default 1, audit fields, started_at timestamptz, finished_at timestamptz)`, `provisioning_run_steps(run_id uuid not null references provisioning_runs(id) on delete cascade, tenant_id uuid not null, step text not null check (step in ('sheets','columns','rows','schedule_settings','dependencies','views','forms','roles','workflows','reports','dashboard')), status text not null check (status in ('pending','running','completed','failed','skipped','rolled_back')), reason text, started_at timestamptz, finished_at timestamptz, created_count int not null default 0, attempt smallint not null default 0, error_code text, error_message text, created_at timestamptz not null, primary key (run_id, step))`, `provisioning_run_artifacts(id uuid pk, tenant_id uuid not null, run_id uuid not null references provisioning_runs(id) on delete cascade, step text not null, item_key text not null, object_kind text not null check (object_kind in ('sheet','column','row','view','form','dependency','role_assignment')), object_id uuid not null, created_at timestamptz not null)`, `baselines(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, name text not null, captured_at timestamptz not null, captured_by uuid not null, row_count int not null, version bigint not null default 1, audit fields, deleted_at)`, `baseline_measures(baseline_id uuid not null references baselines(id) on delete cascade, tenant_id uuid not null, measure text not null check (measure in ('start','end','duration','effort','cost')), created_at timestamptz not null, primary key (baseline_id, measure))`, `baseline_rows(baseline_id uuid references baselines(id) on delete cascade, row_id uuid not null, start_date date, end_date date, duration_days numeric(10,2), primary key (baseline_id, row_id))`, `baseline_row_measures(baseline_id uuid not null, row_id uuid not null, tenant_id uuid not null, measure text not null, value numeric(20,4) null, created_at timestamptz not null, primary key (baseline_id, row_id, measure), foreign key (baseline_id, row_id) references baseline_rows(baseline_id, row_id) on delete cascade)`.

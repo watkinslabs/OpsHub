@@ -104,6 +104,228 @@ Excluded: entitlement evaluation, feature-flag lifecycle, and the `RequireModule
 - Validation: `plan` in the F002 set; `apply` in `immediate|period_end`; `reason` 10–500 characters; `from` before `to` and a range of at most 400 days; `limit` 1–100; webhook body at most 512 KB.
 - Error mapping: `BillingError::PlanUnknown → 400 invalid`, `::PaymentMethodRequired → 409 conflict`, `::StaleVersion → 409 conflict`, `::ProviderMismatch → 502 unavailable`, `::ProviderUnavailable → 502 unavailable`, `::SignatureInvalid → 400 invalid`, `::PortalRateLimited → 429 rate_limited`, `::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint whose
+violation produces the stated error. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments
+by one per write. Money is always an integer **minor unit** field named `*_cents` — never a float and
+never a formatted string — paired with an ISO 4217 `currency`. Unlisted request fields are rejected
+with `400 invalid`, and a `tenant_id` in **any** body is rejected that way too: the tenant comes from
+the gateway context and never from the caller. `Page<T>`, `ListQuery`, the signed cursor, the error
+body and the six codes are F028's; `ActorContext` is F038's; the entitlement record and its `source`
+field are F048's and this feature only calls F048's `upsert_entitlement`.
+
+**`Allowances`**: `{ seats: integer, storage_gb: integer, automation_runs: integer }` — the plan's
+included amounts, from the compiled-in `PlanCatalog`. Exceeding one never blocks work; it becomes an
+`overage` line (FR-F064-12).
+
+**`PaymentMethodSummary`**: `{ brand: string, last4: string (4 digits), exp_month: integer 1–12,
+exp_year: integer }`. This is the whole of what OpsHub stores about a card. There is no field on any
+request or response in this module that could carry a PAN, a CVC, a token or a provider secret key;
+capture happens only in the provider-hosted portal.
+
+**`DunningState`**: `{ stage: integer 0–30, entered_at: timestamp?, next_action_at: timestamp?,
+retries_remaining: integer }`. `stage` is the day number of the FR-F064-13 ladder, so `0` means not
+in dunning.
+
+**`SubscriptionResponse`** — `GET` and `PUT /api/v1/billing/subscription`
+
+| Field | Type | Notes |
+|---|---|---|
+| `plan` | `"free" \| "team" \| "enterprise"` | the FR-F002-02 set; F002 owns `tenants.plan` and this is the record that drives it |
+| `status` | `"trialing" \| "active" \| "past_due" \| "restricted" \| "suspended" \| "canceled"` | |
+| `provider` | `"stripe"` | the adapter in use; a client never branches on it |
+| `current_period_start` / `current_period_end` | timestamp? | `null` on the synthetic free subscription |
+| `cancel_at_period_end` | bool | |
+| `trial_ends_at` | timestamp? | non-null only while `status` is `trialing` |
+| `scheduled_plan` | `"free" \| "team" \| "enterprise"`? | a downgrade already agreed; `null` when none |
+| `scheduled_effective_at` | timestamp? | present exactly when `scheduled_plan` is |
+| `dunning` | DunningState | always present; `stage: 0` when healthy |
+| `seats` | `{ included: integer, in_use: integer }` | `in_use` is the live count, not the last meter sample |
+| `allowances` | Allowances | |
+| `payment_method` | PaymentMethodSummary? | `null` means no `subscription_payment_methods` row exists — the row is deleted, never blanked |
+| `credit_balance_cents` | integer | the sum of `credit_ledger`, so the plan card can show what a future invoice will absorb |
+| `version` | integer | pass as `If-Match` on the next write. **`0`** on the synthetic free subscription of a tenant with no row, which is returned with `200`, never `404` (FR-F064-01) |
+
+**`ChangeSubscriptionRequest`** — `PUT /api/v1/billing/subscription`, `If-Match` and
+`Idempotency-Key` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `plan` | `"free" \| "team" \| "enterprise"` | yes | outside the set → `400 invalid` with `field_errors.plan`. `enterprise` with no stored payment method → `409 conflict` with `field_errors.payment_method = "required"` |
+| `apply` | `"immediate" \| "period_end"` | no | defaults `"immediate"` for an upgrade and `"period_end"` for a downgrade; `"period_end"` on an upgrade is accepted and simply schedules it |
+| `cancel_at_period_end` | bool | no | may be sent with an unchanged `plan` to cancel or un-cancel |
+| `preview` | bool | no | default `false`. `true` returns `ProrationPreviewResponse` and **writes nothing** — no subscription row, no provider call that changes state, no audit row, no event |
+
+**`ProrationPreviewResponse`**: `{ credit_cents, charge_cents, net_cents, currency, effective_at,
+next_invoice_at, credit_applied_cents, amount_due_cents }`. `net_cents = charge_cents -
+credit_cents` and may be negative on a downgrade, where it becomes a credit note rather than a
+refund. `credit_applied_cents` is how much of the tenant's ledger balance would settle it, and
+`amount_due_cents = max(0, net_cents - credit_applied_cents)`. The adapter's line items must match
+`credit_cents`, `charge_cents` and `net_cents` **to the cent**; a mismatch is `502 unavailable` and
+nothing is written locally (FR-F064-03).
+
+**`UsageQuery`** — `GET /api/v1/billing/usage`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `metric` | `"seats" \| "storage_gb" \| "automation_runs"` | yes | the only three metered metrics |
+| `from` / `to` | date | yes | `from < to`, range ≤ 400 days, else `400 invalid` |
+| `granularity` | `"day" \| "month"` | no | default `"day"` |
+
+**`UsageResponse`**: `{ metric, unit: "count" | "gigabyte", granularity, allowance: integer,
+as_of: timestamp, adjustments_applied: integer, buckets: [{ period, quantity: decimal-string,
+overage: decimal-string }] }`. `quantity` is a decimal **string**, not a JSON number, because
+`numeric(20,4)` does not round-trip through a double. `overage` is `max(0, quantity - allowance)` and
+is informational: usage above allowance never blocks work.
+
+**`InvoiceLine`**: `{ line_no: integer, description: string, metric: string?, quantity:
+decimal-string, unit_amount_cents: integer, amount_cents: integer }`. `line_no` starts at 1 and is
+contiguous; the array is in `line_no` order and `sum(amount_cents)` equals the invoice
+`subtotal_cents`.
+
+**`InvoiceResponse`**: `{ id, number: string?, status: "draft" | "open" | "paid" | "uncollectible" |
+"void", currency, subtotal_cents, tax_cents, total_cents, amount_paid_cents, credit_applied_cents,
+period_start, period_end, issued_at, due_at, paid_at, hosted_url: string?, lines: InvoiceLine[] }`.
+`hosted_url` is fetched from the adapter on read, never persisted, and is `null` when the adapter is
+unreachable — a failed URL fetch degrades one field, it does not fail the list.
+
+**`PortalSessionResponse`** — `POST /api/v1/billing/portal-session`: `{ url, expires_at }`. `url` is
+valid 15 minutes, is never logged and never stored; a second call before expiry mints a new session
+rather than returning the old one. Rate-limited to 5 per tenant per hour.
+
+**Webhook** — `POST /webhooks/billing/{provider}`. Unauthenticated by session and authenticated by
+signature: the **raw** body plus the `t=<unix>` element of the signature header is verified with
+HMAC-SHA256 against the current or previous signing secret. The body is the provider's own JSON and
+this feature defines no schema for it — only the adapter names its fields. Response is always
+`WebhookAck { status: "applied" | "duplicate" | "ignored" }` with `200`, so a redelivery, an
+unhandled event type and an event for an unknown customer are all acknowledged rather than retried
+forever. An unknown `{provider}` path segment is `404 not_found`; a bad signature or a timestamp skew
+over 300 s is `400 invalid` with no state change and an audit row.
+
+**`CreateCreditCodesRequest`** — `POST /api/v1/billing/credit-codes`, platform operator only
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `amount_cents` | integer | yes | 1–1,000,000 |
+| `currency` | string | yes | ISO 4217 alpha-3, uppercase |
+| `count` | integer | yes | 1–1,000 codes in the batch |
+| `expires_at` | timestamp | yes | in the future |
+| `note` | string? | no | ≤ 500 chars, operator-facing |
+| `restrictions` | `{ new_tenants_only?: bool, plans?: string[], tenant_id?: uuid }`? | no | `plans` entries from the F002 plan set, distinct; stored as `credit_code_plans` rows, the other two as typed columns |
+
+**`CreateCreditCodesResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `batch_id` | uuid | |
+| `count` | integer | |
+| `amount_cents` / `currency` / `expires_at` | as the request | |
+| `codes` | string[] | The plaintext codes, formatted `XXXX-XXXX-XXXX-XXXX` in Crockford base32 without `I`, `L`, `O`, `U`. **Returned exactly once, in this response, and nowhere else, ever.** Only the SHA-256 `code_hash` is stored; there is no column, log line, audit diff, export, event payload or later route that holds or can reproduce the plaintext. A lost code is reissued as a new code, never retrieved — `GET`ting the batch is not a route, and `credit-code.issued.v1` carries the batch id and count and no code material (FR-F064-16) |
+
+**`RedeemCreditRequest`** — `POST /api/v1/billing/credits/redeem`: `{ code: string }`, the formatted
+16-character value with dashes optional and case-insensitive. **`RedeemCreditResponse`**:
+`{ credit_id, amount_cents, currency, expires_at, balance_cents }`. Failures are distinguished by
+`field_errors.code`: `invalid_code`, `expired`, `already_redeemed`, `not_applicable`. The response
+never confirms a code's existence or value beyond those four reasons, the hash lookup is
+constant-time, and attempts are limited to 5 per tenant per hour, which is what makes guessing the
+16-character space pointless (FR-F064-17).
+
+**`CreditLedgerEntry`**: `{ id, kind: "redemption" | "application" | "expiry" | "adjustment",
+amount_cents: integer (signed), currency, credit_code_id: uuid?, invoice_id: uuid?, expires_at:
+timestamp?, reason: string?, created_at, created_by: uuid? }`. **`GET /api/v1/billing/credits`**
+returns `{ balance_cents, currency, entries: Page<CreditLedgerEntry> }` sorted `created_at`
+descending with `id` as tiebreak. `balance_cents` is the sum of the entries, never a stored column.
+
+**List route.** `GET /api/v1/billing/invoices` takes F028's `ListQuery` with `limit` capped at 100
+and returns `Page<InvoiceResponse>`; sort key `issued_at` descending with `id` as tiebreak — the only
+accepted sort. Filters: `status` (enum), `from` / `to` (date, against `issued_at`).
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | an unknown `plan`, `apply` or `metric`, `from >= to` or a range over 400 days, `amount_cents` or `count` out of range, a `reason` outside 10–500 chars, a bad webhook signature or a timestamp skew over 300 s, a body carrying `tenant_id`, an unlisted field |
+| `403` | `denied` | any `/api/v1/billing` route without `billing-admin` — including a `tenant-admin` who lacks it; `POST /billing/credit-codes` by a `billing-admin` who is not a platform operator |
+| `404` | `not_found` | an invoice or credit id of another tenant; an unknown `{provider}` segment. `GET /billing/subscription` never answers `404` — a tenant with no row gets the synthetic free subscription |
+| `409` | `conflict` | stale `If-Match`; `enterprise` without a payment method (`field_errors.payment_method`); a credit code already redeemed; `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | a 6th portal session per tenant per hour, or a 6th redemption attempt per tenant per hour; carries `Retry-After` |
+| `502` | `unavailable` | the provider is unreachable or timed out, or its line items disagree with `proration.rs` to the cent. Nothing is written locally and nothing was charged — the message says so, because a client must be able to retry without fearing a double charge |
+
+### Use case signatures
+
+In `crates/domain/src/billing/`. Each takes `ctx: &Ctx` carrying tenant, actor and correlation id,
+depends on repository traits and the `PaymentProvider` port rather than a pool, connection or HTTP
+client, and returns `DomainError`.
+
+```rust
+fn get_subscription(ctx: &Ctx, repo: &dyn SubscriptionRepository, credits: &dyn CreditLedgerRepository) -> Result<SubscriptionView, DomainError>;
+fn preview_change(ctx: &Ctx, repo: &dyn SubscriptionRepository, provider: &dyn PaymentProvider, req: ChangePlan) -> Result<ProrationPreview, DomainError>;
+fn change_plan(ctx: &Ctx, uow: &mut UnitOfWork, provider: &dyn PaymentProvider, entitlements: &dyn EntitlementService, expected: Version, req: ChangePlan) -> Result<Subscription, DomainError>;
+fn apply_scheduled_change(ctx: &Ctx, uow: &mut UnitOfWork, entitlements: &dyn EntitlementService, id: SubscriptionId) -> Result<Subscription, DomainError>;
+fn open_portal_session(ctx: &Ctx, provider: &dyn PaymentProvider, limiter: &dyn RateLimiter) -> Result<PortalSession, DomainError>;
+fn record_usage(ctx: &Ctx, uow: &mut UnitOfWork, metric: Metric, kind: RecordKind, quantity: Decimal, period: civil::Date, source_ref: &str) -> Result<UsageRecord, DomainError>;
+fn correct_usage(ctx: &Ctx, uow: &mut UnitOfWork, corrects: UsageRecordId, delta: Decimal, reason: &str) -> Result<UsageRecord, DomainError>;
+fn query_usage(ctx: &Ctx, repo: &dyn UsageRecordRepository, q: UsageQuery) -> Result<UsageView, DomainError>;
+fn list_invoices(ctx: &Ctx, repo: &dyn InvoiceRepository, provider: &dyn PaymentProvider, filter: InvoiceFilter, page: Cursor) -> Result<Page<Invoice>, DomainError>;
+fn ingest_webhook(ctx: &Ctx, uow: &mut UnitOfWork, provider: &dyn PaymentProvider, raw: &[u8], signature: &str, now: Timestamp) -> Result<WebhookAck, DomainError>;
+fn advance_dunning(ctx: &Ctx, uow: &mut UnitOfWork, entitlements: &dyn EntitlementService, notify: &dyn NotificationService, now: Timestamp) -> Result<usize, DomainError>;
+fn expire_trial(ctx: &Ctx, uow: &mut UnitOfWork, entitlements: &dyn EntitlementService, id: SubscriptionId, now: Timestamp) -> Result<Subscription, DomainError>;
+fn issue_credit_codes(ctx: &Ctx, uow: &mut UnitOfWork, req: MintCodes) -> Result<(BatchId, Vec<PlaintextCode>), DomainError>;
+fn redeem_credit(ctx: &Ctx, uow: &mut UnitOfWork, limiter: &dyn RateLimiter, code: &str) -> Result<CreditLedgerEntry, DomainError>;
+fn apply_credit_to_invoice(ctx: &Ctx, uow: &mut UnitOfWork, invoice: InvoiceId) -> Result<AppliedCredit, DomainError>;
+fn project_plan_entitlements(ctx: &Ctx, entitlements: &dyn EntitlementService, plan: Plan) -> Result<(), DomainError>;
+
+fn proration(old_price: Cents, new_price: Cents, period_start: Timestamp, period_end: Timestamp, at: Timestamp) -> ProrationPreview;
+fn effective_quantity(records: &[UsageRecord]) -> Decimal;
+fn next_dunning_step(stage: u8, entered_at: Timestamp, now: Timestamp) -> Option<DunningStep>;
+```
+
+`proration`, `effective_quantity` and `next_dunning_step` are pure — no `ctx`, no repository, no
+provider, no clock beyond their arguments. `proration` being pure is exactly what makes FR-F064-03's
+cent-for-cent comparison against the adapter possible: the two are computed independently and a
+disagreement is a rejection, not a silent acceptance of whatever the provider said.
+`issue_credit_codes` returns `Vec<PlaintextCode>` only so the handler can serialise it once; it is a
+transient type with no `Serialize` on any stored struct and no `Display` that could reach a log.
+
+**Transaction boundaries.**
+
+- `change_plan` calls the provider **first**, outside any transaction, then writes the
+  `subscriptions` row, its `subscription_payment_methods` row, the audit row and the
+  `subscription.updated.v1` outbox entry in one `UnitOfWork`, and calls F048's `upsert_entitlement`
+  inside that same unit. Order matters both ways: a transaction is never held open across a provider
+  round trip, and the entitlement projection commits with the plan that justifies it, so a tenant is
+  never charged for `enterprise` while F048 still says `team`. The projection skips any row whose
+  `source` is `manual` — F064 owns no entitlement table and this call is its only write into one.
+- `ingest_webhook` claims the event and applies its effect in **one** `UnitOfWork`:
+  `WebhookEventRepository::claim_event` inserts `(provider, provider_event_id)`, and the invoice
+  upsert with its replaced `invoice_lines`, the dunning transition, the entitlement change and the
+  outbox entry ride the same transaction. The invariant this protects is idempotency by
+  construction: a redelivery collides with the unique constraint *inside* the transaction that would
+  otherwise apply the effect, so the effect cannot happen twice — no application-level "have I seen
+  this?" check exists to be raced.
+- `redeem_credit` performs the conditional claim (`update credit_codes set redeemed_at = now() where
+  code_hash = $1 and redeemed_at is null`) and appends the `credit_ledger` entry in one
+  `UnitOfWork`. The zero-row result of that update *is* the `already_redeemed` answer, so two
+  concurrent redemptions of one code produce exactly one success and one `409`, without a lock the
+  application has to remember to take.
+- `apply_credit_to_invoice` appends the negative `application` ledger entry and updates the invoice's
+  `credit_applied_cents` and `status` in one `UnitOfWork` at finalization, before any provider
+  charge. The invariant: the balance is the sum of the ledger, so an application that committed
+  without its invoice would make the balance disagree with what was actually settled.
+- `record_usage` and `correct_usage` each write one append-only row plus the `usage.recorded.v1`
+  entry in one `UnitOfWork`; there is no update path at all, and the database rules reject one, so
+  the boundary here protects the *event*, not the row — a usage row must never be visible without its
+  event, or an invoice rebuilt from the stream would disagree with the table.
+- `advance_dunning` commits one `UnitOfWork` per tenant: the stage change, the entitlement
+  suspension, the audit row and the F037 notification enlist together, so a tenant is never
+  restricted without having been told.
+- `get_subscription`, `preview_change`, `query_usage` and `list_invoices` are reads and take
+  repositories, not a `UnitOfWork`. `preview_change` in particular takes no `UnitOfWork` at all,
+  which is the enforcement of "`preview: true` writes nothing" — the code path has no transaction to
+  write in.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_billing_*.sql` creates `subscriptions(id uuid pk, tenant_id uuid not null unique references tenants(id) on delete restrict, plan text not null default 'free' check (plan in ('free','team','enterprise')), status text not null default 'active' check (status in ('trialing','active','past_due','restricted','suspended','canceled')), provider text not null default 'stripe' check (provider in ('stripe')), provider_customer_id text, provider_subscription_id text, current_period_start timestamptz, current_period_end timestamptz, cancel_at_period_end boolean not null default false, trial_ends_at timestamptz, scheduled_plan text check (scheduled_plan is null or scheduled_plan in ('free','team','enterprise')), scheduled_effective_at timestamptz, dunning_stage smallint not null default 0, dunning_entered_at timestamptz, dunning_next_action_at timestamptz, version bigint not null default 1, created_by uuid references users(id) on delete restrict, created_at, updated_by uuid references users(id) on delete restrict, updated_at)`, `invoices(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, provider_invoice_id text not null, number text, status text not null check (status in ('draft','open','paid','uncollectible','void')), currency char(3) not null, subtotal_cents bigint not null, tax_cents bigint not null default 0, total_cents bigint not null, amount_paid_cents bigint not null default 0, period_start timestamptz, period_end timestamptz, issued_at timestamptz, due_at timestamptz, paid_at timestamptz, attempt_count int not null default 0, created_at)`, `usage_records(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, metric text not null check (metric in ('seats','storage_gb','automation_runs')), quantity numeric(20,4) not null, unit text not null check (unit in ('count','gigabyte')), kind text not null check (kind in ('sample','delta','adjustment')), period_date date not null, source_ref text not null, corrects_record_id uuid references usage_records(id) on delete restrict, reason text, recorded_by uuid references users(id) on delete restrict, recorded_at timestamptz not null default now())`, `billing_webhook_events(id uuid pk, provider text not null check (provider in ('stripe')), provider_event_id text not null, tenant_id uuid references tenants(id) on delete restrict, event_type text not null, signature_ts timestamptz not null, status text not null check (status in ('applied','duplicate','ignored','failed')), payload jsonb not null, attempts smallint not null default 0, error text, received_at timestamptz not null default now(), applied_at timestamptz)` — `event_type` stays an unconstrained `text` because the provider owns that vocabulary and an unrecognized value is stored `ignored` rather than rejected (FR-F064-09). Credit codes add `credit_codes(id uuid pk, batch_id uuid not null, code_hash bytea not null unique, amount_cents int not null check (amount_cents between 1 and 1000000), currency char(3) not null, expires_at timestamptz not null, new_tenants_only boolean not null default false, restricted_tenant_id uuid references tenants(id) on delete restrict, issued_by uuid not null references users(id) on delete restrict, issued_at timestamptz not null, redeemed_at timestamptz, redeemed_by_tenant_id uuid references tenants(id) on delete restrict, redeemed_by uuid references users(id) on delete restrict, note text, check ((redeemed_at is null) = (redeemed_by_tenant_id is null)))` and `credit_ledger(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, kind text not null check (kind in ('redemption','application','expiry','adjustment')), amount_cents int not null, currency char(3) not null, credit_code_id uuid references credit_codes(id) on delete restrict, invoice_id uuid references invoices(id) on delete restrict, expires_at timestamptz, reason text, created_by uuid references users(id) on delete restrict, created_at timestamptz not null)`; the plaintext code has no column anywhere.

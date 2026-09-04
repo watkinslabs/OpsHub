@@ -94,8 +94,8 @@ Outcome: work moves through communication, approval, and repeatable automation. 
 
 | Feature | Stories | Tasks | Depends on |
 |---|---|---|---|
-| F016 Comments and activity | S031 row conversations; S032 mentions/history | T061 thread API; T062 mention events; T063 activity feed; T064 collaboration E2E | F006, F003 |
-| F017 Files and proofing | S033 attachments; S034 review/versioning | T065 object storage; T066 scan/preview worker; T067 file versions; T068 proofing tests | F006, F004 |
+| F016 Comments and activity | S031 row conversations; S032 mentions/history | T061 thread API; T062 mention events; T063 activity feed; T064 collaboration E2E | F006, F003, F007 |
+| F017 Files and proofing | S033 attachments; S034 review/versioning | T065 object storage; T066 scan/preview worker; T067 file versions; T068 proofing tests | F006, F004, F007 |
 | F036 Sharing, guests, and links | S071 resource sharing grants; S072 guest identity and links | T141 share grants API; T142 sharing UI; T143 guest and link tokens; T144 sharing negative tests | F003, F005 |
 | F037 Notification service | S073 channels and delivery; S074 preferences and digests | T145 notification outbox; T146 email/push adapters; T147 preferences/quiet hours/digest; T148 notification tests | F004, F002 |
 | F018 Workflow builder | S035 trigger/condition; S036 actions | T069 workflow schema; T070 expression evaluator; T071 builder UI; T072 workflow fixtures | F007, F035 |
