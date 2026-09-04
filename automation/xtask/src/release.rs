@@ -38,6 +38,7 @@ pub(crate) fn check_contracts() -> Result<(), String> {
         for table in backtick_tokens(cols[6]) { if !text.contains(&table) { errors.push(format!("{label}: table `{table}` not specified")); } }
         if !catalog_ids.contains(&id) { errors.push(format!("{label}: {id} missing from catalog")); }
     }
+    errors.extend(undeclared_routes(&catalog));
     for f in &plan.features { if !catalog_ids.contains(&f.id) { errors.push(format!("plan feature {} missing from catalog", f.id)); } }
     report(errors)?; println!("contract checks passed: {} rows", catalog_ids.len()); Ok(())
 }
@@ -79,4 +80,57 @@ pub(crate) fn check_migrations() -> Result<(), String> {
         if name.ends_with(".sql") && !name.ends_with(".down.sql") && !names.contains(&format!("{stem}.down.sql")) { errors.push(format!("migration {name} has no .down.sql rollback")); }
     }
     report(errors)?; println!("migration check passed: {} files", names.len()); Ok(())
+}
+
+/// Routes are declared in the catalog and reproduced in tickets. The reverse also has to hold:
+/// a route a ticket promises but the catalog never declares is a route nothing generates a handler
+/// or an OpenAPI path for. F013 shipped such a link for weeks before this check existed.
+fn route_paths(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for token in backtick_tokens(text) {
+        for word in token.split_whitespace() {
+            let path = word.trim_end_matches([',', ';', '.']);
+            if !path.starts_with("/api/v1") && !path.starts_with("/public/") && !path.starts_with("/auth/")
+                && !path.starts_with("/scim/") && !path.starts_with("/embed/") && !path.starts_with("/mcp") { continue; }
+            if path.contains(".rs") || path.contains(".sql") || path.contains(".ts") || path.contains('*') || path.contains('?') { continue; }
+            found.push(normalize_route(path));
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Parameter names differ between a catalog row and a ticket; the shape is what must match.
+fn normalize_route(path: &str) -> String {
+    let mut out = String::new();
+    let mut in_param = false;
+    for ch in path.chars() {
+        match ch {
+            '{' => { in_param = true; out.push_str("{}"); }
+            '}' => in_param = false,
+            ':' if !in_param => { in_param = true; out.push_str("{}"); }
+            '/' if in_param => { in_param = false; out.push('/'); }
+            _ if in_param => {}
+            _ => out.push(ch),
+        }
+    }
+    out.trim_end_matches('/').to_owned()
+}
+
+fn undeclared_routes(catalog: &str) -> Vec<String> {
+    let declared = route_paths(catalog);
+    let mut errors = Vec::new();
+    for path in ticket_files() {
+        let Ok(text) = fs::read_to_string(&path) else { continue; };
+        for route in route_paths(&text) {
+            // A ticket may name a base path (`/scim/v2`) or a deeper path under a declared route;
+            // either direction of prefix means the catalog covers it. Only an unrelated path is a finding.
+            if declared.iter().any(|d| *d == route
+                || route.starts_with(&format!("{d}/"))
+                || d.starts_with(&format!("{route}/"))) { continue; }
+            errors.push(format!("{}: route `{route}` is not declared in the catalog", path.display()));
+        }
+    }
+    errors
 }
