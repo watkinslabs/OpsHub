@@ -1,6 +1,6 @@
 //! Enforces architecture decision 2 and 2.1 over the backlog: normalized schema, and one data
 //! access class per object type. It reads the specifications, so it holds before any code exists.
-use std::{collections::HashMap, fs};
+use std::{collections::{HashMap, HashSet}, fs};
 use crate::support::{backtick_tokens, front_value, ticket_files};
 
 /// `jsonb` is permitted only for genuinely schema-less payloads. A ticket keeping one must say so
@@ -371,4 +371,54 @@ fn order_html() -> Result<String, String> {
 A feature is schedulable when every dependency to its left is archived and its milestone has been reached. \
 An edge crossing many columns is a long pole.</p></div>\
 <svg width=\"{width}\" height=\"{height}\" xmlns=\"http://www.w3.org/2000/svg\">{edges}{nodes}</svg></body>"))
+}
+
+/// Completeness: a ticket must define what it builds, not gesture at it. Two implementers reading
+/// the same ticket have to produce the same tables, the same JSON and the same function signatures.
+/// This measures that mechanically; what it cannot measure is stated in the ticket-writing rules.
+pub(crate) fn check_completeness() -> Result<(), String> {
+    let mut errors = Vec::new();
+    let (mut complete, mut total) = (0usize, 0usize);
+    for path in ticket_files() {
+        let Ok(text) = fs::read_to_string(&path) else { continue; };
+        let id = front_value(&text, "id:").unwrap_or_default();
+        let label = path.display().to_string();
+        if text.contains("no user surface") && !text.contains("### Interface") && !text.contains("/api/v1") {
+            continue; // tooling features carry no HTTP or data surface
+        }
+        total += 1;
+        let mut gaps = Vec::new();
+
+        // Every route the ticket names needs a defined payload, not a named type.
+        let routes = text.matches("/api/v1").count();
+        if routes > 0 && !text.contains("### Interface") {
+            gaps.push("no `### Interface` section defining request and response shapes".to_owned());
+        }
+        // A named DTO with no field list is the gap that lets two people build different JSON.
+        let named: HashSet<String> = crate::support::backtick_tokens(&text).into_iter()
+            .filter(|t| (t.ends_with("Request") || t.ends_with("Response")) && t.chars().next().is_some_and(|c| c.is_uppercase()))
+            .collect();
+        let defined = text.matches("| Field | Type |").count() + text.matches("| Field | Type | Required |").count();
+        if !named.is_empty() && defined == 0 {
+            gaps.push(format!("{} request/response types named, none with a field table", named.len()));
+        }
+        // Use cases must carry signatures, not just names.
+        if text.contains("- Use cases") && !text.contains("fn ") {
+            gaps.push("use cases named without signatures".to_owned());
+        }
+        // Multi-table writes need their transaction boundary stated.
+        if text.contains("Migration `") && !text.contains("UnitOfWork") {
+            gaps.push("owns tables but names no transaction boundary".to_owned());
+        }
+        if gaps.is_empty() { complete += 1; } else {
+            for gap in gaps { errors.push(format!("incomplete {label}: {id} {gap}")); }
+        }
+    }
+    if errors.is_empty() {
+        println!("completeness checks passed: {complete}/{total} tickets fully specified");
+        return Ok(());
+    }
+    errors.sort();
+    for error in errors.iter().take(30) { eprintln!("BLOCKED: {error}"); }
+    Err(format!("completeness audit failed: {complete}/{total} complete, {} gap(s)", errors.len()))
 }

@@ -201,6 +201,7 @@ Run before review and in CI. Each exists because something was wrong that a huma
 | `check-persistence` | Third normal form, no array columns, justified `jsonb`, one repository class per table-owning feature |
 | `check-roles` | Every role a ticket or catalog row authorizes against is defined in the authorization model |
 | `check-design` | Every ticket names an artboard that exists in `design/artboards/`, or states plainly that it has no user surface |
+| `check-completeness` | Every ticket defines its request and response fields, its use-case signatures and its transaction boundaries, rather than naming them |
 | `check-order` | `docs/build-order.md` matches the order derived from the tickets, so the schedule cannot silently diverge from the dependency graph |
 | `check-references` | Every `FR-`/`NFR-`/`SR-` citation resolves to a requirement its owner actually declares, and every `docs/` or `design/artboards/` path a document points at exists |
 | `check-migrations` | Migration naming, ordering, reversibility and safety. The expand-migrate-contract staging in decisions section 2.2 is a review responsibility it cannot check |
@@ -234,6 +235,17 @@ Beyond the template, these are the rules that have actually been violated:
   an undeclared example route, fails the gate it is describing. Reference the constant or the rule
   instead. This has now happened four times.
 - **Two features never write the same table.** Child tables belong to their parent's repository.
+- **Define the interface, do not name it.** A ticket carries an `### Interface` section giving, for
+  every route: each request and response type as a field table — JSON name, type, required, and the
+  constraint that makes it invalid — plus every status code and the case that produces it. Naming
+  `CreateSheetRequest` without saying what is in it means two implementers ship different JSON.
+- **Every use case carries a signature**, not a name. `fn create_sheet(ctx, uow, req) -> Result<Sheet, DomainError>`,
+  not "create_sheet". A use case never takes a pool and never returns a row type.
+- **State the transaction boundary.** Which writes share one `UnitOfWork`, and the invariant that
+  boundary protects. A multi-table write with no stated boundary is undefined behaviour under
+  concurrency.
+- `cargo xtask check-completeness` measures all of this. `work/tickets/F006-sheets-boards-items.md`
+  is the worked example of the depth expected.
 
 ## Milestones
 

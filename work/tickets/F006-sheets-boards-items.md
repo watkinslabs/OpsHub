@@ -92,6 +92,98 @@ Excluded: typed columns beyond the primary text column (F007), inline cell editi
 - Validation: name 1–200 chars, description ≤ 4,000 chars, cells map keys must be column IDs of the sheet, `limit` 1–500. Idempotency stored in `idempotency_keys(tenant_id, key, request_hash, response)` for 24 hours through the shared `IdempotencyKeyRepository` of the base contract. Concurrency: `If-Match` version compared inside the update transaction.
 - Error mapping: `SheetError::NameTaken → 409 conflict`, `SheetError::StaleVersion → 409 conflict`, `SheetError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, validation → `400 invalid` with `field_errors`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and its constraint. A
+type written `T?` is nullable; a missing optional field and an explicit `null` are the same thing.
+Timestamps are RFC 3339 UTC, ids are UUIDv7 strings, and `version` is an integer that increments by
+one per write. Unlisted fields are rejected with `400 invalid`.
+
+**`CreateSheetRequest`** — `POST /api/v1/sheets`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `sheet:create` on it, else `403 denied` |
+| `folder_id` | uuid? | no | must be in `workspace_id`; null means workspace root |
+| `name` | string | yes | 1–200 chars after trim, unique per folder among live sheets |
+| `description` | string? | no | ≤ 4,000 chars |
+| `settings` | SheetSettings? | no | defaults applied when absent |
+
+**`UpdateSheetRequest`** — `PATCH /api/v1/sheets/{id}`, all fields optional, at least one present
+
+| Field | Type | Constraint |
+|---|---|---|
+| `name` | string | as above |
+| `description` | string? | ≤ 4,000 chars; explicit null clears it |
+| `folder_id` | uuid? | move; same workspace only |
+| `settings` | SheetSettings | replaces the object whole, not merged |
+
+**`SheetSettings`**
+
+| Field | Type | Required | Default |
+|---|---|---|---|
+| `default_view_id` | uuid? | no | null |
+| `row_numbering` | `"sequential" \| "hierarchical"` | no | `"sequential"` |
+| `locked` | bool | no | `false` |
+
+**`SheetResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `workspace_id` | uuid | |
+| `folder_id` | uuid? | |
+| `name` | string | |
+| `description` | string? | |
+| `settings` | SheetSettings | always present, defaults materialised |
+| `row_count` | integer | live rows the caller may read, not total |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted sheet |
+
+**`CreateRowRequest`** — `POST /api/v1/sheets/{id}/rows`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `group_id` | uuid? | no | defaults to the sheet's default group |
+| `after_row_id` | uuid? | no | position; null appends |
+| `cells` | map<uuid, CellValue> | no | keys are column ids of this sheet; unknown key → `400 invalid` with `field_errors.cells` |
+
+**`UpdateRowRequest`** — `PATCH /api/v1/rows/{id}`: `cells` as above, plus `group_id?`.
+**`MoveRowRequest`** — `{ group_id: uuid?, after_row_id: uuid? }`, at least one present.
+
+**`RowResponse`**: `{ id, sheet_id, group_id, position: string, cells: map<uuid, CellValue>, version, created_at, created_by, updated_at, updated_by, deleted_at? }`. `position` is the fractional index as a string so a client never does float arithmetic on it.
+
+**`CellValue`** is F007's typed union, discriminated by the column's type rather than by a field in the payload; F007 owns its definition and this feature does not restate it.
+
+**`Page<T>`** — every list route: `{ items: T[], next_cursor: string?, total: integer? }`. `total` is present only when the caller passed `count=true`, because counting costs a second query.
+
+### Use case signatures
+
+In `crates/domain/src/sheets/`. Every one takes `ctx` carrying tenant, actor and correlation id, and
+returns the shared `DomainError` whose mapping to HTTP is in the error table below.
+
+```rust
+fn create_sheet(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateSheet) -> Result<Sheet, DomainError>;
+fn update_sheet(ctx: &Ctx, uow: &mut UnitOfWork, id: SheetId, expected: Version, req: UpdateSheet) -> Result<Sheet, DomainError>;
+fn delete_sheet(ctx: &Ctx, uow: &mut UnitOfWork, id: SheetId, expected: Version) -> Result<(), DomainError>;
+fn restore_sheet(ctx: &Ctx, uow: &mut UnitOfWork, id: SheetId) -> Result<Sheet, DomainError>;
+fn list_sheets(ctx: &Ctx, repo: &SheetRepository, filter: SheetFilter, page: Cursor) -> Result<Page<Sheet>, DomainError>;
+fn create_row(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: CreateRow) -> Result<Row, DomainError>;
+fn update_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId, expected: Version, req: UpdateRow) -> Result<Row, DomainError>;
+fn move_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId, expected: Version, req: MoveRow) -> Result<Row, DomainError>;
+fn delete_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId, expected: Version) -> Result<(), DomainError>;
+fn restore_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId) -> Result<Row, DomainError>;
+fn list_rows(ctx: &Ctx, repo: &RowRepository, sheet: SheetId, filter: RowFilter, page: Cursor) -> Result<Page<Row>, DomainError>;
+fn upsert_group(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: UpsertGroup) -> Result<SheetGroup, DomainError>;
+fn delete_group(ctx: &Ctx, uow: &mut UnitOfWork, id: GroupId, expected: Version) -> Result<(), DomainError>;
+```
+
+A use case never takes a connection or a pool, and never returns a database row type. The request
+structs above are the API DTOs deserialized and validated; the domain types they produce are the
+entities in the Rust backend section.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_sheets_*.sql` creates `sheets(id uuid pk, tenant_id uuid not null, workspace_id uuid not null, folder_id uuid null, name text not null, description text, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `sheet_settings(sheet_id uuid primary key references sheets(id) on delete cascade, tenant_id uuid not null, row_numbering text not null default 'none' check (row_numbering in ('none','sequential','custom')), default_view text not null default 'grid' check (default_view in ('grid','board')), board_lane_column_id uuid, updated_by uuid, updated_at timestamptz not null)`, `sheet_groups(id, tenant_id, sheet_id, name, position numeric, is_default bool, version, audit fields)`, `rows(id, tenant_id, sheet_id, group_id, position text not null, version, audit fields, deleted_at)`, `cells(tenant_id, row_id, column_id, raw jsonb, display text, validation_state text not null default 'valid' check (validation_state in ('valid','invalid','pending')), validation_code text, validation_message text, updated_at, primary key (row_id, column_id))`.
