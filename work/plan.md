@@ -77,6 +77,8 @@ Outcome: teams plan work, visualize it, and collect requests. Milestone M2.
 | F011 Dates and schedules | S021 dates/calendars; S022 working time | T041 date types/timezones; T042 working calendar; T043 schedule API; T044 date UI tests | F007 |
 | F049 Localization | S097 locale formatting; S098 translations | T193 locale/timezone formatting; T194 message catalog; T195 tenant locale settings; T196 i18n tests | F005 |
 | F012 Dependencies and Gantt | S023 dependency links; S024 schedule shifts | T045 dependency engine; T046 cycle detection and critical path; T047 Gantt view; T048 schedule E2E | F009, F011 |
+| F072 Inbound email | S143 inbound addresses; S144 message to row | T285 address provisioning; T286 mail ingestion; T287 inbound UI; T288 inbound abuse tests | F006, F017, F037 |
+| F073 Announcements and in-app help | S145 announcements; S146 contextual help | T289 announcement schema; T290 targeting and dismissal; T291 help surfaces; T292 announcement tests | F002, F037 |
 | F069 Home and my work | S137 home surfaces; S138 favourites and recents | T273 home aggregation; T274 favourites and recents; T275 home UI; T276 home permission tests | F005, F006, F013 |
 | F070 Trash and recovery | S139 trash index; S140 restore and purge | T277 trash projection; T278 restore service; T279 trash UI; T280 recovery tests | F005, F006 |
 | F071 Migration import | S141 source parsing; S142 mapped provisioning | T281 source adapters; T282 structure mapping; T283 migration UI; T284 migration tests | F007, F010, F013 |

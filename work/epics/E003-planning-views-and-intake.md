@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 2, 3, 4, 6, 7
-- Capability contract: `docs/capability-contracts.md` rows F069, F070, F071, F011, F049, F012, F013, F014, F015
+- Capability contract: `docs/capability-contracts.md` rows F069, F070, F071, F072, F073, F011, F049, F012, F013, F014, F015
 - Product spec: `docs/product-capability-spec.md` sections 5.1, 5.3, 5.7, 6, 7 (Phase 2)
 
 # E003 — Planning, views, and intake
@@ -28,6 +28,8 @@ After E002 a team can store typed work records but cannot plan with them: rows h
 
 ## Child features
 
+- `F072` Inbound email: per-sheet email addresses that turn a message and its attachments into a row, with the abuse defences an internet-facing mailbox needs (depends on F006, F017, F037).
+- `F073` Announcements and in-app help: what changed and contextual help, targeted by plan and role, dismissible per user (depends on F002, F037).
 - `F069` Home and my work: the landing surface after sign-in — assigned work, pending approvals, recents and favourites, all permission-filtered (depends on F005, F006, F013).
 - `F070` Trash and recovery: one place to see and restore soft-deleted items across kinds, restoring under the original ACL (depends on F005, F006).
 - `F071` Migration import: bringing a Smartsheet, Airtable or Excel workbook in as sheets, typed columns, views and links rather than flat rows (depends on F007, F010, F013).

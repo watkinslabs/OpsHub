@@ -23,4 +23,8 @@ Feature: Tenant, users, and groups. Flag `F002_FEATURE`. Every case maps to a ti
 | `F002-NFR-003` | NFR-F002-03 | accessibility | axe serious = 0 on three admin pages; keyboard toggles; live region announces |
 | `F002-NFR-004` | NFR-F002-04 | api | span carries tenant, actor, correlation; `tenant_mutations_total` increments |
 
+| `F002-REQ-020` | FR-F002-20 | api | a 500-user bulk deactivate returns a per-user result and writes 500 audit rows and events; a mismatched confirmation count is refused; 501 users is rejected; deactivating the last tenant-admin returns 409 `last_admin`; a replayed idempotency key applies once |
+
+| `F002-REQ-015` | FR-F002-15 | api | a 500-user bulk deactivate returns a per-user result and writes 500 audit rows and events; a mismatched confirmation count is refused; 501 users is rejected; deactivating the last tenant-admin returns 409 `last_admin`; a replayed idempotency key applies once |
+
 Evidence: command, fixture seed, result, and artifact path recorded under `testing/evidence/F002/`.

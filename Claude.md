@@ -178,6 +178,7 @@ and the other is corrected — never both edited to meet in the middle.
 | What each plan includes | `docs/packaging.md` |
 | Incident behaviour and postmortems | `docs/incident-management.md` |
 | Accessibility claim and its evidence | `docs/accessibility-conformance.md` |
+| Setup, pull requests and review | `docs/contributing.md` |
 | Vulnerability reporting and testing | `docs/security-disclosure.md` |
 | Screens | `design/artboards/*.dc.html`, indexed by `design/canvas.json` |
 | Feature contract, scope, tests, ownership | its ticket in `work/` |
@@ -195,7 +196,7 @@ Run before review and in CI. Each exists because something was wrong that a huma
 | `validate-decisions` | The decision record parses and carries no unresolved language |
 | `validate-plan` | Every plan row has a file and every file has a plan row. `validate-work` cannot see a row whose file was never created, so both must run |
 | `validate-work` | Content quality: no placeholders, minimum requirement counts, gherkin scenarios, named failing tests, disjoint module-scoped owned paths, harness lanes |
-| `check-contracts` | Catalog and tickets agree **in both directions**: a catalog route missing from its ticket fails, and so does a route a ticket names that no row declares |
+| `check-contracts` | Catalog and tickets agree **in both directions and per method**: a catalog route missing from its ticket fails; so does a route a ticket names that no row declares; and so does a method on a declared path that the catalog does not declare, since `POST /x` is a different operation from `GET /x` |
 | `check-persistence` | Third normal form, no array columns, justified `jsonb`, one repository class per table-owning feature |
 | `check-roles` | Every role a ticket or catalog row authorizes against is defined in the authorization model |
 | `check-design` | Every ticket names an artboard that exists in `design/artboards/`, or states plainly that it has no user surface |

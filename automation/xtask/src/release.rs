@@ -85,6 +85,30 @@ pub(crate) fn check_migrations() -> Result<(), String> {
 /// Routes are declared in the catalog and reproduced in tickets. The reverse also has to hold:
 /// a route a ticket promises but the catalog never declares is a route nothing generates a handler
 /// or an OpenAPI path for. F013 shipped such a link for weeks before this check existed.
+/// Routes as `VERB /path` where the token carries a verb, else `/path`. A path declared for one
+/// method does not license another: `POST /api/v1/announcements` is a different operation from the
+/// declared `GET`, and generating a handler for it is exactly what the catalog is supposed to decide.
+fn route_ops(text: &str) -> Vec<String> {
+    const VERBS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+    let mut found = Vec::new();
+    for token in backtick_tokens(text) {
+        let words = token.split_whitespace().collect::<Vec<_>>();
+        for (index, word) in words.iter().enumerate() {
+            let path = word.trim_end_matches([',', ';', '.']);
+            if !path.starts_with('/') { continue; }
+            let verb = index.checked_sub(1).and_then(|i| words.get(i)).copied()
+                .filter(|w| VERBS.contains(w));
+            if let Some(verb) = verb {
+                let normalized = normalize_route(path);
+                if !normalized.is_empty() { found.push(format!("{verb} {normalized}")); }
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
 fn route_paths(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     for token in backtick_tokens(text) {
@@ -120,6 +144,7 @@ fn normalize_route(path: &str) -> String {
 
 fn undeclared_routes(catalog: &str) -> Vec<String> {
     let declared = route_paths(catalog);
+    let declared_ops = route_ops(catalog);
     let mut errors = Vec::new();
     for path in ticket_files() {
         let Ok(text) = fs::read_to_string(&path) else { continue; };
@@ -130,6 +155,15 @@ fn undeclared_routes(catalog: &str) -> Vec<String> {
                 || route.starts_with(&format!("{d}/"))
                 || d.starts_with(&format!("{route}/"))) { continue; }
             errors.push(format!("{}: route `{route}` is not declared in the catalog", path.display()));
+        }
+        // A declared path does not license every method on it.
+        for op in route_ops(&text) {
+            if declared_ops.iter().any(|d| *d == op) { continue; }
+            let (_verb, route) = op.split_once(' ').unwrap_or(("", op.as_str()));
+            // Exact match only. A declared method on a parent path licenses nothing on a child:
+            // that allowance is what let `POST /api/v1/announcements` pass against a declared `GET`.
+            if !declared.iter().any(|d| *d == route) { continue; } // unknown path, already reported
+            errors.push(format!("{}: operation `{op}` is not declared in the catalog", path.display()));
         }
     }
     errors

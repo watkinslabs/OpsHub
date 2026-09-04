@@ -59,7 +59,9 @@
     {"file": "Tokens.dc.html", "x": 3160, "y": 17400, "w": 1440, "h": 1560, "title": "Design tokens"},
     {"file": "Home.dc.html", "x": 0, "y": 19360, "w": 1440, "h": 900, "title": "Home & my work"},
     {"file": "Trash.dc.html", "x": 1580, "y": 19360, "w": 1440, "h": 900, "title": "Trash & recovery"},
-    {"file": "Migration.dc.html", "x": 3160, "y": 19360, "w": 1440, "h": 900, "title": "Migration import"}
+    {"file": "Migration.dc.html", "x": 3160, "y": 19360, "w": 1440, "h": 900, "title": "Migration import"},
+    {"file": "InboundEmail.dc.html", "x": 0, "y": 20660, "w": 1440, "h": 900, "title": "Inbound email"},
+    {"file": "Announcements.dc.html", "x": 1580, "y": 20660, "w": 1440, "h": 900, "title": "Announcements & help"}
   ],
   "annotations": [
     {"id": "band-1", "x": 0, "y": -150, "w": 1100, "text": "Core work \u2014 sheets, views, documents, forms, automation"},
@@ -68,7 +70,8 @@
     {"id": "band-4", "x": 0, "y": 11770, "w": 1100, "text": "Advanced modules \u2014 entitled add-ons"},
     {"id": "band-5", "x": 0, "y": 15670, "w": 1100, "text": "Public surfaces \u2014 no session, no account"},
     {"id": "band-6", "x": 0, "y": 17250, "w": 1100, "text": "Design system \u2014 tokens, components, chart widgets"},
-    {"id": "band-7", "x": 0, "y": 19210, "w": 1100, "text": "Front door and recovery \u2014 the home a user lands on, one place to undelete anything, and bringing a competitor's workbook in as real structure."}
+    {"id": "band-7", "x": 0, "y": 19210, "w": 1100, "text": "Front door and recovery \u2014 the home a user lands on, one place to undelete anything, and bringing a competitor's workbook in as real structure."},
+    {"id": "band-8", "x": 0, "y": 20510, "w": 1100, "text": "Intake and communication \u2014 work arriving by email, and the product telling people what changed without interrupting them."}
   ],
   "launch": {"view": "canvas"}
 }

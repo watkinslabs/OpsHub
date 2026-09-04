@@ -226,4 +226,6 @@ Spec Phase 7. Epics E008. 14 features, 80 estimate points.
 
 ## Totals
 
+Sequencing and what the totals mean in time: `docs/capacity.md`.
+
 68 features, 488 estimate points across 8 milestones.

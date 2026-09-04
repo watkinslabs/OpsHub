@@ -22,7 +22,7 @@ Status: READY FOR IMPLEMENTATION. Specification, architecture and design are com
 
 ## Backlog
 
-- 9 epics, 68 feature tickets, 136 stories, 272 tasks, 68 feature-gated harnesses of seven lanes each.
+- 9 epics, 73 feature tickets, 146 stories, 292 tasks, 68 feature-gated harnesses of seven lanes each.
 - 8 milestones, 488 estimate points. Every feature declares its milestone; no feature depends on a
   later one, and the dependency graph is acyclic.
 - Every functional requirement in every ticket is implemented by at least one story or task.

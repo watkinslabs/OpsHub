@@ -25,4 +25,6 @@ Feature: Runtime operations. Flag `F004_FEATURE`. Every case maps to a ticket re
 | `F004-NFR-003` | NFR-F004-03 | accessibility | readiness and CLI use words, honour `NO_COLOR`; runbook headings and plain tables |
 | `F004-NFR-004` | NFR-F004-04 | api, e2e | unpublished rows never deleted; dead letters visible; weekly drill evidence; alert rules fire |
 
+| `F004-REQ-017` | FR-F004-17 | api, database | a seeded secret and a seeded cell value appear in neither the log sink nor a trace span; a log line carries only the permitted field list; retention is set on the sink for logs, traces and metrics; a tenant purge removes its telemetry rows |
+
 Evidence: command, fixture seed, result, and artifact path recorded under `testing/evidence/F004/`.
