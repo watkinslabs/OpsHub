@@ -41,8 +41,8 @@ As a maintainer, I want a clean checkout to build the Rust workspace and the web
 ## Surfaces
 
 - Infrastructure/container: none (F004 owns compose and images)
-- Rust service/API: `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`, `rustfmt.toml`, `clippy.toml`, `crates/{domain,persistence,contracts,auth,events}/Cargo.toml`, `services/{api,worker,realtime,mcp}/Cargo.toml`
-- Data/migration: none; `services/api/migrations/.gitkeep` only
+- Rust service/API: `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`, `rustfmt.toml`, `clippy.toml`, `crates/{domain,persistence,contracts,auth,events}/Cargo.toml`, `services/{api,worker,realtime,mcp}/Cargo.toml`. The `sqlx` pin stays in `[workspace.dependencies]`, but only `crates/persistence/Cargo.toml` declares it as a member dependency; `crates/domain`, the four service manifests and `automation/xtask` take no SQLx dependency in their skeleton manifests (decision 2.1).
+- Data/migration: none; this story owns no table and adds no repository, and `services/api/migrations/.gitkeep` is the only file
 - React/UI: `package.json`, `pnpm-workspace.yaml`, `apps/web/{package.json, vite.config.ts, tsconfig.json}`, `apps/web/src/main.tsx`, `apps/web/src/features/platform/{routes.ts, StatusPage.tsx, useHealth.ts, api.ts}`
 - Mocks/fixtures: MSW handler for `GET /healthz`; `testing/fixtures/platform.rs` temporary clone builder
 

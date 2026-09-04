@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F051
 parent_story: S101
 depends_on: [T201]
-owned_paths: [crates/domain/src/workapps/**, services/api/src/workapps/**, testing/features/F051/api/**, testing/features/F051/requirements/**]
+owned_paths: [crates/domain/src/workapps/**, crates/persistence/src/workapps/**, services/api/src/workapps/**, testing/features/F051/api/**, testing/features/F051/requirements/**]
 feature_flag: F051_FEATURE
 branch: t202-embedded-surfaces
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S101` App composition
 - Owner: platform
 - Branch: `t202-embedded-surfaces`
-- Decision references: `docs/architecture-decisions.md` sections 2–4, 10; `docs/capability-contracts.md` row F051
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 10; `docs/capability-contracts.md` row F051
 
 ## Objective
 

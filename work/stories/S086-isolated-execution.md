@@ -37,7 +37,7 @@ As an agent working in a claimed lane, I want a deterministic fixture tenant, sc
 
 ## Surfaces
 
-- Infrastructure/container: none; PostgreSQL schema and NATS stream creation from the exported names belongs to `testing/harness/db.rs` (F004 runtime)
+- Infrastructure/container: none; `allocate-fixture` only names the PostgreSQL schema, opens no connection and issues no SQL (decision 2.1), and schema and NATS stream creation from the exported names belongs to `testing/harness/db.rs` (F004 runtime) through `crates/persistence`
 - Rust service/API: `automation/xtask/src/lanes.rs` (`Fixture`, `allocate_fixture`, `current_lane`, `env::export_lines` fixture half, `collect_artifacts`, `Manifest`, `LaneEvidence`, `FileRecord`, `CommandRecord`, `release` done path); `test_feature`/`test_all` in `release.rs` call `lanes::current_lane` (the call site is a one-line hook in F044's module)
 - Data/migration: none; `testing/evidence/<ID>/**`
 - React/UI: none (no UI)

@@ -32,11 +32,11 @@ Create the Cargo workspace with five crates, four services, pinned toolchain, sh
 ## Specification
 
 - Owned paths: `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`, `rustfmt.toml`, `clippy.toml`, `crates/{domain,persistence,contracts,auth,events}/Cargo.toml`, `services/{api,worker,realtime,mcp}/Cargo.toml`
-- Contract/input: member list and `[workspace.dependencies]` pins from F001 ticket section 4 (axum 0.8, tokio 1, sqlx 0.8 with `runtime-tokio, postgres, uuid, chrono, json, migrate`, serde 1, tracing 0.1, utoipa 5, uuid 1 v7, chrono 0.4); `[workspace.lints]` with `unsafe_code = "forbid"` and clippy pedantic subset; `rust-toolchain.toml` stable with rustfmt and clippy; `.cargo/config.toml` alias `xtask = "run --package xtask --"`, `SQLX_OFFLINE = "true"`, target dir overridable by `CARGO_TARGET_DIR`.
+- Contract/input: member list and `[workspace.dependencies]` pins from F001 ticket section 4 (axum 0.8, tokio 1, sqlx 0.8 with `runtime-tokio, postgres, uuid, chrono, json, migrate`, serde 1, tracing 0.1, utoipa 5, uuid 1 v7, chrono 0.4); `[workspace.lints]` with `unsafe_code = "forbid"` and clippy pedantic subset; `rust-toolchain.toml` stable with rustfmt and clippy; `.cargo/config.toml` alias `xtask = "run --package xtask --"`, `SQLX_OFFLINE = "true"`, target dir overridable by `CARGO_TARGET_DIR`. The `sqlx` pin is workspace-level only: `crates/persistence/Cargo.toml` is the single member manifest that declares `sqlx.workspace = true`, and `crates/{domain,contracts,auth,events}`, the four services, and `automation/xtask` declare no SQLx dependency (decision 2.1).
 - Output/behavior: `cargo build --workspace` exits 0 and produces `api`, `worker`, `realtime`, `mcp`, `xtask`; `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` exit 0; each crate ships `src/lib.rs` (or `main.rs` logging `service started`) so later features add modules without touching this task's files; `services/api/migrations/.gitkeep` exists.
 - Dependencies: `automation/xtask` already exists (F041/F042) and is added as a member without modification.
 - Feature flag: `F001_FEATURE` (build configuration is not gated; the flag only gates the `/status` route in T002)
-- Large-table note: none; no database objects.
+- Large-table note: none; this task owns no table and adds no repository, and the skeleton `crates/persistence/src/lib.rs` holds the only future home for SQL.
 
 ## TDD
 

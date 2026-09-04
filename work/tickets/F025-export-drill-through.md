@@ -64,7 +64,7 @@ As a report viewer, I want to click a KPI, chart point, or grouped row and land 
 - **NFR-F025-01 Performance:** drill on a row target responds under 400 ms p95 and on a group target under 900 ms p95 over a 100,000-row snapshot; export acknowledgement under 500 ms p95 and status reads under 200 ms p95; a 50,000-row CSV completes in under 20 s and 250,000 rows in under 120 s; a 12-widget dashboard PDF completes in under 45 s p95 excluding an optional refresh wait.
 - **NFR-F025-02 Security/privacy:** every drill result and every exported byte is produced under the requester's `scope_key`, never the report owner's, and a `scope_key` mismatch between the request and the claim aborts the render; objects are written under the tenant prefix with server-side encryption, signed URLs live 15 minutes, downloads are restricted to the requester or a `tenant-admin` and audited; cross-tenant, share-link, hidden-column, restricted-sheet, and expired-download negatives are in the harness.
 - **NFR-F025-03 Accessibility:** the drill panel, export dialog, and export center pass axe with zero serious or critical violations, the panel is a focus-trapped dialog returning focus to the originating point, export progress is announced through a polite live region, denied rows carry text and a labelled icon rather than color alone, and generated PDFs are tagged with a document title, table headers, and reading order.
-- **NFR-F025-04 Reliability/observability:** renders are idempotent by `(tenant_id, requested_by, idempotency_key)` and safe to re-claim after a worker restart because partial objects are written to a temporary key and moved on success; spans carry `tenant_id`, `export_id`, `report_id`, `dashboard_id`, `run_id`, `scope_key`; metrics `report_export_duration_seconds{format}`, `report_export_failures_total{format,reason}`, `report_export_bytes_total{format}`, `drill_through_denied_total`.
+- **NFR-F025-04 Reliability/observability:** renders are idempotent by `(tenant_id, requested_by, idempotency_key)`, enforced by that unique constraint through `ReportExportRepository::create_if_absent`, and safe to re-claim after a worker restart because partial objects are written to a temporary key and moved on success; spans carry `tenant_id`, `export_id`, `report_id`, `dashboard_id`, `run_id`, `scope_key`; metrics `report_export_duration_seconds{format}`, `report_export_failures_total{format,reason}`, `report_export_bytes_total{format}`, `drill_through_denied_total`.
 
 ### Scope
 
@@ -128,9 +128,9 @@ Excluded: sheet and view exports and the import pipeline (F010), report definiti
 - [ ] Requirement tests: FR-F025-01 through FR-F025-13 in `testing/features/F025/requirements/cases.md`
 - [ ] Failure/edge-case tests: unknown row id, expired snapshot key, tampered drill key tag, 201 columns, PDF over 200 pages, 250,001 rows, render timeout, storage outage mid-stream, worker killed mid-render, download before completion, download after expiry, duplicate idempotency key
 - [ ] Permission-negative and tenant-isolation tests: restricted source sheet marked denied, hidden column absent from CSV and PDF bytes, viewer without `resource-exporter` denied, share-link actor may drill but not export, non-requester download denied, foreign-tenant export and drill return `not_found`
-- [ ] Rust unit tests: `crates/domain/src/report_exports/` drill key encode/decode and tag check, source alias mapping, CSV escaping, XLSX typing, page break arithmetic, limit checks
+- [ ] Rust unit tests: `crates/domain/src/report_exports/` drill key encode/decode and tag check, source alias mapping, CSV escaping, XLSX typing, page break arithmetic, limit checks; `crates/persistence/src/report-exports/` repository tests for `create_if_absent`, ordered column and widget rows, `claim_next_queued`, `complete`, `fail`, and the two limit counters
 - [ ] API contract/integration tests: every route above with success and each mapped error code
-- [ ] Database migration/constraint tests: idempotency uniqueness, completed-row invariant, format-per-source checks, claim and sweep index usage, rollback
+- [ ] Database migration/constraint tests: idempotency uniqueness, completed-row invariant, format-per-source checks, `page_size`/`page_orientation` required for `pdf` and rejected otherwise, `error_code` required on a `failed` row and restricted to the five codes, `report_export_columns` and `report_export_widgets` position uniqueness and cascade from the parent export, `dashboard_widgets` restrict on a widget still referenced, claim, sweep, and `error_code` index usage, rollback dropping all three tables
 - [ ] React component tests: `DrillPanel` allowed, denied, empty, and owner-aggregate states; `ExportDialog` validation; `ExportRow` progress, failure, and retry
 - [ ] Browser E2E tests: drill from a chart point to source rows, export a report to CSV and download it, export a dashboard to PDF with refresh, retry a failed export
 - [ ] Accessibility tests: axe on panel, dialog, and export center, focus return, progress announcement, tagged PDF structure
@@ -179,7 +179,7 @@ Scenario: Download is refused before completion and after expiry
 Scenario: Viewer without the exporter role cannot export
   Given viewer Lee holds report-viewer but not resource-exporter
   When Lee posts an export for the dashboard
-  Then the response is 403 denied and no report_exports row is created
+  Then the response is 403 denied and no report_exports, report_export_columns, or report_export_widgets row is created
 ```
 
 - [ ] Every functional requirement has an executable acceptance test.
@@ -218,4 +218,4 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 
 - Report groups, KPI tiles, and chart points now drill through to the source records the viewer is allowed to open, stating plainly when an aggregate counts rows a viewer cannot see.
 - Reports export to CSV, XLSX, and PDF and dashboards export to PDF and PNG asynchronously under the requester's own permissions, with progress, a 15-minute signed download that expires after 7 days, and an audit record of every request and download.
-- Migration adds `report_exports`; rollback drops it. Feature is off by default behind `F025_FEATURE`.
+- Migration adds `report_exports` with its ordered `report_export_columns` and `report_export_widgets` child tables; rollback drops all three. Feature is off by default behind `F025_FEATURE`.

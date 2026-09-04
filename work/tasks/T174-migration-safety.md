@@ -33,7 +33,7 @@ Implement `check-migrations` with naming, pairing, ownership, header, ordering, 
 - Output/behavior: `migration.name`, `migration.down_missing`, `migration.module_not_owned`, `migration.header`, `migration.order` (duplicate or non-increasing timestamp, or older than the newest on base), `migration.mutated` (content differs from `git show <base>:<path>`), `migration.destructive` (kinds `DROP TABLE`, `DROP COLUMN`, `ALTER COLUMN TYPE`, `TRUNCATE`, `ADD COLUMN NOT NULL` without `DEFAULT`, `CREATE INDEX` without `CONCURRENTLY` on a pre-existing table) unless declared in the header and justified in the ticket, `migration.down_incomplete` (a table, index, or type created in `up` not mentioned in `down`), `migration.unclassified` (warning in JSON); tokenizer strips `--` and `/* */` comments and skips string literals; table existence tracked across migrations in timestamp order; an absent migrations directory prints `skipped` and passes
 - Dependencies: T173 catalog parser
 - Feature flag: `F044_FEATURE`
-- Never executes SQL
+- Data access (decision 2.1): `services/api/migrations/*.sql` is read as text only. The checker never executes a statement, never opens a database connection, and takes no `sqlx` dependency; it owns no table and adds no repository.
 
 ## TDD
 

@@ -6,7 +6,7 @@ parent_epic: E005
 parent_feature: F023
 parent_story: S045
 depends_on: [T089]
-owned_paths: [crates/domain/src/dashboards/**, services/api/src/dashboards/**, services/worker/src/dashboards/**, testing/features/F023/api/**]
+owned_paths: [crates/domain/src/dashboards/**, crates/persistence/src/dashboards/**, services/api/src/dashboards/**, services/worker/src/dashboards/**, testing/features/F023/api/**]
 feature_flag: F023_FEATURE
 branch: t090-widget-registry
 started_at: null

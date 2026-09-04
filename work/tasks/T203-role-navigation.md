@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F051
 parent_story: S102
 depends_on: [S102]
-owned_paths: [crates/domain/src/workapps/**, services/api/src/workapps/**, apps/web/src/features/workapps/**, testing/features/F051/api/**, testing/features/F051/frontend/**]
+owned_paths: [crates/domain/src/workapps/**, crates/persistence/src/workapps/**, services/api/src/workapps/**, apps/web/src/features/workapps/**, testing/features/F051/api/**, testing/features/F051/frontend/**]
 feature_flag: F051_FEATURE
 branch: t203-role-navigation
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S102` Role experiences
 - Owner: platform
 - Branch: `t203-role-navigation`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 6; `docs/capability-contracts.md` row F051
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6; `docs/capability-contracts.md` row F051
 
 ## Objective
 

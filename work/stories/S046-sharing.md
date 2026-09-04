@@ -5,7 +5,7 @@ status: planned
 parent_epic: E005
 parent_feature: F023
 depends_on: [S045]
-owned_paths: [crates/domain/src/dashboards/**, services/api/src/dashboards/**, services/worker/src/dashboards/**, apps/web/src/features/dashboards/**, testing/features/F023/**]
+owned_paths: [crates/domain/src/dashboards/**, crates/persistence/src/dashboards/**, services/api/src/dashboards/**, services/worker/src/dashboards/**, apps/web/src/features/dashboards/**, testing/features/F023/**]
 feature_flag: F023_FEATURE
 branch: s046-sharing
 started_at: null
@@ -32,8 +32,8 @@ As a dashboard editor, I want to build the layout in the browser, set a refresh 
 
 ## Requirements
 
-- **SR-S046-01:** Dashboards are F036 share targets: group and user shares grant `viewer` or `editor`, share links are read-only and expire within 30 days, and link guests receive widget data through the same `ViewerScope` with `denied` tiles for unreadable sources (FR-F023-09, NFR-F023-02).
-- **SR-S046-02:** `refresh_policy` `interval` targets scopes read in the last 24 hours, `on_open` refreshes on `GET` when the cache is older than 60 s, and `refresh_override` may only shorten the interval (FR-F023-07).
+- **SR-S046-01:** Dashboards are F036 share targets read through `ShareRepository`: group and user shares grant `viewer` or `editor`, share links are read-only and expire within 30 days, and link guests receive widget data through the same `ViewerScope`, with a `denied` tile for any `dashboard_widget_sources` row the guest cannot read (FR-F023-09, NFR-F023-02).
+- **SR-S046-02:** `refresh_mode = 'interval'` selects due dashboards on the `dashboards(refresh_mode, refresh_interval_minutes)` index and targets scopes from `list_scopes_read_since(dashboard_id, cutoff)` for the last 24 hours, `on_open` refreshes on `GET` when the cache is older than 60 s, and `refresh_override` may only shorten `refresh_interval_minutes` (FR-F023-07).
 - **SR-S046-03:** `DashboardBuilder` renders the 12-column `GridCanvas` with drag, resize, and keyboard placement, the `WidgetPalette` of twelve kinds, per-kind `WidgetConfigPanel`, and `RefreshPolicyForm`, validating limits client-side and saving with one `replaceWidgets` call (FR-F023-12, FR-F023-13).
 - **SR-S046-04:** `DashboardViewer` renders registered widget renderers, `UnavailableWidget` for unregistered kinds, `DeniedWidget`, `FreshnessBadge` with `Refresh`, and the loading, empty, error, stale, computing, conflict, and offline states (FR-F023-12).
 - **SR-S046-05:** `ShareDashboardDialog` reuses F036 components to add group and user shares and create or revoke a link, and shows `share_summary` (FR-F023-09).
@@ -43,7 +43,8 @@ As a dashboard editor, I want to build the layout in the browser, set a refresh 
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/dashboards/{sharing.rs, policy.rs}`; `services/api/src/dashboards/handlers_dashboard.rs` share summary and `on_open` trigger; `services/worker/src/dashboards/scheduler.rs` interval targeting
+- Rust service/API: `crates/domain/src/dashboards/{sharing.rs, policy.rs}` (repository traits only, no SQL); `services/api/src/dashboards/handlers_dashboard.rs` share summary and `on_open` trigger; `services/worker/src/dashboards/scheduler.rs` interval targeting through named repository queries, holding no SQL or connection
+- Persistence: `crates/persistence/src/dashboards/{mod.rs, dashboard_repository.rs, widget_cache_repository.rs}` for `page_dashboards`, `list_scopes_read_since`, `find_active_refresh`, and `prune_cache_unread_since`; F036 shares read through `ShareRepository`
 - Data/migration: none new
 - React/UI: `apps/web/src/features/dashboards/{DashboardPage.tsx, DashboardViewer.tsx, DashboardBuilder.tsx, GridCanvas.tsx, WidgetFrame.tsx, WidgetPalette.tsx, WidgetConfigPanel.tsx, TableWidget.tsx, ReportEmbedWidget.tsx, TextWidget.tsx, ImageWidget.tsx, UnavailableWidget.tsx, DeniedWidget.tsx, FreshnessBadge.tsx, RefreshPolicyForm.tsx, ShareDashboardDialog.tsx, NewDashboardDialog.tsx, widgetRegistry.ts, layoutReducer.ts, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: "Weekly review" fixture with five widgets; share-link guest fixture; MSW handlers for widget data in every status; 40-widget generator for performance

@@ -11,7 +11,7 @@ depends_on: [F017, F020, F048]
 blocks: []
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/assets/**, services/api/src/assets/**, apps/web/src/features/assets/**, services/api/migrations/*_assets_*.sql, services/worker/src/assets/**, testing/features/F057/**]
+owned_paths: [crates/domain/src/assets/**, crates/persistence/src/assets/**, services/api/src/assets/**, apps/web/src/features/assets/**, services/api/migrations/*_assets_*.sql, services/worker/src/assets/**, testing/features/F057/**]
 feature_flag: F057_FEATURE
 flag_default: off
 branch: f057-dam-assets
@@ -25,7 +25,7 @@ finished_at: null
 
 - Branch: `f057-dam-assets`
 - Capability area: advanced modules, digital asset management (spec 5.11 "assets, metadata, renditions, approvals, collections, and usage rights"; 5.4b COLLAB-04 approval instance; 5.8 files scanned, checksummed, versioned, served by expiring URLs; section 10 entitlement records plus feature flags)
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 5, 7; `docs/capability-contracts.md` row F057
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 5, 7; `docs/capability-contracts.md` row F057
 - Module slug: `assets`
 
 ## 2. Requirement specification
@@ -38,11 +38,11 @@ As an asset editor with the DAM entitlement, I want to register files as assets 
 
 ### Functional requirements
 
-- **FR-F057-01:** An actor with `asset-editor` and the tenant entitlement `dam` can create an asset from an existing scanned `file_id` (F017 scan state `clean`) with `title`, `description`, `tags` (≤ 50), `metadata` (typed fields declared per tenant schema), and optional `collection_ids`; the response returns UUIDv7 `id`, `version` 1, `approval_state: draft`, and `rendition_state: pending`.
+- **FR-F057-01:** An actor with `asset-editor` and the tenant entitlement `dam` can create an asset from an existing scanned `file_id` (F017 scan state `clean`) with `title`, `description`, `tags` (≤ 50), `metadata` (typed fields declared per tenant schema), and optional `collection_ids`; the request and response keep `tags` as a JSON string array and `metadata` as a JSON object, while the server resolves each tag to an `asset_tag_definitions` row and writes one `asset_tags` row per tag and one `asset_metadata_values` row per supplied field; the response returns UUIDv7 `id`, `version` 1, `approval_state: draft`, and `rendition_state: pending`.
 - **FR-F057-02:** Creating an asset from a file whose scan state is not `clean` returns `invalid` with `field_errors.file_id = "not_scanned"`; a file the actor cannot read returns `not_found`.
 - **FR-F057-03:** On `asset.created.v1` and on every new file version, the worker generates renditions `thumbnail` (256 px), `preview` (1280 px), and `web` (1920 px, JPEG or WebP) for image assets, and `poster` plus `preview` (720p H.264) for video assets, storing each in object storage with checksum and publishing `asset.rendition-ready.v1` per kind.
 - **FR-F057-04:** `GET /api/v1/assets/{id}/renditions/{kind}` returns a 302 redirect to a signed object URL expiring in 15 minutes when the rendition is ready, `404 not_found` for an unknown kind, and `409 conflict` with `rendition_state: pending|failed` when not ready.
-- **FR-F057-05:** `PUT /api/v1/assets/{id}/rights` sets `{ license: owned|licensed|royalty_free|restricted, licensor?, valid_from?, valid_until?, territories: [ISO-3166]?, channels: [web|print|social|internal]?, notes? }` and publishes `asset.rights-updated.v1`; an asset whose `valid_until` is past is `rights_state: expired` on every read.
+- **FR-F057-05:** `PUT /api/v1/assets/{id}/rights` sets `{ license: owned|licensed|royalty_free|restricted, licensor?, valid_from?, valid_until?, territories: [ISO-3166]?, channels: [web|print|social|internal]?, notes? }` and publishes `asset.rights-updated.v1`; the request and response keep `territories` and `channels` as JSON string arrays, while the server replaces the asset's `asset_rights_territories` rows (each `code` a foreign key into the seeded `asset_territory_codes` lookup) and `asset_rights_channels` rows, so a territory or channel can be joined, filtered, and audited; an asset whose `valid_until` is past is `rights_state: expired` on every read.
 - **FR-F057-06:** Approval uses F020: `PATCH /api/v1/assets/{id}` with `{ approval: request }` creates an approval with the tenant DAM policy; the F020 decision sets `approval_state` to `approved` or `rejected` with decider and reason, and only `approved` assets whose rights are not `expired` are `usable: true`.
 - **FR-F057-07:** `GET /api/v1/assets` lists with cursor paging and filters `q` (title, tags, metadata text), `collection_id`, `approval_state`, `rights_state`, `mime_prefix`, `usable`, and sorts by `title`, `created_at`, or `updated_at`; hidden assets never appear for actors without read ACL.
 - **FR-F057-08:** `POST /api/v1/asset-collections` creates a collection with `name`, `description`, `visibility: private|workspace|tenant`, and `parent_id?` (depth ≤ 5); `PUT /api/v1/asset-collections/{id}/assets` replaces membership with an ordered list of asset IDs (≤ 5,000) and requires read access to every asset.

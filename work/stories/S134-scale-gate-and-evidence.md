@@ -42,7 +42,7 @@ As a release manager, I want `cargo xtask load-test <profile>` to run a profile 
 
 - Infrastructure/container: `.github/workflows/load.yml` scheduled and dispatch triggers (added by the F001 workflow owner from this specification); the load environment's Prometheus queried read-only; no change to `gates.yml`
 - Rust service/API: no route and no service change; `automation/xtask/src/load/{runner.rs, metrics.rs, thresholds.rs, compare.rs, evidence.rs, report.rs, lock.rs, preflight.rs}`
-- Data/migration: no migration and no owned table; `pg_stat_activity`, `pg_stat_replication`, `outbox_events`, `job_runs`, and `dead_letters` are read through the load environment's exporter only
+- Data/migration: no migration, no owned table, and no repository added; `pg_stat_activity`, `pg_stat_replication`, `outbox_events`, `job_runs`, and `dead_letters` are read through the load environment's exporter only, so `runner.rs`, `metrics.rs`, `thresholds.rs`, `compare.rs`, `evidence.rs`, `report.rs`, `lock.rs`, and `preflight.rs` write no table and contain no SQL beyond the session-level advisory lock of SR-S134-09 (decision 2.1)
 - React/UI: none; the only reader-facing artifact is the plain-Markdown `report.md`, whose sections and table headers are asserted in the frontend lane
 - Mocks/fixtures: `testing/fixtures/load.rs` readiness stub returning 200, 503, and a timeout; Prometheus stub returning empty, partial, and complete series; fake k6 with scripted exit codes; a synthetic 8-hour sample stream for the reporter budget
 

@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F052
 depends_on: [F010, F048]
-owned_paths: [crates/domain/src/data-shuttle/**, services/api/src/data-shuttle/**, services/worker/src/data-shuttle/**, services/api/migrations/*_data-shuttle_*.sql, testing/features/F052/**]
+owned_paths: [crates/domain/src/data-shuttle/**, crates/persistence/src/data-shuttle/**, services/api/src/data-shuttle/**, services/worker/src/data-shuttle/**, services/api/migrations/*_data-shuttle_*.sql, testing/features/F052/**]
 feature_flag: F052_FEATURE
 branch: s103-scheduled-file-flows
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F052` Data Shuttle
 - Owner: platform
 - Branch: `s103-scheduled-file-flows`
-- Decision references: `docs/architecture-decisions.md` sections 2–4, 7, 10; `docs/capability-contracts.md` row F052
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 10; `docs/capability-contracts.md` row F052
 
 ## Vertical slice
 
@@ -29,11 +29,11 @@ Out of this slice: run history browsing, replay, archive download UI, and the fl
 
 ## Requirements
 
-- **SR-S103-01:** `POST /api/v1/data-shuttle/flows` and `PATCH /api/v1/data-shuttle/flows/{id}` persist `direction`, `location`, `sheet_id`, `mapping`, `validation`, `schedule`, and `archive_policy` with the validation rules of the ticket, return `FlowResponse` with `version` and `next_run_at`, and reject invalid mapping, coercion, and schedule with `400 invalid` and typed `field_errors` (covers FR-F052-01, FR-F052-02, FR-F052-03).
+- **SR-S103-01:** `POST /api/v1/data-shuttle/flows` and `PATCH /api/v1/data-shuttle/flows/{id}` persist `direction`, `location`, `sheet_id`, `mapping`, `validation`, `schedule`, and `archive_policy` through `ShuttleFlowRepository` and `ShuttleScheduleRepository` in one `UnitOfWork` — the flow row plus one `shuttle_flow_column_maps` row per mapped column, one `shuttle_flow_key_columns` row per key, one `shuttle_flow_required_columns` row per required column, and the `shuttle_schedules` row for a cron flow — return `FlowResponse` with the JSON `mapping`/`validation`/`location` objects reassembled from those rows plus `version` and `next_run_at`, and reject invalid mapping, coercion, and schedule with `400 invalid` and typed `field_errors` (covers FR-F052-01, FR-F052-02, FR-F052-03).
 - **SR-S103-02:** Creating a flow past the `max_flows` limit from the F048 entitlement returns `409 conflict` with `field_errors.flows = "limit_reached"`; every route is behind `RequireModule(ModuleSlug::DataShuttle)` (FR-F052-05, FR-F052-12).
 - **SR-S103-03:** `POST /api/v1/data-shuttle/flows/{id}/run` returns `202` with a `queued` run within 2 seconds and returns `409 conflict` with `field_errors.run = "already_active"` while a run is queued or running (FR-F052-06, NFR-F052-01).
-- **SR-S103-04:** The scheduler claims due `shuttle_schedules` rows with `for update skip locked` every 60 seconds, enqueues one run per flow, recomputes `next_run_at` in the flow timezone, and records `skipped_reason = overlap` when a run is already active (FR-F052-03, FR-F052-06).
-- **SR-S103-05:** The worker fetches the file, computes SHA-256, enforces `max_file_mb` and `max_rows_per_run`, streams rows through mapping and validation into an F010 job, applies the duplicate strategy, records counts, and finishes `succeeded`, `partial`, or `failed` per `on_error`; a checksum already succeeded for the flow finishes with `skipped_reason = duplicate_file` (FR-F052-04, FR-F052-05, FR-F052-07).
+- **SR-S103-04:** The scheduler claims due `shuttle_schedules` rows every 60 seconds through `ShuttleScheduleRepository::claim_due_schedules`, which issues the `for update skip locked` select inside the tick transaction, enqueues one run per flow, recomputes `next_run_at` in the flow timezone, and records `skipped_reason = overlap` when a run is already active (FR-F052-03, FR-F052-06).
+- **SR-S103-05:** The worker fetches the file, computes SHA-256, enforces `max_file_mb` and `max_rows_per_run`, streams rows through the mapping read from `shuttle_flow_column_maps`, `shuttle_flow_key_columns`, and `shuttle_flow_required_columns` into an F010 job, applies the duplicate strategy, records counts and one `shuttle_run_rejections` row per rejected source row through `ShuttleRunRepository`, and finishes `succeeded`, `partial`, or `failed` per `on_error`; a checksum already succeeded for the flow finishes with `skipped_reason = duplicate_file` (FR-F052-04, FR-F052-05, FR-F052-07).
 - **SR-S103-06:** Every processed file is archived to `shuttle/{tenant_id}/{flow_id}/{run_id}` with checksum and `retain_until`; the nightly purge removes expired archives and marks runs `archive_purged` (FR-F052-08).
 - **SR-S103-07:** Runs publish `shuttle-run.started.v1` and `shuttle-run.completed.v1` or `shuttle-run.failed.v1`; flow mutations and run requests require `Idempotency-Key`, honour `If-Match`, and write audit rows; run rows carry the owner actor and `source = data_shuttle`, and a run fails with `sheet_denied` when the owner lost edit rights (FR-F052-11, FR-F052-13).
 - **SR-S103-08:** Runs are JetStream jobs with per-tenant quota, three retries for transient storage errors, 30-minute timeout, and dead-letter state; metrics and spans per NFR-F052-04.

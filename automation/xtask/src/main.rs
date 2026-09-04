@@ -1,5 +1,6 @@
 mod backlog;
 mod content;
+mod persistence;
 mod policy;
 mod release;
 mod support;
@@ -7,7 +8,7 @@ mod support;
 use std::{env, process::ExitCode};
 
 fn usage() -> Result<(), String> {
-    eprintln!("cargo xtask <audit-staged|audit-message FILE|audit-range RANGE|audit-pr TITLE BODY|validate-tickets|validate-work|validate-plan|validate-decisions|check-contracts|check-ownership|check-migrations|test-feature ID|test-all|self-test|scaffold-plan|install-hooks>");
+    eprintln!("cargo xtask <audit-staged|audit-message FILE|audit-range RANGE|audit-pr TITLE BODY|validate-tickets|validate-work|validate-plan|validate-decisions|check-contracts|check-persistence|check-ownership|check-migrations|test-feature ID|test-all|self-test|scaffold-plan|install-hooks>");
     Err("invalid command".into())
 }
 
@@ -23,6 +24,7 @@ fn main() -> ExitCode {
         Some("validate-plan") => backlog::validate_plan(),
         Some("validate-decisions") => backlog::validate_decisions(),
         Some("check-contracts") => release::check_contracts(),
+        Some("check-persistence") => persistence::check_persistence(),
         Some("check-ownership") => policy::check_ownership_command(),
         Some("check-migrations") => release::check_migrations(),
         Some("test-feature") => args.next().ok_or("feature id required".into()).and_then(|id| release::test_feature(&id)),

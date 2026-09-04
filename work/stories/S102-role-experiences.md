@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F051
 depends_on: [S101]
-owned_paths: [crates/domain/src/workapps/**, services/api/src/workapps/**, apps/web/src/features/workapps/**, testing/features/F051/**]
+owned_paths: [crates/domain/src/workapps/**, crates/persistence/src/workapps/**, services/api/src/workapps/**, apps/web/src/features/workapps/**, testing/features/F051/**]
 feature_flag: F051_FEATURE
 branch: s102-role-experiences
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F051` WorkApps
 - Owner: platform
 - Branch: `s102-role-experiences`
-- Decision references: `docs/architecture-decisions.md` sections 2–4, 6, 10; `docs/capability-contracts.md` row F051
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 10; `docs/capability-contracts.md` row F051
 
 ## Vertical slice
 

@@ -116,6 +116,10 @@ Canonical contract: aggregate `repository`; module `persistence`; surface `crate
 
 No UI, no component, no client, and no route. `apps/web/` is untouched and `openapi/v1.json` is byte-identical across this branch, because a repository has no HTTP surface — it is reached only through the handlers other features own. The rendered surfaces delivered in place of a component tree are `crates/persistence/README.md` (the four-step recipe, the statement shapes, the `main.rs` dispatch line, and the `gates.yml` step), `crates/persistence/schema-policy.toml`, and the two renderings of the gate output required by FR-F068-16 — the `BLOCKED:` text form and the single JSON object — which follow the F041 output rules and are tested for parity in `testing/features/F068/frontend/cases.md`.
 
+### Interim specification gate
+
+- `cargo xtask check-persistence` already exists in `automation/xtask/src/persistence.rs` as the specification-level precursor to the runtime gate above, and runs today against the backlog rather than against code that does not exist yet. It enforces three of the rules over every ticket: `persist.array_column` for an array column declared in a DDL line, `persist.jsonb_unjustified` for a ticket keeping `jsonb` without describing it as a payload, and `persist.table_unmapped` for a feature that owns catalog tables but names no repository class. The remaining rules — `persist.raw_sql`, `persist.connection_type`, `persist.escape_hatch`, `persist.table_double_write` — need source files and are delivered by T271, which replaces this implementation rather than adding a second one.
+
 ## 5. TDD and isolated test harness
 
 - [ ] Requirement tests: FR-F068-01 through FR-F068-16 and NFR-F068-01 through NFR-F068-05 in `testing/features/F068/requirements/cases.md`

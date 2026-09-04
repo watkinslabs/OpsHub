@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S102` Role experiences
 - Owner: platform
 - Branch: `t204-app-security-tests`
-- Decision references: `docs/architecture-decisions.md` sections 4, 9, 10; `docs/capability-contracts.md` row F051
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 4, 9, 10; `docs/capability-contracts.md` row F051
 
 ## Objective
 

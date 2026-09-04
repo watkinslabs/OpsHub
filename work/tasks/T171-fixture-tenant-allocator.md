@@ -33,6 +33,7 @@ Implement `allocate-fixture` and lane detection so every test run inside a claim
 - Output/behavior: `tenant_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"opshub-lane:<ID>")`, `schema = lane_<lowercase id>`, `nats_prefix = lane.<lowercase id>.`, `port_base = 20000 + slot * 10`, `clock = 2026-09-03T00:00:00Z`, `worker_id = lane-<lowercase id>`, `seed = crc32(ID)`; printed as `export OPSHUB_TEST_TENANT_ID`, `OPSHUB_TEST_SCHEMA`, `OPSHUB_TEST_NATS_PREFIX`, `OPSHUB_TEST_PORT_BASE`, `OPSHUB_TEST_CLOCK`, `OPSHUB_TEST_WORKER_ID`, `OPSHUB_TEST_SEED`, plus `CARGO_TARGET_DIR` from T170; stored under `[fixture]` in the lane file; `probe_ports` binds each of the ten ports briefly and refuses with `lane.port_in_use <port>` if any is taken; `current_lane(cwd)` returns the lane whose `worktree` is an ancestor of `cwd`; `test-feature` and `test-all` call it and export the environment for child processes
 - Dependencies: T170 target allocation; F004 harness consumes the names (no code dependency)
 - Feature flag: `F043_FEATURE`
+- Data access (decision 2.1): `allocate_fixture` only names the schema `lane_<id>`; it opens no connection, issues no SQL, and carries no `sqlx` dependency. Creating, seeding, and dropping that schema belongs to the F004 harness runtime through `crates/persistence`.
 - Crates: `uuid` with `v5`, `crc32fast`
 
 ## TDD

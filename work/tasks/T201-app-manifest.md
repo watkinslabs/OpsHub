@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F051
 parent_story: S101
 depends_on: [S101]
-owned_paths: [services/api/migrations/*_workapps_*.sql, crates/domain/src/workapps/**, services/api/src/workapps/**, testing/features/F051/database/**, testing/features/F051/api/**]
+owned_paths: [services/api/migrations/*_workapps_*.sql, crates/domain/src/workapps/**, crates/persistence/src/workapps/**, services/api/src/workapps/**, testing/features/F051/database/**, testing/features/F051/api/**]
 feature_flag: F051_FEATURE
 branch: t201-app-manifest
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S101` App composition
 - Owner: platform
 - Branch: `t201-app-manifest`
-- Decision references: `docs/architecture-decisions.md` sections 2–4; `docs/capability-contracts.md` row F051
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4; `docs/capability-contracts.md` row F051
 
 ## Objective
 

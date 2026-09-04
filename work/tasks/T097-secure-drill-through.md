@@ -6,7 +6,7 @@ parent_epic: E005
 parent_feature: F025
 parent_story: S049
 depends_on: [S049]
-owned_paths: [services/api/migrations/*_report_exports_*.sql, crates/domain/src/report_exports/**, services/api/src/report_exports/**, testing/features/F025/api/**, testing/features/F025/database/**]
+owned_paths: [services/api/migrations/*_report_exports_*.sql, crates/domain/src/report_exports/**, crates/persistence/src/report-exports/**, services/api/src/report_exports/**, testing/features/F025/api/**, testing/features/F025/database/**]
 feature_flag: F025_FEATURE
 branch: t097-secure-drill-through
 started_at: null
@@ -24,11 +24,11 @@ finished_at: null
 
 ## Objective
 
-Create the `report_exports` schema and implement viewer-scoped drill-through: the drill key codec, row and group resolution over F021 snapshots, denied-source handling, the drill route, and the `drill-through.opened.v1` event with its audit row.
+Create the `report_exports` schema with its `report_export_columns` and `report_export_widgets` child tables, stand up `ReportExportRepository`, and implement viewer-scoped drill-through: the drill key codec, row and group resolution over F021 snapshots, denied-source handling, the drill route, and the `drill-through.opened.v1` event with its audit row.
 
 ## Specification
 
-- Owned paths: `services/api/migrations/<ts>_report_exports_create_tables.sql` and `.down.sql`, `crates/domain/src/report_exports/{mod.rs, drill.rs, drill_key.rs, job.rs, errors.rs, service.rs}`, `services/api/src/report_exports/{mod.rs, routes.rs, handlers_drill.rs, dto.rs}`
+- Owned paths: `services/api/migrations/<ts>_report_exports_create_tables.sql` and `.down.sql`, `crates/domain/src/report_exports/{mod.rs, drill.rs, drill_key.rs, job.rs, errors.rs, service.rs}`, `crates/persistence/src/report-exports/{mod.rs, report_export_repository.rs}`, `services/api/src/report_exports/{mod.rs, routes.rs, handlers_drill.rs, dto.rs}`
 - Contract/input: `GET /api/v1/reports/{id}/drill/{row_id}` where `row_id` is a snapshot UUIDv7 or `group:<base64url>`; query `snapshot_id?`, `cursor?`, `limit?` (1..200); caller context supplies tenant, actor, and the F021 `ViewerScope` with its `scope_key`.
 - Output/behavior: `DrillResponse` for a row target and `DrillRowsPage` for a group target as specified in ticket section 4; `drill_key.rs` encodes canonical JSON of `{ widget_id, dimensions, filters, snapshot_id }` plus a truncated SHA-256 tag and rejects a bad tag with `DrillError::BadKey → 400 invalid`; `drill.rs` reads the snapshot through F021 `read_rows`, maps aliases to sheets from the report definition, batches one row query per readable sheet, marks unreadable sheets `denied` without issuing a query, strips hidden columns, and fills `restricted_sources`, `hidden_columns`, `meta.aggregate_scope`, and `meta.hidden_row_count`; unknown row → `404 not_found`, unretained `snapshot_id` → `409 conflict` with `reason: "snapshot_expired"` and the current snapshot; every call publishes `drill-through.opened.v1` and writes the `report.drill-through` audit row; deep links are `/w/{workspace_id}/sheets/{sheet_id}?row={source_row_id}` for allowed sources and `null` otherwise.
 - Migration: `report_exports` with the columns, check constraints, unique `(tenant_id, requested_by, idempotency_key)`, and the three indexes from ticket section 4, plus the matching down migration.
