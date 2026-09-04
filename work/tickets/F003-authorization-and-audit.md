@@ -11,7 +11,7 @@ depends_on: [F002, F038]
 blocks: [F005, F016, F036, F021, F027, F028, F048]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/authz/**, services/api/src/authz/**, apps/web/src/features/authz/**, services/api/migrations/*_authz_*.sql, testing/features/F003/**]
+owned_paths: [crates/persistence/src/authz/**, crates/domain/src/authz/**, services/api/src/authz/**, apps/web/src/features/authz/**, services/api/migrations/*_authz_*.sql, testing/features/F003/**]
 feature_flag: F003_FEATURE
 flag_default: off
 branch: f003-authorization-and-audit

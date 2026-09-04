@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F054
 depends_on: [F019, F030, F048]
-owned_paths: [crates/domain/src/bridge/**, services/api/src/bridge/**, services/worker/src/bridge/**, services/api/migrations/*_bridge_*.sql, testing/features/F054/**]
+owned_paths: [crates/domain/src/bridge/**, crates/persistence/src/bridge/**, services/api/src/bridge/**, services/worker/src/bridge/**, services/api/migrations/*_bridge_*.sql, testing/features/F054/**]
 feature_flag: F054_FEATURE
 branch: s107-cross-system-workflows
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F054` Bridge
 - Owner: platform
 - Branch: `s107-cross-system-workflows`
-- Decision references: `docs/architecture-decisions.md` sections 2–4, 7, 10; `docs/capability-contracts.md` row F054
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 10; `docs/capability-contracts.md` row F054
 
 ## Vertical slice
 
@@ -27,19 +27,20 @@ As a workflow editor, I want to define, validate, publish, and run a multi-step 
 
 ## Requirements
 
-- **SR-S107-01:** `POST /api/v1/bridge/flows` and `PATCH /api/v1/bridge/flows/{id}` accept 1–50 typed steps with a single leading trigger; 51 steps or an unknown step kind → `400 invalid` with `field_errors.steps` (covers FR-F054-01, FR-F054-02).
-- **SR-S107-02:** `connector_action` steps resolve an F030 action schema and a connection the owner may use at publish time; a foreign or revoked connection → `403 denied` with `field_errors.steps[i].config.connection_id` (FR-F054-03).
-- **SR-S107-03:** `POST /api/v1/bridge/flows/{id}/publish` runs `validate_graph` (cycle, reachability, `for_each` ≤ 1,000, transform ≤ 500 AST nodes) and writes an immutable `bridge_flow_versions` row; a cycle → `409 conflict` `field_errors.steps = "cycle"` (FR-F054-04, FR-F054-05).
+- **SR-S107-01:** `POST /api/v1/bridge/flows` and `PATCH /api/v1/bridge/flows/{id}` accept 1–50 typed steps with a single leading trigger, keep the `steps[]` array in the request and response, and persist them through `BridgeFlowRepository::replace_draft_steps` as one `bridge_flow_steps` row per step with `step_order` plus the matching per-kind config row (`bridge_flow_step_triggers`, `bridge_flow_step_connector_actions`, `bridge_flow_step_opshub_actions`, `bridge_flow_step_transforms`, `bridge_flow_step_waits`); 51 steps or an unknown step kind → `400 invalid` with `field_errors.steps` (covers FR-F054-01, FR-F054-02).
+- **SR-S107-02:** `connector_action` steps resolve an F030 action schema and a connection the owner may use at publish time, storing the action and `connection_id` in `bridge_flow_step_connector_actions` and each `input` entry as a `bridge_flow_step_mappings` row while the API keeps the `input` object; a foreign or revoked connection → `403 denied` with `field_errors.steps[i].config.connection_id` (FR-F054-03).
+- **SR-S107-03:** `POST /api/v1/bridge/flows/{id}/publish` runs `validate_graph` (cycle, reachability, `for_each` ≤ 1,000, transform ≤ 500 AST nodes) over the step rows read by `find_flow_with_steps`, with `bridge_flow_step_branches.branch_order` fixing branch evaluation order and `next_step_id` carrying the `otherwise` target, and writes an immutable `bridge_flow_versions` row through `BridgeFlowVersionRepository::insert_version`; a cycle → `409 conflict` `field_errors.steps = "cycle"` (FR-F054-04, FR-F054-05).
 - **SR-S107-04:** `POST /api/v1/bridge/flows/{id}/run` returns `202` with `run_id` within 2 seconds, is idempotent by key, refuses unpublished flows with `409`, and enforces `max_runs_per_day` with `429 rate_limited` (FR-F054-06, NFR-F054-01).
-- **SR-S107-05:** `BridgeExecutor` in `services/worker/src/bridge/` executes steps sequentially with per-step timeout ≤ 300 s, backoff 1 s/4 s/16 s for `unavailable`/`rate_limited`, writes one `bridge_run_steps` row per attempt, and redacts secrets in snapshots (FR-F054-07, FR-F054-08, NFR-F054-02).
+- **SR-S107-05:** `BridgeExecutor` in `services/worker/src/bridge/` loads the pinned version with `BridgeFlowVersionRepository::load_version_snapshot`, executes steps sequentially with per-step timeout ≤ 300 s, backoff 1 s/4 s/16 s for `unavailable`/`rate_limited`, writes one `bridge_run_steps` row per attempt through `BridgeRunStepRepository::append_step_attempt` with the run transition in the same `UnitOfWork`, and redacts secrets in snapshots; the executor and step runner contain no SQL (FR-F054-07, FR-F054-08, NFR-F054-02).
 - **SR-S107-06:** `wait` steps with `delay` or `approval` park the run in `waiting`, release the worker slot, and resume from the F004 scheduler or `approval.decided.v1` (FR-F054-09).
 - **SR-S107-07:** Run transitions publish `bridge-run.started.v1`, `bridge-run.step-completed.v1`, `bridge-run.completed.v1`, `bridge-run.failed.v1` through the outbox and write audit rows; the router is gated by `RequireModule(ModuleSlug::Bridge)` and entitlement limits `max_flows`, `max_steps_per_flow` (FR-F054-12, FR-F054-13).
 
 ## Surfaces
 
 - Infrastructure/container: JetStream subject `workflow-run.bridge` on the F019 stream; scheduler entries for `wait.delay` resumes
+- Data access: `crates/persistence/src/bridge/{mod.rs, flow_repository.rs, flow_step_repository.rs, version_repository.rs, run_repository.rs, run_step_repository.rs}` hold every SQL statement for this slice — `BridgeFlowRepository` owns `bridge_flows` and its step, per-kind config, mapping, and branch child tables, `BridgeFlowVersionRepository` owns `bridge_flow_versions`, `BridgeRunRepository` owns `bridge_runs`, `BridgeRunStepRepository` owns `bridge_run_steps`; the domain services, the `services/api/src/bridge` handlers, the worker executor, and the fixtures depend on the repository traits and contain no `sqlx::query*` call (decision section 2.1)
 - Rust service/API: `crates/domain/src/bridge/{mod.rs, flow.rs, step.rs, graph.rs, run.rs, redact.rs, errors.rs, service.rs}`; `services/api/src/bridge/{mod.rs, routes.rs, handlers_flow.rs, handlers_run.rs, dto.rs}`; `services/worker/src/bridge/{mod.rs, executor.rs, step_runner.rs, connector_step.rs, wait_step.rs, resume.rs}`
-- Data/migration: `services/api/migrations/<ts>_bridge_create_tables.sql` creating `bridge_flows`, `bridge_flow_versions`, `bridge_runs`, `bridge_run_steps` with indexes from ticket section 4
+- Data/migration: `services/api/migrations/<ts>_bridge_create_tables.sql` creating `bridge_flows`, `bridge_flow_steps`, `bridge_flow_step_triggers`, `bridge_flow_step_connector_actions`, `bridge_flow_step_opshub_actions`, `bridge_flow_step_transforms`, `bridge_flow_step_waits`, `bridge_flow_step_mappings`, `bridge_flow_step_branches`, `bridge_flow_versions`, `bridge_runs`, `bridge_run_steps` with the constraints and indexes from ticket section 4
 - React/UI: none in this story (S108 covers builder and console)
 - Mocks/fixtures: `testing/fixtures/bridge.rs` tenants A/B, editor, viewer, entitlement with limits, scripted `ActionInvoker` mock for `jira`, `slack`, `salesforce`; in-memory outbox; in-process F019 queue; approval decision helper
 
@@ -49,7 +50,7 @@ As a workflow editor, I want to define, validate, publish, and run a multi-step 
 - Feature flag: `F054_FEATURE`
 - Targeted command: `cargo xtask test-feature F054`
 - Full command: `cargo xtask test-all`
-- First failing tests: `flow_publish_rejects_cycle`, `flow_publish_denies_foreign_connection`, `run_enqueue_is_idempotent_by_key`, `executor_retries_rate_limited_then_fails_step`, `executor_redacts_secrets_in_snapshots`, `wait_approval_resumes_on_decision`, `bridge_route_denied_without_entitlement`
+- First failing tests: `flow_steps_persist_as_rows_in_step_order`, `flow_steps_reject_second_trigger_row`, `flow_publish_rejects_cycle`, `flow_publish_denies_foreign_connection`, `run_enqueue_is_idempotent_by_key`, `executor_retries_rate_limited_then_fails_step`, `executor_redacts_secrets_in_snapshots`, `wait_approval_resumes_on_decision`, `bridge_route_denied_without_entitlement`
 
 ## Exit criteria
 

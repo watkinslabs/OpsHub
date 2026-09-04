@@ -11,7 +11,7 @@ depends_on: [F003, F004]
 blocks: [F006, F036, F045, F049]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/workspaces/**, services/api/src/workspaces/**, apps/web/src/features/workspaces/**, services/api/migrations/*_workspaces_*.sql, testing/features/F005/**]
+owned_paths: [crates/persistence/src/workspaces/**, crates/domain/src/workspaces/**, services/api/src/workspaces/**, apps/web/src/features/workspaces/**, services/api/migrations/*_workspaces_*.sql, testing/features/F005/**]
 feature_flag: F005_FEATURE
 flag_default: off
 branch: f005-workspace-navigation

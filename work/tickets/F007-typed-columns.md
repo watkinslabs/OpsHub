@@ -11,7 +11,7 @@ depends_on: [F006]
 blocks: [F008, F009, F035, F011, F014, F018]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/columns/**, services/api/src/columns/**, apps/web/src/features/columns/**, services/api/migrations/*_columns_*.sql, testing/features/F007/**]
+owned_paths: [crates/persistence/src/columns/**, crates/domain/src/columns/**, services/api/src/columns/**, apps/web/src/features/columns/**, services/api/migrations/*_columns_*.sql, testing/features/F007/**]
 feature_flag: F007_FEATURE
 flag_default: off
 branch: f007-typed-columns

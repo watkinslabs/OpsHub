@@ -130,7 +130,7 @@ Canonical contract: `docs/capability-contracts.md` row F054 (aggregate `bridge-w
 
 - Test harness path: `testing/features/F054/`
 - Feature flag: `F054_FEATURE`
-- Fixture/seed factory: `testing/fixtures/bridge.rs` builds tenant A (editor, viewer), tenant B, active `bridge` entitlement with `max_flows 10`, `max_steps_per_flow 50`, `max_runs_per_day 100`, mocked Jira/Slack/Salesforce connections, a seeded 5-step flow, and 200 historical runs
+- Fixture/seed factory: `testing/fixtures/bridge.rs` writes every row through the `crates/persistence/src/bridge/` repositories and builds tenant A (editor, viewer), tenant B, active `bridge` entitlement with `max_flows 10`, `max_steps_per_flow 50`, `max_runs_per_day 100`, mocked Jira/Slack/Salesforce connections, a seeded 5-step flow, and 200 historical runs
 - Deterministic test data: fixed UUIDv7 seeds, fixed clock `2026-09-03T00:00:00Z`, UTC, connector mocks return scripted responses by call index
 - Mock/stub contracts: F030 `ActionInvoker` mock recording calls; F019 queue in-process; outbox recorded in memory; F020 approval decided by test helper
 - Parallel isolation: one schema per test worker, tenant ID per test, unique JetStream subject suffix per worker

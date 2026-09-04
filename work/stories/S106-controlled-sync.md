@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F053
 depends_on: [S105]
-owned_paths: [crates/domain/src/datamesh/**, services/api/src/datamesh/**, services/worker/src/datamesh/**, apps/web/src/features/datamesh/**, testing/features/F053/**]
+owned_paths: [crates/domain/src/datamesh/**, crates/persistence/src/datamesh/**, services/api/src/datamesh/**, services/worker/src/datamesh/**, apps/web/src/features/datamesh/**, testing/features/F053/**]
 feature_flag: F053_FEATURE
 branch: s106-controlled-sync
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F053` DataMesh
 - Owner: platform
 - Branch: `s106-controlled-sync`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 6, 7; `docs/capability-contracts.md` row F053
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 7; `docs/capability-contracts.md` row F053
 
 ## Vertical slice
 
@@ -29,11 +29,11 @@ Out of this slice: mapping definition and preview (S105); automatic conflict res
 
 ## Requirements
 
-- **SR-S106-01:** `POST /api/v1/datamesh/mappings/{id}/sync` returns `202` with a `queued` run within 2 seconds, rejects a second active run with `409 already_active`, and a repeated `source_version_cursor` finishes `succeeded` with zero writes (covers FR-F053-05).
-- **SR-S106-02:** The worker writes matched fields through the F008 bulk cell service as the owner honouring `overwrite`, applies `unmatched_policy` and `deletion_policy`, attaches F009 `datamesh` links to every written cell, and fails with `sheet_denied` when the owner lost `sheet-editor`; changed-row sets above `max_rows_per_sync` fail with `too_many_rows` before writing (FR-F053-06, FR-F053-10, FR-F053-13).
-- **SR-S106-03:** Bidirectional maps write back target-only changes and record `both_changed` conflicts with both values and versions when both sides changed (FR-F053-07).
-- **SR-S106-04:** `GET /api/v1/datamesh/mappings/{id}/conflicts` pages open conflicts with `kind` and `status` filters; `POST /api/v1/datamesh/conflicts/{id}/resolve` applies `keep_source`, `keep_target`, or `manual_value`, marks the conflict resolved, and returns `409 conflict` when either row version moved (FR-F053-08).
-- **SR-S106-05:** `on_change` mappings run at most once per 60 seconds per mapping from source-sheet row and cell events, ignoring events tagged `source = datamesh`; `scheduled` mappings run by cron; finished runs publish `mapping.synced.v1` and each conflict publishes `mapping-conflict.detected.v1` (FR-F053-09, FR-F053-11).
+- **SR-S106-01:** `POST /api/v1/datamesh/mappings/{id}/sync` returns `202` with a `queued` run inserted by `MeshRunRepository::insert_queued_run` within 2 seconds, rejects a second active run with `409 already_active` from the partial unique index, and a repeated `source_cursor_sheet_version` finishes `succeeded` with zero writes (covers FR-F053-05).
+- **SR-S106-02:** The worker reads the `datamesh_mapping_field_maps` rows through `MappingRepository::list_field_maps` and writes matched fields through the F008 bulk cell service as the owner honouring `overwrite`, applies `unmatched_policy` and `deletion_policy`, attaches F009 `datamesh` links to every written cell, and fails with `sheet_denied` when the owner lost `sheet-editor`; changed-row sets above `max_rows_per_sync` fail with `too_many_rows` before writing (FR-F053-06, FR-F053-10, FR-F053-13).
+- **SR-S106-03:** Field-map rows with `direction: bidirectional` write back target-only changes and record `both_changed` conflicts through `ConflictRepository::insert_open_conflicts`, holding both typed cell values and both row versions, when both sides changed (FR-F053-07).
+- **SR-S106-04:** `GET /api/v1/datamesh/mappings/{id}/conflicts` pages open conflicts with `kind` and `status` filters; `POST /api/v1/datamesh/conflicts/{id}/resolve` applies `keep_source`, `keep_target`, or `manual_value`, marks the conflict resolved, and returns `409 conflict` when either row version moved; the cell write and the conflict update share one `UnitOfWork` (FR-F053-08).
+- **SR-S106-05:** `on_change` mappings, resolved by `MappingRepository::list_enabled_mappings_for_source_sheet`, run at most once per 60 seconds per mapping from source-sheet row and cell events, ignoring events tagged `source = datamesh`; `scheduled` mappings are claimed by `MappingRepository::claim_due_scheduled_mappings` on their `cron_expression`; finished runs publish `mapping.synced.v1` and each conflict publishes `mapping-conflict.detected.v1` (FR-F053-09, FR-F053-11).
 - **SR-S106-06:** `MappingEditorPage` with `Setup`, `Preview`, `Runs`, and `Conflicts` tabs renders key and field map tables, preview counts and sample with change markers, run history polling while active, and side-by-side conflicts with `ResolveDialog`, with loading, empty, error, denied, not-entitled, stale, and offline states, and passes axe (FR-F053-14, NFR-F053-03).
 - **SR-S106-07:** Non-`data-admin` users see everything read-only without `Sync now` or resolve; navigation shows `DataMesh` only when `useModuleAllowed('datamesh')` is true (FR-F053-12, FR-F053-14).
 - **SR-S106-08:** A 10,000-changed-row sync finishes in under 2 minutes; conflicts list p95 under 500 ms; runs retry three times, time out at 15 minutes, and dead-letter with the reason on the run (NFR-F053-01, NFR-F053-04).
@@ -41,8 +41,9 @@ Out of this slice: mapping definition and preview (S105); automatic conflict res
 ## Surfaces
 
 - Infrastructure/container: JetStream subject `datamesh.sync` and consumer on the sheet row/cell event subjects
+- Data access: `crates/persistence/src/datamesh/{run_repository.rs, conflict_repository.rs}` add `MeshRunRepository` (owns `datamesh_runs`: `insert_queued_run`, `find_active_run`, `find_succeeded_run_by_cursor`, `claim_run`, `finish_run`) and `ConflictRepository` (owns `datamesh_conflicts`: `list_conflicts_page`, `count_open_conflicts`, `insert_open_conflicts`, `find_open_conflict`, `resolve_conflict`); `MappingRepository::advance_cursor`, `list_enabled_mappings_for_source_sheet`, and `claim_due_scheduled_mappings` serve the writer, listener, and scheduler. `sync_consumer.rs`, `writer.rs`, `change_listener.rs`, `scheduler.rs`, and the two handler modules contain no SQL, connection, or `for update` statement of their own; each run's writes, conflicts, counts, and cursor advance commit in one `UnitOfWork` (decision section 2.1)
 - Rust service/API: `crates/domain/src/datamesh/{run.rs, plan.rs, conflict.rs, service_sync.rs}`; `services/api/src/datamesh/{handlers_sync.rs, handlers_conflict.rs}`; `services/worker/src/datamesh/{sync_consumer.rs, writer.rs, change_listener.rs, scheduler.rs}`
-- Data/migration: none new; uses the S105 tables
+- Data/migration: none new; uses the six S105 tables through the repositories above
 - React/UI: `apps/web/src/features/datamesh/{MappingListPage.tsx, MappingRow.tsx, MappingEditorPage.tsx, SheetPairPicker.tsx, MatchKeyTable.tsx, FieldMapTable.tsx, FieldMapRow.tsx, ExpressionField.tsx, SyncModeFields.tsx, PreviewTab.tsx, PreviewCounts.tsx, PreviewTable.tsx, RunsTab.tsx, RunRow.tsx, ConflictsTab.tsx, ConflictRow.tsx, ResolveDialog.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: seeded mapping with a completed run and two open conflicts; recorded `row.updated.v1` payloads for the listener; MSW handlers for component tests; Playwright against the real API
 

@@ -6,7 +6,7 @@ parent_epic: E001
 parent_feature: F068
 parent_story: S135
 depends_on: [S135]
-owned_paths: [crates/persistence/src/lib.rs, crates/persistence/src/repository/**, crates/persistence/src/users/**, testing/features/F068/api/**]
+owned_paths: [crates/persistence/src/lib.rs, crates/persistence/src/repository/**, testing/features/F068/api/**]
 feature_flag: F068_FEATURE
 branch: t269-repository-base-contract
 started_at: null
@@ -24,7 +24,7 @@ finished_at: null
 
 ## Objective
 
-Implement the sealed `Repository` contract, the `RepositorySpec` declaration surface, and the single `BaseRepository` implementation that applies the tenant predicate, soft-delete filter, optimistic version check, audit row, and outbox row, together with the worked `UserRepository` over F002's `users` table.
+Implement the sealed `Repository` contract, the `RepositorySpec` declaration surface, and the single `BaseRepository` implementation that applies the tenant predicate, soft-delete filter, optimistic version check, audit row, and outbox row, together with the worked `UserRepository` (F002's file, referenced as the worked example rather than owned here) over F002's `users` table.
 
 ## Specification
 

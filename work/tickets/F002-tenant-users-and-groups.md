@@ -11,7 +11,7 @@ depends_on: [F001]
 blocks: [F038, F003, F037, F026, F033, F048]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/tenants/**, services/api/src/tenants/**, apps/web/src/features/tenants/**, services/api/migrations/*_tenants_*.sql, testing/features/F002/**]
+owned_paths: [crates/persistence/src/tenants/**, crates/persistence/src/users/**, crates/domain/src/tenants/**, services/api/src/tenants/**, apps/web/src/features/tenants/**, services/api/migrations/*_tenants_*.sql, testing/features/F002/**]
 feature_flag: F002_FEATURE
 flag_default: off
 branch: f002-tenant-users-and-groups

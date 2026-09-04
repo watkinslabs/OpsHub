@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S119` Formatting rules
 - Owner: platform
 - Branch: `t238-formatting-ui`
-- Decision references: `docs/architecture-decisions.md` sections 6, 9; `docs/capability-contracts.md` row F060
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 6, 9; `docs/capability-contracts.md` row F060
 
 ## Objective
 

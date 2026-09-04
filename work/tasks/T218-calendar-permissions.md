@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F055
 parent_story: S109
 depends_on: [T217]
-owned_paths: [crates/domain/src/calendar-app/**, services/api/src/calendar-app/**, testing/features/F055/api/**, testing/features/F055/requirements/**, testing/features/F055/performance/**]
+owned_paths: [crates/domain/src/calendar-app/**, crates/persistence/src/calendar-app/**, services/api/src/calendar-app/**, testing/features/F055/api/**, testing/features/F055/requirements/**, testing/features/F055/performance/**]
 feature_flag: F055_FEATURE
 branch: t218-calendar-permissions
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S109` Multi-source calendar
 - Owner: platform
 - Branch: `t218-calendar-permissions`
-- Decision references: `docs/architecture-decisions.md` sections 4, 9, 10; `docs/capability-contracts.md` row F055
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 4, 9, 10; `docs/capability-contracts.md` row F055
 
 ## Objective
 
@@ -28,9 +28,10 @@ Enforce calendar-level and per-source permissions, module entitlement gating, `c
 
 ## Specification
 
-- Owned paths: `crates/domain/src/calendar-app/{authz.rs, aggregate.rs}`, `services/api/src/calendar-app/{routes.rs, guard.rs, handlers_events.rs}`, `testing/features/F055/api/permission_tests.rs`, `testing/features/F055/performance/events_bench.rs`, `testing/features/F055/requirements/cases.md`
+- Owned paths: `crates/domain/src/calendar-app/{authz.rs, aggregate.rs}`, `crates/persistence/src/calendar-app/source_repository.rs`, `services/api/src/calendar-app/{routes.rs, guard.rs, handlers_events.rs}`, `testing/features/F055/api/permission_tests.rs`, `testing/features/F055/performance/events_bench.rs`, `testing/features/F055/requirements/cases.md`
 - Contract/input: gateway context `{ tenant_id, actor_id, roles, scopes, correlation_id }`; F003 `authz::require(actor, Permission::CalendarEdit, calendar)` for mutations and `Permission::CalendarRead` via the calendar ACL and F036 shares for reads; per-source `Permission::SheetRead`/`SheetEdit` checks and F013 view filters; `RequireModule(ModuleSlug::CalendarApp)` from `crates/auth/src/entitlements/`.
-- Output/behavior: mutations require `calendar-editor` on the workspace or calendar ownership, otherwise `403 denied`; reads follow the calendar ACL; `aggregate` evaluates each source with the viewer's identity, omits unreadable sources, reports only `hidden_sources: n`, and sets `can_edit` from `SheetEdit` on the source row set; foreign-tenant IDs → `404 not_found`; non-entitled tenant → `403 denied` with `field_errors.module` before handlers run; event spans carry `tenant_id`, `calendar_id`, `source_count`, `hidden_sources`, `correlation_id`; metric `calendar_events_duration_seconds` recorded; 31-day window over 20 sources totalling 100,000 rows under 500 ms p95.
+- Output/behavior: mutations require `calendar-editor` on the workspace or calendar ownership, otherwise `403 denied`; reads follow the calendar ACL; `aggregate` evaluates each source with the viewer's identity by composing `CalendarSourceRepository::load_sources_with_column_map` with the F013/F006 row window queries — the permission predicate is passed to those named queries, never spliced into SQL in the handler — omits unreadable sources, reports only `hidden_sources: n`, and sets `can_edit` from `SheetEdit` on the source row set; foreign-tenant IDs → `404 not_found`; non-entitled tenant → `403 denied` with `field_errors.module` before handlers run; event spans carry `tenant_id`, `calendar_id`, `source_count`, `hidden_sources`, `correlation_id`; metric `calendar_events_duration_seconds` recorded; 31-day window over 20 sources totalling 100,000 rows under 500 ms p95.
+- Data access: `authz.rs` and `aggregate.rs` contain no SQL and reach every table through the `crates/persistence/src/calendar-app/` repositories; the permission and performance fixtures build calendars, sources, and column-map rows through `CalendarRepository` and `CalendarSourceRepository` rather than raw inserts, and the 100,000-row benchmark measures the repository named queries as the production path uses them (decision section 2.1).
 - Dependencies: T217 services; F003 engine and fixture bindings; F036 share grants for viewer access; F048 evaluator in app state.
 - Feature flag: `F055_FEATURE` gates router mounting.
 

@@ -11,7 +11,7 @@ depends_on: [F005]
 blocks: [F007, F016, F017]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/sheets/**, services/api/src/sheets/**, apps/web/src/features/sheets/**, services/api/migrations/*_sheets_*.sql, testing/features/F006/**]
+owned_paths: [crates/persistence/src/sheets/**, crates/domain/src/sheets/**, services/api/src/sheets/**, apps/web/src/features/sheets/**, services/api/migrations/*_sheets_*.sql, testing/features/F006/**]
 feature_flag: F006_FEATURE
 flag_default: off
 branch: f006-sheets-boards-items

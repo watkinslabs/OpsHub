@@ -11,7 +11,7 @@ depends_on: [F007]
 blocks: [F010, F013, F021, F058, F060, F061]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/grid/**, services/api/src/grid/**, apps/web/src/features/grid/**, services/api/migrations/*_grid_*.sql, testing/features/F008/**]
+owned_paths: [crates/persistence/src/grid/**, crates/domain/src/grid/**, services/api/src/grid/**, apps/web/src/features/grid/**, services/api/migrations/*_grid_*.sql, testing/features/F008/**]
 feature_flag: F008_FEATURE
 flag_default: off
 branch: f008-grid-editing

@@ -11,7 +11,7 @@ depends_on: [F001]
 blocks: []
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/persistence/src/lib.rs, crates/persistence/src/repository/**, crates/persistence/src/uow/**, crates/persistence/src/users/**, crates/persistence/schema-policy.toml, automation/xtask/src/persistence.rs, testing/fixtures/persistence/**, testing/features/F068/**]
+owned_paths: [crates/persistence/src/lib.rs, crates/persistence/src/repository/**, crates/persistence/src/uow/**, crates/persistence/schema-policy.toml, automation/xtask/src/persistence.rs, testing/fixtures/persistence/**, testing/features/F068/**]
 feature_flag: F068_FEATURE
 flag_default: off
 branch: f068-persistence-layer-and-data-access-classes
@@ -69,7 +69,7 @@ As a platform maintainer, I want one `Repository` contract that already applies 
 
 ### Scope
 
-Included: the sealed `Repository` contract and its single `BaseRepository` implementation; `RepositorySpec` and the `Binder`, `Predicate`, and `Column` types; tenant, soft-delete, version, audit, and outbox application; `UnitOfWork` and the pool-versus-transaction handle; the signed-cursor keyset pagination built on F028's `SignedCursor`; `RepoError` and its mapping contract; the worked `UserRepository` over F002's `users` table with three named queries; `crates/persistence/schema-policy.toml`; `cargo xtask check-persistence` with its six rules, baseline, and exit codes 0/1/2/3; the conformance registry; and the harness under `testing/features/F068/`.
+Included: the sealed `Repository` contract and its single `BaseRepository` implementation; `RepositorySpec` and the `Binder`, `Predicate`, and `Column` types; tenant, soft-delete, version, audit, and outbox application; `UnitOfWork` and the pool-versus-transaction handle; the signed-cursor keyset pagination built on F028's `SignedCursor`; `RepoError` and its mapping contract; the worked `UserRepository` (owned by F002, shown here as the reference implementation) over F002's `users` table with three named queries; `crates/persistence/schema-policy.toml`; `cargo xtask check-persistence` with its six rules, baseline, and exit codes 0/1/2/3; the conformance registry; and the harness under `testing/features/F068/`.
 
 Excluded: the connection pool, configuration, and secret loading in `crates/persistence/src/runtime/**` (F004, which this feature consumes and never edits); the `outbox_events`, `job_runs`, and `dead_letters` tables and the publisher that drains them (F004); the `audit_events` table, roles, and policy engine (F003); the `tenants`, `users`, `groups`, and `group_members` migrations and their HTTP surface (F002); the `SignedCursor` type, `ListQuery` parsing, and OpenAPI generation (F028); the retention and purge job that calls `purge` (F027); and every aggregate repository other than `UserRepository` — each later feature adds its own specification under `crates/persistence/src/<aggregate>/` and claims that path in its own ticket.
 

@@ -11,7 +11,7 @@ depends_on: [F007, F009]
 blocks: [F018, F021, F039, F053, F060]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/formulas/**, services/api/src/formulas/**, apps/web/src/features/formulas/**, services/api/migrations/*_formulas_*.sql, testing/features/F035/**]
+owned_paths: [crates/persistence/src/formulas/**, crates/domain/src/formulas/**, services/api/src/formulas/**, apps/web/src/features/formulas/**, services/api/migrations/*_formulas_*.sql, testing/features/F035/**]
 feature_flag: F035_FEATURE
 flag_default: off
 branch: f035-formula-engine

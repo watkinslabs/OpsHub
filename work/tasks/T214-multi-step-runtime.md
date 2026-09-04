@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F054
 parent_story: S107
 depends_on: [T213]
-owned_paths: [crates/domain/src/bridge/**, services/api/src/bridge/**, services/worker/src/bridge/**, testing/features/F054/api/**, testing/features/F054/requirements/**, testing/features/F054/performance/**]
+owned_paths: [crates/domain/src/bridge/**, crates/persistence/src/bridge/**, services/api/src/bridge/**, services/worker/src/bridge/**, testing/features/F054/api/**, testing/features/F054/requirements/**, testing/features/F054/performance/**]
 feature_flag: F054_FEATURE
 branch: t214-multi-step-runtime
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S107` Cross-system workflows
 - Owner: platform
 - Branch: `t214-multi-step-runtime`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 7, 9; `docs/capability-contracts.md` row F054
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 9; `docs/capability-contracts.md` row F054
 
 ## Objective
 
@@ -28,10 +28,11 @@ Implement run enqueue and the worker executor that runs published flow versions 
 
 ## Specification
 
-- Owned paths: `crates/domain/src/bridge/{run.rs, redact.rs, branch.rs, service_runs.rs}`, `services/api/src/bridge/handlers_run.rs`, `services/worker/src/bridge/{mod.rs, executor.rs, step_runner.rs, connector_step.rs, opshub_step.rs, transform_step.rs, wait_step.rs, resume.rs}`
+- Owned paths: `crates/domain/src/bridge/{run.rs, redact.rs, branch.rs, service_runs.rs}`, `crates/persistence/src/bridge/{run_repository.rs, run_step_repository.rs}`, `services/api/src/bridge/handlers_run.rs`, `services/worker/src/bridge/{mod.rs, executor.rs, step_runner.rs, connector_step.rs, opshub_step.rs, transform_step.rs, wait_step.rs, resume.rs}`
 - Contract/input: `POST /api/v1/bridge/flows/{id}/run` with `RunFlowRequest { input (≤ 256 KB), idempotency_key }`; JetStream subject `workflow-run.bridge` carrying `{ tenant_id, run_id, flow_id, flow_version, correlation_id }`; resume messages from the F004 scheduler (`wait.delay`) and `approval.decided.v1` (`wait.approval`); F030 `ActionInvoker::invoke(connection_id, action, input) -> Result<Value, ConnectorError>`.
-- Output/behavior: enqueue inserts `bridge_runs` (`queued`) and the outbox event `bridge-run.started.v1` when the executor picks it up; idempotent by `(tenant_id, flow_id, idempotency_key)`; `429 rate_limited` above `max_runs_per_day`; executor pins `flow_version`, runs steps sequentially, per-step timeout 5–300 s (default 60), retries `unavailable`/`rate_limited` at 1 s, 4 s, 16 s then marks step and run `failed` with `bridge-run.failed.v1`; every attempt writes a `bridge_run_steps` row with redacted `input_snapshot`/`output_snapshot` (keys matching `authorization|token|secret|password` → `***`, payload truncated at 256 KB with `truncated: true`); `bridge-run.step-completed.v1` per successful step, `bridge-run.completed.v1` at the end; `branch` evaluates typed conditions in order and follows `otherwise`; `for_each` runs the sub-mapping over ≤ 1,000 items; `wait` sets `waiting`, releases the slot, and resumes; connection access re-checked per step; per-tenant quota and dead-letter behavior inherited from the F019 consumer middleware.
-- Dependencies: T213 flow model and versions; F019 queue, quota, idempotency, and dead-letter middleware; F030 `ActionInvoker`; F018 action executor; F020 approvals; F035 restricted evaluator; F004 scheduler.
+- Output/behavior: enqueue inserts `bridge_runs` (`queued`) and the outbox event `bridge-run.started.v1` when the executor picks it up; idempotent by `(tenant_id, flow_id, idempotency_key)`; `429 rate_limited` above `max_runs_per_day`; executor pins `flow_version`, runs steps sequentially, per-step timeout 5–300 s (default 60), retries `unavailable`/`rate_limited` at 1 s, 4 s, 16 s then marks step and run `failed` with `bridge-run.failed.v1`; every attempt writes a `bridge_run_steps` row with redacted `input_snapshot`/`output_snapshot` (keys matching `authorization|token|secret|password` → `***`, payload truncated at 256 KB with `truncated: true`); `bridge-run.step-completed.v1` per successful step, `bridge-run.completed.v1` at the end; `branch` evaluates the snapshot's conditions in their stored `branch_order` and falls through to the step's `next_step_id` as `otherwise`; `for_each` runs the sub-mapping over ≤ 1,000 items; `wait` sets `waiting`, releases the slot, and resumes; connection access re-checked per step; per-tenant quota and dead-letter behavior inherited from the F019 consumer middleware.
+- Data access: `BridgeRunRepository` owns `bridge_runs` (`insert_run`, `find_run_by_idempotency_key`, `count_runs_since`, `find_run_for_update`, `mark_run_status`, `list_waiting_runs_due`) and `BridgeRunStepRepository` owns `bridge_run_steps` (`append_step_attempt`, `list_steps_for_run`, `latest_attempt_for_step`); the executor, step runner, connector/opshub/transform/wait step modules, the resume path, and `handlers_run.rs` hold no SQL and open no connection. Each attempt commits the step row, the run status transition, the audit row, and the outbox event in one `UnitOfWork`, so a redelivered JetStream message produces no duplicate step row and no orphan event; the pinned version is read with `BridgeFlowVersionRepository::load_version_snapshot` (decision section 2.1).
+- Dependencies: T213 flow model, repositories, and versions; F019 queue, quota, idempotency, and dead-letter middleware; F030 `ActionInvoker`; F018 action executor; F020 approvals; F035 restricted evaluator; F004 scheduler.
 - Feature flag: `F054_FEATURE` gates the run route and the worker consumer registration.
 
 ## TDD

@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S118` Embeds/access
 - Owner: platform
 - Branch: `t236-publish-security-tests`
-- Decision references: `docs/architecture-decisions.md` sections 4, 9; `docs/capability-contracts.md` row F059
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 4, 9; `docs/capability-contracts.md` row F059
 
 ## Objective
 

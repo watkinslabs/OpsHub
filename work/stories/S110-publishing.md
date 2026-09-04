@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F055
 depends_on: [S109]
-owned_paths: [crates/domain/src/calendar-app/**, services/api/src/calendar-app/**, apps/web/src/features/calendar-app/**, testing/features/F055/**]
+owned_paths: [crates/domain/src/calendar-app/**, crates/persistence/src/calendar-app/**, services/api/src/calendar-app/**, apps/web/src/features/calendar-app/**, testing/features/F055/**]
 feature_flag: F055_FEATURE
 branch: s110-publishing
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F055` Calendar App
 - Owner: platform
 - Branch: `s110-publishing`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 6, 9, 10; `docs/capability-contracts.md` row F055
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 9, 10; `docs/capability-contracts.md` row F055
 
 ## Vertical slice
 
@@ -27,8 +27,8 @@ As a calendar editor, I want to publish an expiring, revocable ICS feed and use 
 
 ## Requirements
 
-- **SR-S110-01:** `POST /api/v1/calendars/{id}/publish` creates a hashed 256-bit token with `expires_in_days` 1–30 and `include_details`, returns `feed_url`, and `{ revoke: true }` sets `revoked_at` and emits `calendar.published.v1` with `revoked: true` (covers FR-F055-07, FR-F055-11).
-- **SR-S110-02:** `GET /public/calendars/{token}.ics` streams RFC 5545 output with `X-WR-CALNAME`, `VTIMEZONE` per zone, `UID <row_id>@<calendar_id>`, `DTSTART;VALUE=DATE` for all-day events, `ETag`; expired, revoked, or unknown tokens → `404`; 61st request per minute → `429 rate_limited` (FR-F055-08).
+- **SR-S110-01:** `POST /api/v1/calendars/{id}/publish` creates, through `CalendarPublicationRepository::insert_publication`, a hashed 256-bit token with `expires_in_days` 1–30 and `include_details`, returns `feed_url`, and `{ revoke: true }` sets `revoked_at` and emits `calendar.published.v1` with `revoked: true` (covers FR-F055-07, FR-F055-11).
+- **SR-S110-02:** `GET /public/calendars/{token}.ics` resolves the token with `CalendarPublicationRepository::find_active_publication_by_token_hash` and reads events through the same `CalendarRepository`, `CalendarSourceRepository`, and F013/F006 row repositories as the authenticated events route, and streams RFC 5545 output with `X-WR-CALNAME`, `VTIMEZONE` per zone, `UID <row_id>@<calendar_id>`, `DTSTART;VALUE=DATE` for all-day events, `ETag`; expired, revoked, or unknown tokens → `404`; 61st request per minute → `429 rate_limited` (FR-F055-08).
 - **SR-S110-03:** The feed applies the publisher's permissions at request time, includes only mapped title and dates (`Busy` when `include_details` is false), drops un-shared or deleted sources, and returns `404` when the tenant's `calendar-app` entitlement is not allowed (FR-F055-09, FR-F055-12, NFR-F055-02).
 - **SR-S110-04:** `CalendarPage` renders month, week, and agenda layouts, a timezone switcher persisted in the URL, source legend with toggles, hidden-sources notice, event details popover, and loading, empty, error, denied, stale, offline, and not-entitled states (FR-F055-13, FR-F055-14).
 - **SR-S110-05:** Drag or keyboard reschedule calls the F011 `rescheduleRow` client with the row's version, applies optimistically, and reverts with a stale banner on `409 conflict` (FR-F055-06).
@@ -39,8 +39,9 @@ As a calendar editor, I want to publish an expiring, revocable ICS feed and use 
 ## Surfaces
 
 - Infrastructure/container: none new
+- Data access: `crates/persistence/src/calendar-app/{publication_repository.rs, calendar_repository.rs, source_repository.rs}` — `CalendarPublicationRepository` owns `calendar_publications` and exposes `insert_publication`, `find_active_publication_by_token_hash`, `revoke_active_publication`, `list_publications_for_calendar`, and `delete_publications_expired_before`; `ics.rs`, `service_publish.rs`, `handlers_publish.rs`, and `handlers_public_ics.rs` contain no SQL, the publish/revoke pair plus its audit and outbox rows run in one `UnitOfWork`, and the ICS rate-limit bucket is read through the F038 `RateLimitRepository` (decision section 2.1)
 - Rust service/API: `crates/domain/src/calendar-app/{publication.rs, ics.rs, token.rs, service_publish.rs}`; `services/api/src/calendar-app/{handlers_publish.rs, handlers_public_ics.rs, rate_limit.rs}`
-- Data/migration: none new; uses `calendar_publications` from S109
+- Data/migration: none new; uses `calendar_publications` and the normalized `calendar_sources`/`calendar_source_column_maps` tables created in S109
 - React/UI: `apps/web/src/features/calendar-app/{CalendarListPage.tsx, CalendarPage.tsx, CalendarHeader.tsx, LayoutSwitch.tsx, TimezoneSwitcher.tsx, MonthGrid.tsx, WeekGrid.tsx, AgendaList.tsx, EventChip.tsx, EventDetailsPopover.tsx, SourceLegend.tsx, HiddenSourcesNotice.tsx, SourceEditorDialog.tsx, SourceRow.tsx, PublishDialog.tsx, NewCalendarDialog.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: DST fixture sheets; RFC 5545 parser helper in `testing/harness/ics.rs`; MSW handlers for component tests; Playwright against real API; rate limiter with injectable clock; 5,000-event generator
 

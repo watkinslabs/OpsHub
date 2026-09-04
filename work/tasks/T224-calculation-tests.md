@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S112` Saved outputs
 - Owner: platform
 - Branch: `t224-calculation-tests`
-- Decision references: `docs/architecture-decisions.md` section 9; `docs/capability-contracts.md` row F056
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 9; `docs/capability-contracts.md` row F056
 
 ## Objective
 
@@ -28,9 +28,10 @@ Prove aggregation correctness, permission filtering, stale detection, accessibil
 
 ## Specification
 
-- Owned paths: `testing/features/F056/api/golden_tests.rs`, `testing/features/F056/e2e/pivot.spec.ts`, `testing/features/F056/accessibility/pivot.a11y.spec.ts`, `testing/features/F056/performance/pivot_bench.rs`, `testing/features/F056/api/fixtures/golden_pivots.json`
-- Contract/input: golden file lists 12 pivot definitions with expected cells computed independently in SQL over the seeded 2,000-row sheet, including DST week and month buckets, `count_distinct` over person columns, and `avg` with decimal rounding to 4 places.
+- Owned paths: `testing/features/F056/api/golden_tests.rs`, `testing/features/F056/api/constraint_tests.rs`, `testing/features/F056/e2e/pivot.spec.ts`, `testing/features/F056/accessibility/pivot.a11y.spec.ts`, `testing/features/F056/performance/pivot_bench.rs`, `testing/features/F056/api/fixtures/golden_pivots.json`
+- Contract/input: golden file lists 12 pivot definitions with their expected cells as checked-in literals derived offline from the seeded 2,000-row sheet, including DST week and month buckets, `count_distinct` over person columns, and `avg` with decimal rounding to 4 places; the definitions are loaded into the database by `PivotRepository`, so each case also exercises the definition child tables.
 - Output/behavior: every golden case matches cell for cell; hidden rows change no visible sum; E2E covers build → compute → grid → materialize → open sheet, stale banner after a source edit, and the unentitled upsell; axe reports zero serious violations on builder and grid; performance lane records p95 for outputs read of 5,000 cells (< 500 ms) and 100,000-row compute (< 30 s).
+- Data access: every fixture write and every assertion goes through `crates/persistence/src/pivots/{pivot_repository.rs, output_repository.rs}` — no test opens a connection or issues SQL of its own, and the golden oracle is checked-in literals rather than a query (decision section 2.1). `constraint_tests.rs` proves the normalized shape: `pivot_row_dimensions` rejects a fourth position and a repeated `column_id` on one axis, `pivot_column_dimensions` rejects a third position, `pivot_measures` rejects a repeated `(column_id, aggregate)` and an eleventh position, `pivot_filters` rejects a fifty-first clause and an unknown `operator`, `pivot_output_source_versions` rejects a duplicate `source_id` for one output, deleting a pivot or pruning an output cascades its child rows, and `pivot_outputs.cells` and `pivot_filters.value` are the only `jsonb` columns left in the module.
 - Dependencies: T223 complete; Playwright and axe harness from `testing/harness/`.
 - Feature flag: `F056_FEATURE`
 

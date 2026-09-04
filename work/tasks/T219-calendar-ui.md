@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F055
 parent_story: S110
 depends_on: [S110]
-owned_paths: [crates/domain/src/calendar-app/**, services/api/src/calendar-app/**, apps/web/src/features/calendar-app/**, testing/features/F055/api/**, testing/features/F055/frontend/**]
+owned_paths: [crates/domain/src/calendar-app/**, crates/persistence/src/calendar-app/**, services/api/src/calendar-app/**, apps/web/src/features/calendar-app/**, testing/features/F055/api/**, testing/features/F055/frontend/**]
 feature_flag: F055_FEATURE
 branch: t219-calendar-ui
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S110` Publishing
 - Owner: platform
 - Branch: `t219-calendar-ui`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 6, 10; `docs/capability-contracts.md` row F055
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 10; `docs/capability-contracts.md` row F055
 
 ## Objective
 
@@ -28,9 +28,10 @@ Implement ICS publication and the public feed route on the backend, and the cale
 
 ## Specification
 
-- Owned paths: `crates/domain/src/calendar-app/{publication.rs, ics.rs, token.rs, service_publish.rs}`, `services/api/src/calendar-app/{handlers_publish.rs, handlers_public_ics.rs, rate_limit.rs}`, `apps/web/src/features/calendar-app/{CalendarListPage.tsx, CalendarPage.tsx, CalendarHeader.tsx, LayoutSwitch.tsx, TimezoneSwitcher.tsx, MonthGrid.tsx, WeekGrid.tsx, AgendaList.tsx, EventChip.tsx, EventDetailsPopover.tsx, SourceLegend.tsx, HiddenSourcesNotice.tsx, SourceEditorDialog.tsx, SourceRow.tsx, PublishDialog.tsx, NewCalendarDialog.tsx, api.ts, hooks.ts, routes.ts}`
+- Owned paths: `crates/domain/src/calendar-app/{publication.rs, ics.rs, token.rs, service_publish.rs}`, `crates/persistence/src/calendar-app/publication_repository.rs`, `services/api/src/calendar-app/{handlers_publish.rs, handlers_public_ics.rs, rate_limit.rs}`, `apps/web/src/features/calendar-app/{CalendarListPage.tsx, CalendarPage.tsx, CalendarHeader.tsx, LayoutSwitch.tsx, TimezoneSwitcher.tsx, MonthGrid.tsx, WeekGrid.tsx, AgendaList.tsx, EventChip.tsx, EventDetailsPopover.tsx, SourceLegend.tsx, HiddenSourcesNotice.tsx, SourceEditorDialog.tsx, SourceRow.tsx, PublishDialog.tsx, NewCalendarDialog.tsx, api.ts, hooks.ts, routes.ts}`
 - Contract/input: `POST /api/v1/calendars/{id}/publish` with `PublishRequest { expires_in_days? (1–30), include_details, revoke? }`, `Idempotency-Key`, `If-Match`; `GET /public/calendars/{token}.ics` with no session, `If-None-Match`; generated `CalendarAppApi` client plus F011 `SchedulesApi.rescheduleRow`; route params `workspaceId`, `calendarId`, query `layout`, `tz`.
 - Output/behavior: publish stores SHA-256 of a 32-byte random token, returns `PublishResponse { feed_url, expires_at }`, revoke sets `revoked_at`, both emit `calendar.published.v1` and audit rows; the ICS handler resolves the token hash in constant time, checks expiry, revocation, and the tenant's `calendar-app` entitlement (`404` on any failure), enforces 60 requests per minute per token via `rate_limit_buckets` (`429`), renders RFC 5545 with `X-WR-CALNAME`, `VTIMEZONE` blocks, `UID <row_id>@<calendar_id>`, `DTSTART;VALUE=DATE` for all-day, `SUMMARY` or `Busy`, `LAST-MODIFIED`, `ETag` from the newest row version with `304` on match, and writes audit `calendar.ics.read`; pages render layouts, timezone switcher persisted in the URL, legend toggles, hidden-sources notice, details popover, source editor, publish dialog with copy and revoke; drag and keyboard reschedule call `rescheduleRow` optimistically and revert on `409` with the stale banner; states: loading skeleton, empty with `Add source`, error banner with correlation ID, denied affordances for viewers, not-found, stale source chip, offline badge, `ModuleNotEntitled` via `useModuleAllowed('calendar-app')`; telemetry `calendar_created`, `calendar_sources_saved`, `calendar_layout_changed`, `calendar_timezone_changed`, `calendar_event_rescheduled`, `calendar_published`, `calendar_publication_revoked`.
+- Data access: `CalendarPublicationRepository` in `crates/persistence/src/calendar-app/publication_repository.rs` owns `calendar_publications` and exposes `insert_publication`, `find_active_publication_by_token_hash`, `revoke_active_publication`, `list_publications_for_calendar`, and `delete_publications_expired_before`; `publication.rs`, `ics.rs`, `service_publish.rs`, `handlers_publish.rs`, and `handlers_public_ics.rs` contain no SQL and no connection, the public `.ics` route reads events through the same `CalendarRepository`, `CalendarSourceRepository`, and F013/F006 row repositories as the authenticated route, publish plus revoke plus audit plus outbox run in one `UnitOfWork`, and the rate-limit bucket is read and written through the F038 `RateLimitRepository` (decision section 2.1).
 - Dependencies: T218 permissions; F011 reschedule route; F038 `rate_limit_buckets`; F048 hooks; F005 workspace shell navigation entry.
 - Feature flag: `F055_FEATURE` read through the flag hook; routes not registered and ICS route returns not-found when off.
 

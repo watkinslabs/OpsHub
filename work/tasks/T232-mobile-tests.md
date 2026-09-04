@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S116` Mobile offline/sync
 - Owner: platform
 - Branch: `t232-mobile-tests`
-- Decision references: `docs/architecture-decisions.md` section 9; `docs/capability-contracts.md` row F058
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 9; `docs/capability-contracts.md` row F058
 
 ## Objective
 

@@ -29,8 +29,8 @@ Out of this slice: manifest validation and publish transaction (S101, already av
 
 ## Requirements
 
-- **SR-S102-01:** `GET /apps/{slug}` resolves the caller's roles through direct and F002 group membership, applies `filter_for_viewer`, returns only visible pages, the landing page, and `roles_held`, and never lists other roles' members; no role → `404 not_found`; unpublished app → `404` except admins receive the draft (covers FR-F051-05, NFR-F051-02).
-- **SR-S102-02:** Archived apps and cross-tenant slugs return `404 not_found` from `/apps/{slug}`; pages whose source is soft-deleted are marked `unavailable` (FR-F051-07, FR-F051-11).
+- **SR-S102-01:** `GET /apps/{slug}` resolves the caller's roles with `WorkAppVersionRepository::list_roles_held_in_version` (joining `workapp_version_role_members` by `user_id` and by the caller's F002 group IDs), selects pages with `list_visible_pages_for_roles` over `workapp_version_page_roles`, applies `filter_for_viewer`, returns only visible pages, the landing page, and `roles_held`, and never lists other roles' members; no role → `404 not_found`; unpublished app → `404` except admins receive the draft (covers FR-F051-05, NFR-F051-02).
+- **SR-S102-02:** Archived apps and cross-tenant slugs return `404 not_found` from `/apps/{slug}`; pages whose snapshot `source_id` no longer resolves through `SourceResolver` are marked `unavailable` rather than dropped, since the snapshot rows deliberately carry no foreign key to the embedded source (FR-F051-07, FR-F051-11).
 - **SR-S102-03:** `AppShell`, `AppNav`, and `PageFrame` render the manifest at `/apps/:slug` and `/apps/:slug/:pageId`, dispatch each page kind to the native embed component that calls its own F006/F013/F014/F021/F023/F050 endpoint under the viewer's session, and render denied, empty, unavailable, error, and offline states per page (FR-F051-06, FR-F051-12).
 - **SR-S102-04:** `AppBuilderPage` with `PageListEditor`, `PageSourcePicker`, `RoleEditor`, `MemberPicker`, `PreviewAsRole`, `PublishDialog`, `VersionList`, and `VersionDiff` lets the admin edit the draft, preview the filtered manifest for a chosen role, publish with a note, and restore a version (FR-F051-12, FR-F051-13).
 - **SR-S102-05:** Draft edits in the builder never change the served manifest until publish; the builder shows `draft_dirty` and the stale banner on `conflict` (FR-F051-08).
@@ -40,6 +40,7 @@ Out of this slice: manifest validation and publish transaction (S101, already av
 ## Surfaces
 
 - Infrastructure/container: none
+- Data access: `crates/persistence/src/workapps/{version_repository.rs, role_repository.rs}` carry the viewer queries `list_roles_held_in_version`, `list_visible_pages_for_roles`, `load_version_manifest`, and `list_version_summaries`; `viewer.rs`, `membership.rs`, the `services/api/src/workapps` viewer handlers, and the component-test fixtures contain no SQL and reach storage only through those repository traits (decision section 2.1)
 - Rust service/API: `crates/domain/src/workapps/{viewer.rs, membership.rs}`; `services/api/src/workapps/{handlers_viewer.rs, viewer_routes.rs}`
 - Data/migration: none new; uses tables from S101
 - React/UI: `apps/web/src/features/workapps/{AppShell.tsx, AppNav.tsx, AppPage.tsx, PageFrame.tsx, embeds/SheetEmbed.tsx, embeds/FormEmbed.tsx, embeds/ReportEmbed.tsx, embeds/DashboardEmbed.tsx, embeds/DynamicViewEmbed.tsx, embeds/TextPage.tsx, AppSwitcher.tsx, AppBuilderPage.tsx, PageListEditor.tsx, PageSourcePicker.tsx, RoleEditor.tsx, MemberPicker.tsx, PreviewAsRole.tsx, PublishDialog.tsx, VersionList.tsx, VersionDiff.tsx, NewAppDialog.tsx, api.ts, hooks.ts, routes.ts}`
@@ -51,7 +52,7 @@ Out of this slice: manifest validation and publish transaction (S101, already av
 - Feature flag: `F051_FEATURE`
 - Targeted command: `cargo xtask test-feature F051`
 - Full command: `cargo xtask test-all`
-- First failing tests: `viewer_manifest_filters_pages_by_role`, `viewer_without_role_not_found`, `viewer_manifest_omits_other_role_members`, `page_frame_shows_denied_when_source_forbidden`, `builder_reorder_by_keyboard`, `vendor_role_sees_two_pages`
+- First failing tests: `viewer_manifest_filters_pages_by_role`, `viewer_without_role_not_found`, `viewer_manifest_omits_other_role_members`, `viewer_role_resolved_from_version_role_member_rows`, `page_frame_shows_denied_when_source_forbidden`, `builder_reorder_by_keyboard`, `vendor_role_sees_two_pages`
 
 ## Exit criteria
 

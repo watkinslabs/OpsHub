@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S120` Visual states
 - Owner: platform
 - Branch: `t240-rule-tests`
-- Decision references: `docs/architecture-decisions.md` sections 6, 9; `docs/capability-contracts.md` row F060
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 6, 9; `docs/capability-contracts.md` row F060
 
 ## Objective
 

@@ -5,7 +5,7 @@ status: planned
 parent_epic: E005
 parent_feature: F025
 depends_on: [F025]
-owned_paths: [crates/domain/src/report_exports/**, crates/persistence/src/report-exports/**, services/api/src/report_exports/**, services/worker/src/report_exports/**, apps/web/src/features/report-exports/**, testing/features/F025/frontend/**, testing/features/F025/e2e/**, testing/features/F025/accessibility/**]
+owned_paths: [crates/domain/src/report_exports/**, crates/persistence/src/report_exports/**, services/api/src/report_exports/**, services/worker/src/report_exports/**, apps/web/src/features/report-exports/**, testing/features/F025/frontend/**, testing/features/F025/e2e/**, testing/features/F025/accessibility/**]
 feature_flag: F025_FEATURE
 branch: s050-pdf-csv-export
 started_at: null
@@ -39,7 +39,7 @@ As a report exporter, I want to send a report to CSV, XLSX, or PDF and a dashboa
 ## Surfaces
 
 - Rust service/API: `crates/domain/src/report_exports/{export.rs, options.rs, limits.rs, render/{mod.rs, csv.rs, xlsx.rs, pdf.rs, png.rs}}` holding no SQL; `services/api/src/report_exports/{handlers_export.rs, handlers_download.rs, dto.rs}`
-- Persistence: `crates/persistence/src/report-exports/{mod.rs, report_export_repository.rs}` with `create_if_absent`, `get_for_actor`, `page_for_actor`, `update_progress`, `complete`, `fail`, `count_running_for_tenant`, and `count_requests_since`
+- Persistence: `crates/persistence/src/report_exports/{mod.rs, report_export_repository.rs}` with `create_if_absent`, `get_for_actor`, `page_for_actor`, `update_progress`, `complete`, `fail`, `count_running_for_tenant`, and `count_requests_since`
 - Worker: `services/worker/src/report_exports/render_job.rs` renderer dispatch, progress and completion writes through `ReportExportRepository`, temporary-key upload and move, retry and dead-letter handling
 - Object storage: `{tenant_id}/report-exports/{export_id}/{slug}.{ext}` with server-side encryption and 15-minute signed URLs, following the F010 download conventions
 - React/UI: `apps/web/src/features/report-exports/{DrillPanel.tsx, DrillSourceList.tsx, DrillFooter.tsx, ExportDialog.tsx, ExportFormatPicker.tsx, ExportColumnPicker.tsx, PageSetupFields.tsx, ExportCenterPage.tsx, ExportRow.tsx, ExportProgressBar.tsx, api.ts, hooks.ts, routes.ts}`

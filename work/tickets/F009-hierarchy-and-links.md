@@ -11,7 +11,7 @@ depends_on: [F007]
 blocks: [F035, F012, F053]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/links/**, services/api/src/links/**, apps/web/src/features/links/**, services/api/migrations/*_links_*.sql, testing/features/F009/**]
+owned_paths: [crates/persistence/src/links/**, crates/domain/src/links/**, services/api/src/links/**, apps/web/src/features/links/**, services/api/migrations/*_links_*.sql, testing/features/F009/**]
 feature_flag: F009_FEATURE
 flag_default: off
 branch: f009-hierarchy-and-links

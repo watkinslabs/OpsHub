@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F040
 parent_story: S079
 depends_on: [S079]
-owned_paths: [crates/domain/src/ai-insights/**, services/api/src/ai-insights/**, services/worker/src/ai-insights/**, testing/features/F040/api/**, testing/features/F040/e2e/**]
+owned_paths: [crates/domain/src/ai-insights/**, crates/persistence/src/ai-insights/**, services/api/src/ai-insights/**, services/worker/src/ai-insights/**, testing/features/F040/api/**, testing/features/F040/e2e/**]
 feature_flag: F040_FEATURE
 branch: t158-approval-gate
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S079` Risks and trends
 - Owner: platform
 - Branch: `t158-approval-gate`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 7; `docs/capability-contracts.md` row F040
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7; `docs/capability-contracts.md` row F040
 
 ## Objective
 
@@ -28,10 +28,11 @@ Implement the `ai_actions` state machine and the confirm and reject routes so th
 
 ## Specification
 
-- Owned paths: `crates/domain/src/ai-insights/{action.rs, gate.rs, risk.rs, preview.rs}`; `services/api/src/ai-insights/handlers_action.rs` and the confirm/reject DTOs in `services/api/src/ai-insights/dto.rs`; `services/worker/src/ai-insights/approval_listener.rs`
+- Owned paths: `crates/domain/src/ai-insights/{action.rs, gate.rs, risk.rs, preview.rs}`; `crates/persistence/src/ai-insights/action_repository.rs`; `services/api/src/ai-insights/handlers_action.rs` and the confirm/reject DTOs in `services/api/src/ai-insights/dto.rs`; `services/worker/src/ai-insights/approval_listener.rs`
 - Contract/input: `ConfirmRequest { preview_hash: String }` with `Idempotency-Key` and `If-Match: <version>`; `RejectRequest { reason: String }`; the consumed event `approval.decided.v1` carrying `{ approval_id, decision, decided_by, decided_at }`.
 - Output/behavior: routes `POST /api/v1/ai/actions/{id}/confirm` and `POST /api/v1/ai/actions/{id}/reject`. `gate.rs` owns the only transition into `confirmed`: it requires role `workflow-editor`, `PrincipalKind::User` (a service or API token yields `403 denied` with `reason: human_confirmation_required`), a matching `If-Match` version, and `preview_hash` equal to the stored `sha256` of the canonical preview; a mismatch returns `409 conflict` with the re-rendered diff, and a proposal past `expires_at` returns `409 conflict` with `reason: proposal_expired` and sets `status: expired`. `risk.rs` classifies `create_workflow_draft`, `request_approval`, and `target_count > 5` as `high`; confirming a high proposal calls F020 `POST /api/v1/approvals` with the preview attached, stores `approval_id`, and leaves `status: awaiting_approval`. `approval_listener.rs` moves the action to `confirmed` on an approved decision and to `rejected` on a denied decision, publishing `ai-action.confirmed.v1` or `ai-action.rejected.v1`. Reject sets `rejected_by`, `rejected_at`, `reject_reason`, publishes `ai-action.rejected.v1`, and returns `409 conflict` when the action is already `applied`. The `AiAction::confirm` constructor is private to `gate.rs` so no other module can construct a confirmed action; audit events `ai-action.confirmed` and `ai-action.rejected` are written on every transition.
-- Dependencies: T157 for `ai_actions`/`ai_action_runs` DDL and the insight aggregate; F020 approvals and `approval.decided.v1`; F003 authz for `workflow-editor` and principal kind; F028 idempotency and concurrency conventions.
+- Data access: `gate.rs`, `risk.rs`, `preview.rs`, `handlers_action.rs`, and `approval_listener.rs` hold no SQL — every state read and transition goes through `AiActionRepository` in `crates/persistence/src/ai-insights/action_repository.rs`, which owns `ai_actions` and `ai_action_targets` and exposes `get_for_confirm`, `list_action_targets`, `mark_awaiting_approval`, `mark_confirmed`, `mark_rejected`, `expire_proposals`, and `find_by_approval_id`; the version check, the status transition, the audit row, and the outbox enqueue for one confirmation are a single `UnitOfWork` write, and the F020 approval row is created through the F020 repository in that same unit (decision section 2.1).
+- Dependencies: T157 for `ai_actions`/`ai_action_targets`/`ai_action_runs` DDL and the insight aggregate; F020 approvals and `approval.decided.v1`; F003 authz for `workflow-editor` and principal kind; F028 idempotency and concurrency conventions.
 - Feature flag: `F040_FEATURE` gates both routes and the listener.
 
 ## TDD

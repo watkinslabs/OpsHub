@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S115` Mobile work
 - Owner: platform
 - Branch: `t230-mobile-editing`
-- Decision references: `docs/architecture-decisions.md` section 6; `docs/capability-contracts.md` row F058
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 6; `docs/capability-contracts.md` row F058
 
 ## Objective
 

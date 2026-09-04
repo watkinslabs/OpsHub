@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F059
 parent_story: S118
 depends_on: [S118]
-owned_paths: [crates/domain/src/publishing/**, services/api/src/publishing/**, apps/web/src/features/publishing/**, testing/features/F059/api/**, testing/features/F059/frontend/**]
+owned_paths: [crates/domain/src/publishing/**, crates/persistence/src/publishing/**, services/api/src/publishing/**, apps/web/src/features/publishing/**, testing/features/F059/api/**, testing/features/F059/frontend/**]
 feature_flag: F059_FEATURE
 branch: t235-embed-ui
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S118` Embeds/access
 - Owner: platform
 - Branch: `t235-embed-ui`
-- Decision references: `docs/architecture-decisions.md` sections 4, 6; `docs/capability-contracts.md` row F059
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 4, 6; `docs/capability-contracts.md` row F059
 
 ## Objective
 

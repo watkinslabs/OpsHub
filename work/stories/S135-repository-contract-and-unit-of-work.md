@@ -5,7 +5,7 @@ status: planned
 parent_epic: E001
 parent_feature: F068
 depends_on: [F001]
-owned_paths: [crates/persistence/src/lib.rs, crates/persistence/src/repository/**, crates/persistence/src/uow/**, crates/persistence/src/users/**, testing/features/F068/api/**, testing/features/F068/database/**]
+owned_paths: [crates/persistence/src/lib.rs, crates/persistence/src/repository/**, crates/persistence/src/uow/**, testing/features/F068/api/**, testing/features/F068/database/**]
 feature_flag: F068_FEATURE
 branch: s135-repository-contract-and-unit-of-work
 started_at: null
@@ -23,7 +23,7 @@ finished_at: null
 
 ## Vertical slice
 
-As a platform maintainer, I want the sealed `Repository` contract with its seven operations, the `BaseRepository` that is its only implementation, the `UnitOfWork` that owns a transaction shared by several repositories, and `UserRepository` over F002's `users` table as the worked example, so that a new object type is added by declaring a `RepositorySpec` and the tenant predicate, soft-delete filter, version check, audit row, and outbox row are applied whether the author remembers them or not.
+As a platform maintainer, I want the sealed `Repository` contract with its seven operations, the `BaseRepository` that is its only implementation, the `UnitOfWork` that owns a transaction shared by several repositories, and `UserRepository` (F002's file, referenced as the worked example rather than owned here) over F002's `users` table as the worked example, so that a new object type is added by declaring a `RepositorySpec` and the tenant predicate, soft-delete filter, version check, audit row, and outbox row are applied whether the author remembers them or not.
 
 ## Requirements
 

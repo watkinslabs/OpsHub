@@ -11,7 +11,7 @@ depends_on: [F002]
 blocks: [F003, F026, F028]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/auth/**, crates/auth/src/auth/**, services/api/src/auth/**, apps/web/src/features/auth/**, services/api/migrations/*_auth_*.sql, testing/features/F038/**]
+owned_paths: [crates/persistence/src/auth/**, crates/domain/src/auth/**, crates/auth/src/auth/**, services/api/src/auth/**, apps/web/src/features/auth/**, services/api/migrations/*_auth_*.sql, testing/features/F038/**]
 feature_flag: F038_FEATURE
 flag_default: off
 branch: f038-authentication-and-mfa

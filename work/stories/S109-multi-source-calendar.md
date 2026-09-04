@@ -5,7 +5,7 @@ status: planned
 parent_epic: E008
 parent_feature: F055
 depends_on: [F013, F011, F048]
-owned_paths: [crates/domain/src/calendar-app/**, services/api/src/calendar-app/**, services/api/migrations/*_calendar-app_*.sql, testing/features/F055/**]
+owned_paths: [crates/domain/src/calendar-app/**, crates/persistence/src/calendar-app/**, services/api/src/calendar-app/**, services/api/migrations/*_calendar-app_*.sql, testing/features/F055/**]
 feature_flag: F055_FEATURE
 branch: s109-multi-source-calendar
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F055` Calendar App
 - Owner: platform
 - Branch: `s109-multi-source-calendar`
-- Decision references: `docs/architecture-decisions.md` sections 2–4, 10; `docs/capability-contracts.md` row F055
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 10; `docs/capability-contracts.md` row F055
 
 ## Vertical slice
 
@@ -28,8 +28,8 @@ As a calendar editor, I want to create a calendar, attach up to 20 sheet or view
 ## Requirements
 
 - **SR-S109-01:** `POST /api/v1/calendars`, `PATCH /api/v1/calendars/{id}`, and `GET /api/v1/calendars` create, update, and list calendars with `default_timezone`, `week_start`, cursor paging, `If-Match`, and the `max_calendars` limit (covers FR-F055-01, FR-F055-10).
-- **SR-S109-02:** `PUT /api/v1/calendars/{id}/sources` replaces 1–20 sources with validated column types and `timezone_source`; a 21st source, non-date column, or unreadable sheet → `400 invalid` with `field_errors.sources[i].<field>`; beyond `max_sources_per_calendar` → `409 conflict` (FR-F055-02).
-- **SR-S109-03:** `GET /api/v1/calendars/{id}/events?from&to&tz` returns normalized events with RFC 3339 offsets for windows up to 366 days, all-day events for date columns, and DST-correct conversion for datetime columns (FR-F055-03, FR-F055-05).
+- **SR-S109-02:** `PUT /api/v1/calendars/{id}/sources` replaces 1–20 sources through `CalendarSourceRepository::replace_sources`, writing one `calendar_sources` row per source and one `calendar_source_column_maps(source_id, role, column_id)` row per mapped `start`, `end`, `duration`, `title`, or `color` column, and storing `timezone_source` as `timezone_source_kind` plus `timezone_column_id` or `timezone_fixed_zone`; the request and response keep the flat source objects unchanged; a 21st source, non-date column, or unreadable sheet → `400 invalid` with `field_errors.sources[i].<field>`; beyond `max_sources_per_calendar` → `409 conflict` (FR-F055-02).
+- **SR-S109-03:** `GET /api/v1/calendars/{id}/events?from&to&tz` loads the sources and their column-map rows with `CalendarSourceRepository::load_sources_with_column_map` and returns normalized events with RFC 3339 offsets for windows up to 366 days, all-day events for date columns, and DST-correct conversion for datetime columns (FR-F055-03, FR-F055-05).
 - **SR-S109-04:** Events are filtered per source by the viewer's row-level permission; unreadable sources are omitted and counted in `hidden_sources` without exposing IDs; `can_edit` reflects `sheet-editor` on the source (FR-F055-04, FR-F055-06).
 - **SR-S109-05:** The router is mounted behind `RequireModule(ModuleSlug::CalendarApp)`; a non-entitled tenant → `403 denied` with `field_errors.module` (FR-F055-12).
 - **SR-S109-06:** Every mutation requires `Idempotency-Key`, writes an audit row, publishes `calendar.updated.v1`, and foreign-tenant access → `404 not_found` (FR-F055-11).
@@ -38,8 +38,9 @@ As a calendar editor, I want to create a calendar, attach up to 20 sheet or view
 ## Surfaces
 
 - Infrastructure/container: none beyond F004 baseline
+- Data access: `crates/persistence/src/calendar-app/{mod.rs, calendar_repository.rs, source_repository.rs}` hold every SQL statement for this slice — `CalendarRepository` owns `calendars`, `CalendarSourceRepository` owns `calendar_sources` and its child `calendar_source_column_maps` — and `aggregate.rs`, `service.rs`, and the `services/api/src/calendar-app` handlers depend on the repository traits with no `sqlx::query*` call; source rows come from the F013 `ViewRepository` and F006 `RowRepository` named queries, and a source replacement runs in one `UnitOfWork` (decision section 2.1)
 - Rust service/API: `crates/domain/src/calendar-app/{mod.rs, calendar.rs, source.rs, normalize.rs, aggregate.rs, errors.rs, service.rs}`; `services/api/src/calendar-app/{mod.rs, routes.rs, handlers_calendar.rs, handlers_sources.rs, handlers_events.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_calendar-app_create_tables.sql` creating `calendars`, `calendar_sources`, `calendar_publications` with constraints and indexes from ticket section 4
+- Data/migration: `services/api/migrations/<ts>_calendar-app_create_tables.sql` creating `calendars`, `calendar_sources`, `calendar_source_column_maps`, and `calendar_publications` with the foreign keys, enum `check` constraints, and indexes from ticket section 4
 - React/UI: none in this story (S110 covers UI and publishing)
 - Mocks/fixtures: `testing/fixtures/calendar_app.rs` tenants A/B, editor, viewer, partial viewer, entitlement with limits, DST fixture sheets `Launches`, `Maintenance`, `Leave`, restricted sheet; in-memory outbox; real F003 engine with fixture bindings
 
@@ -49,7 +50,7 @@ As a calendar editor, I want to create a calendar, attach up to 20 sheet or view
 - Feature flag: `F055_FEATURE`
 - Targeted command: `cargo xtask test-feature F055`
 - Full command: `cargo xtask test-all`
-- First failing tests: `sources_reject_21st_source`, `sources_reject_non_date_column`, `events_convert_dst_spring_forward`, `events_hide_unreadable_source_as_count`, `events_window_over_366_days_invalid`, `calendar_route_denied_without_entitlement`, `events_31_days_20_sources_p95`
+- First failing tests: `sources_reject_21st_source`, `sources_reject_non_date_column`, `sources_write_one_column_map_row_per_role`, `events_convert_dst_spring_forward`, `events_hide_unreadable_source_as_count`, `events_window_over_366_days_invalid`, `calendar_route_denied_without_entitlement`, `events_31_days_20_sources_p95`
 
 ## Exit criteria
 

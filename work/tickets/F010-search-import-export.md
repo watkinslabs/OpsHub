@@ -11,7 +11,7 @@ depends_on: [F008, F004]
 blocks: [F025, F027, F052]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/dataio/**, services/api/src/dataio/**, services/worker/src/dataio/**, apps/web/src/features/dataio/**, services/api/migrations/*_dataio_*.sql, testing/features/F010/**]
+owned_paths: [crates/persistence/src/dataio/**, crates/domain/src/dataio/**, services/api/src/dataio/**, services/worker/src/dataio/**, apps/web/src/features/dataio/**, services/api/migrations/*_dataio_*.sql, testing/features/F010/**]
 feature_flag: F010_FEATURE
 flag_default: off
 branch: f010-search-import-export
