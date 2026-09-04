@@ -5,7 +5,7 @@ status: planned
 parent_epic: E006
 parent_feature: F064
 depends_on: [F002, F048]
-owned_paths: [crates/domain/src/billing/**, services/api/src/billing/**, services/worker/src/billing/**, apps/web/src/features/billing/**, services/api/migrations/*_billing_*.sql, testing/features/F064/**]
+owned_paths: [crates/domain/src/billing/**, crates/persistence/src/billing/**, services/api/src/billing/**, services/worker/src/billing/**, apps/web/src/features/billing/**, services/api/migrations/*_billing_*.sql, testing/features/F064/**]
 feature_flag: F064_FEATURE
 branch: s127-subscription-and-plan-lifecycle
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F064` Billing and subscriptions
 - Owner: platform
 - Branch: `s127-subscription-and-plan-lifecycle`
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 7; `docs/capability-contracts.md` row F064
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7; `docs/capability-contracts.md` row F064
 
 ## Vertical slice
 
@@ -27,12 +27,12 @@ As a billing administrator, I want one subscription record per tenant that I can
 
 ## Requirements
 
-- **SR-S127-01:** `GET /api/v1/billing/subscription` returns the `subscription` aggregate with plan, status, period bounds, trial and schedule fields, dunning state, seats, allowances, and payment-method summary, and synthesizes a free `version: 0` response for a tenant with no `subscriptions` row (covers FR-F064-01).
+- **SR-S127-01:** `GET /api/v1/billing/subscription` returns the `subscription` aggregate with plan, status, period bounds, trial and schedule fields, dunning state, seats, allowances, and the payment-method summary read from the tenant's `subscription_payment_methods` row — `null` when no row exists — and synthesizes a free `version: 0` response for a tenant with no `subscriptions` row; the response object shape is unchanged by the normalized storage (covers FR-F064-01).
 - **SR-S127-02:** `PUT /api/v1/billing/subscription` validates `plan` against the F002 `free|team|enterprise` set, requires `If-Match` and `Idempotency-Key`, returns a write-free `ProrationPreview` under `preview: true`, applies upgrades immediately with provider proration, and rejects a preview that disagrees with the provider line items (FR-F064-02, FR-F064-03).
 - **SR-S127-03:** Downgrades store `scheduled_plan` and `scheduled_effective_at` and are applied by `billing.apply_scheduled` within 5 minutes of the period end, with `apply: "immediate"` issuing a credit note instead of a refund (FR-F064-04).
 - **SR-S127-04:** The `plan_entitlements` projector upserts F048 records with `source: "plan"` for the plan's module list and limits, skips any module whose stored `source` is `manual`, and F064 keeps no entitlement table and makes no gating decision (FR-F064-05).
 - **SR-S127-05:** All provider access goes through the `PaymentProvider` port with the single `StripeAdapter` behind it; no provider type crosses into the domain, service, API, or worker code, and `POST /api/v1/billing/portal-session` returns a 15-minute hosted URL that is never logged or stored, rate-limited to 5 per tenant per hour (FR-F064-06, FR-F064-07).
-- **SR-S127-06:** `POST /webhooks/billing/{provider}` verifies the HMAC-SHA256 signature and 300-second timestamp window, inserts `billing_webhook_events` and applies the effect in one transaction so a redelivery answers `duplicate` and applies nothing, and reconciles `subscription.updated` with provider state winning (FR-F064-08, FR-F064-09, FR-F064-10).
+- **SR-S127-06:** `POST /webhooks/billing/{provider}` verifies the HMAC-SHA256 signature and 300-second timestamp window, calls `WebhookEventRepository::claim_event` to insert `billing_webhook_events` and applies the effect in the same `UnitOfWork` transaction so a redelivery answers `duplicate` and applies nothing, upserts the invoice header with its `invoice_lines` rows through `InvoiceRepository::upsert_from_provider`, and reconciles `subscription.updated` with provider state winning (FR-F064-08, FR-F064-09, FR-F064-10).
 - **SR-S127-07:** The dunning ladder advances day 0 `past_due`, day 7 `restricted` suspending only plan-sourced entitlements, day 14 `suspended` read-only with export preserved, day 30 `canceled` to the free plan, notifying at every stage with the next step and its date and never deleting data or removing read access without notice (FR-F064-13).
 - **SR-S127-08:** Trial expiry notifies at 7, 3, and 1 days, converts to `active` with a payment method and falls back to `free` without one, and never enters dunning; `cancel_at_period_end` preserves full access to `current_period_end` and then moves the tenant to `free` (FR-F064-14).
 - **SR-S127-09:** Every billing route requires `billing-admin`, mutations write audit rows and publish `subscription.updated.v1`, a body carrying another `tenant_id` returns `400 invalid`, and cross-tenant ids return `not_found` (FR-F064-15, NFR-F064-02).
@@ -40,9 +40,10 @@ As a billing administrator, I want one subscription record per tenant that I can
 
 ## Surfaces
 
+- Data access: `crates/persistence/src/billing/{mod.rs, subscription_repository.rs, invoice_repository.rs, webhook_event_repository.rs}` hold every SQL statement in this slice — `SubscriptionRepository` owns `subscriptions` and `subscription_payment_methods`, `InvoiceRepository` owns `invoices` and `invoice_lines`, `WebhookEventRepository` owns `billing_webhook_events`; the domain services, the `services/api/src/billing` handlers, and the `services/worker/src/billing` jobs depend on those traits and contain no `sqlx::query*` call or connection (decision section 2.1)
 - Infrastructure and container: provider credentials and signing secrets from the F004 secret manager under `billing/<provider>/api_key` and `billing/<provider>/signing_secret` with a two-secret rotation window; the webhook route mounted outside the session-auth layer
 - Rust service and API: `crates/domain/src/billing/{mod.rs, plan.rs, subscription.rs, provider.rs, proration.rs, dunning.rs, webhook.rs, entitlements_projection.rs, errors.rs, service.rs, lifecycle.rs, adapters/{mod.rs, stripe.rs}}`; `services/api/src/billing/{mod.rs, routes.rs, handlers_subscription.rs, handlers_portal.rs, handlers_webhook.rs, dto.rs}`; `services/worker/src/billing/{mod.rs, dunning.rs, scheduled.rs, trial.rs, webhook_retry.rs}`
-- Data and migration: `services/api/migrations/<ts>_billing_create_tables.sql` creating `subscriptions`, `invoices`, `usage_records`, and `billing_webhook_events` with the constraints and indexes in ticket section 4
+- Data and migration: `services/api/migrations/<ts>_billing_create_tables.sql` creating `subscriptions`, `subscription_payment_methods`, `invoices`, `invoice_lines`, `usage_records`, `billing_webhook_events`, `credit_codes`, `credit_code_plans`, and `credit_ledger` with the foreign keys, enum `check` constraints, and indexes in ticket section 4
 - React and UI: `apps/web/src/features/billing/{BillingPage.tsx, PlanCard.tsx, PlanChangeDialog.tsx, ProrationPreviewTable.tsx, CancelDialog.tsx, DunningBanner.tsx, EntitlementSummary.tsx, PortalButton.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks and fixtures: `testing/fixtures/billing.rs`; the mock payment provider in `testing/harness/providers/billing/` with signing, portal, proration, timeout, and duplicate-event controls; in-memory F048 entitlement service and F037 notifier doubles
 
@@ -52,7 +53,7 @@ As a billing administrator, I want one subscription record per tenant that I can
 - Feature flag: `F064_FEATURE`
 - Targeted command: `cargo xtask test-feature F064`
 - Full command: `cargo xtask test-all`
-- First failing tests: `free_tenant_returns_synthetic_subscription`, `preview_matches_provider_line_items`, `upgrade_projects_plan_entitlements_with_source_plan`, `manual_entitlement_survives_plan_change`, `downgrade_schedules_for_period_end`, `webhook_replay_returns_duplicate_and_applies_nothing`, `webhook_bad_signature_rejected_without_state_change`, `dunning_day_seven_restricts_only_plan_entitlements`, `trial_expiry_without_payment_method_falls_back_to_free`, `tenant_admin_without_billing_admin_denied`
+- First failing tests: `free_tenant_returns_synthetic_subscription`, `preview_matches_provider_line_items`, `upgrade_projects_plan_entitlements_with_source_plan`, `manual_entitlement_survives_plan_change`, `downgrade_schedules_for_period_end`, `payment_method_row_replaced_not_duplicated`, `webhook_replay_returns_duplicate_and_applies_nothing`, `webhook_bad_signature_rejected_without_state_change`, `dunning_day_seven_restricts_only_plan_entitlements`, `trial_expiry_without_payment_method_falls_back_to_free`, `tenant_admin_without_billing_admin_denied`
 
 ## Exit criteria
 

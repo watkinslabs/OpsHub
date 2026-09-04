@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F011
 parent_story: S022
 depends_on: [T042]
-owned_paths: [crates/domain/src/schedules/**, services/api/src/schedules/**, testing/features/F011/api/**, testing/features/F011/performance/**]
+owned_paths: [crates/domain/src/schedules/**, crates/persistence/src/schedules/**, services/api/src/schedules/**, testing/features/F011/api/**, testing/features/F011/performance/**]
 feature_flag: F011_FEATURE
 branch: t043-schedule-api
 started_at: null
@@ -33,9 +33,9 @@ Implement sheet schedule settings, the schedule read model, and single-row resch
 
 ## Specification
 
-- Owned paths: `crates/domain/src/schedules/{settings.rs, schedule_read.rs, service_reschedule.rs}`, `services/api/src/schedules/{handlers_settings.rs, handlers_schedule.rs, handlers_reschedule.rs}`
+- Owned paths: `crates/domain/src/schedules/{settings.rs, schedule_read.rs, service_reschedule.rs}` (no SQL), `crates/persistence/src/schedules/{sheet_schedule_settings_repository.rs, working_calendar_repository.rs}`, `services/api/src/schedules/{handlers_settings.rs, handlers_schedule.rs, handlers_reschedule.rs}`
 - Contract/input: `PutScheduleSettingsRequest { start_column_id, end_column_id, duration_column_id?, milestone_column_id?, percent_complete_column_id?, calendar_id, timezone }`; `GET /schedule` query `{ cursor?, limit? ≤ 500 }`; `RescheduleRequest { start?, end?, duration? }` with headers `Idempotency-Key`, `If-Match`.
-- Output/behavior: `PUT /api/v1/sheets/{sheet_id}/schedule-settings` validates column types via F007 and returns `ScheduleSettingsResponse`; `GET /api/v1/sheets/{sheet_id}/schedule` returns `ScheduleResponse { settings, calendar, display_timezone, rows: Page<RowSchedule> }`; `POST /api/v1/rows/{id}/reschedule` loads the row and settings, computes the missing member with `calendar_math`, applies `snap_start`/`snap_end`, enforces milestone zero duration and the `parent_rollup` rejection, writes cells through the F006 row update path with `If-Match`, and returns `RowResponse` plus `snap_applied`; events `schedule-settings.updated.v1`, `row.rescheduled.v1`; metric `schedule_reschedule_duration_ms`; errors map per ticket section 4.
+- Output/behavior: `PUT /api/v1/sheets/{sheet_id}/schedule-settings` validates column types via F007 and writes through `SheetScheduleSettingsRepository` (owner of `sheet_schedule_settings`, named queries `get_for_sheet`, `page_row_schedules`) and returns `ScheduleSettingsResponse`; `GET /api/v1/sheets/{sheet_id}/schedule` returns `ScheduleResponse { settings, calendar, display_timezone, rows: Page<RowSchedule> }` from `get_for_sheet`, `load_resolved_calendar`, and `page_row_schedules(sheet_id, cursor, limit)`; `POST /api/v1/rows/{id}/reschedule` loads the row and settings, computes the missing member with `calendar_math`, applies `snap_start`/`snap_end`, enforces milestone zero duration and the `parent_rollup` rejection, writes cells through F006/F007's `RowRepository`/`CellRepository` with `If-Match` inside one `UnitOfWork` that also carries the audit row and outbox enqueue, and returns `RowResponse` plus `snap_applied`; events `schedule-settings.updated.v1`, `row.rescheduled.v1`; metric `schedule_reschedule_duration_ms`; errors map per ticket section 4.
 - Dependencies: T042 calendar service; F006 `update_row`; F007 column type lookup; F009 `rollup_rules` lookup (absent table treated as no rules); F049 user timezone hook returns `None` until F049 lands.
 - Feature flag: `F011_FEATURE`
 

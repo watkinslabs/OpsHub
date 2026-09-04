@@ -5,7 +5,7 @@ status: planned
 parent_epic: E006
 parent_feature: F029
 depends_on: [S057]
-owned_paths: [crates/domain/src/integrations/**, services/api/src/integrations/**, services/worker/src/integrations/**, apps/web/src/features/integrations/**, testing/features/F029/**]
+owned_paths: [crates/domain/src/integrations/**, crates/persistence/src/integrations/**, services/api/src/integrations/**, services/worker/src/integrations/**, apps/web/src/features/integrations/**, testing/features/F029/**]
 feature_flag: F029_FEATURE
 branch: s058-notifications-sync
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F029` Microsoft/Google/Slack
 - Owner: platform
 - Branch: `s058-notifications-sync`
-- Decision references: `docs/architecture-decisions.md` sections 5, 7; `docs/capability-contracts.md` row F029
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 5, 7; `docs/capability-contracts.md` row F029
 
 ## Vertical slice
 
@@ -29,18 +29,19 @@ As an integration administrator, I want OpsHub notifications delivered to Teams,
 
 - **SR-S058-01:** A connection with `notify` registers a F037 channel; adapters render Adaptive Cards, Google Chat cards, and Block Kit messages for `mention`, `assignment`, `approval`, `due_soon`, and `workflow_failed` with deep links (covers FR-F029-08).
 - **SR-S058-02:** `POST /api/v1/integrations/connections/{id}/notify-test` delivers within 10 s, returns `delivered` and `provider_message_id`, publishes `integration.notified.v1`, and is limited to 10 per connection per hour (FR-F029-09).
-- **SR-S058-03:** Calendar bindings validate column types, and the `calendar_sync` job pushes row changes to Outlook and Google Calendar and pulls provider changes using Graph delta tokens and Google `syncToken` cursors stored per binding (FR-F029-10).
-- **SR-S058-04:** `resolve_conflict` applies `opshub_wins`, `provider_wins`, `newest_wins`, and `manual`; conflicts write `integration_events` of `kind: conflict` and `manual` marks the row `needs_review` (FR-F029-11).
+- **SR-S058-03:** Calendar bindings validate column types, and the `calendar_sync` job pushes row changes to Outlook and Google Calendar and pulls provider changes using Graph delta tokens and Google `syncToken` cursors saved per binding by `CalendarBindingRepository::save_binding_cursor` after each successful page (FR-F029-10).
+- **SR-S058-04:** `resolve_conflict` applies `opshub_wins`, `provider_wins`, `newest_wins`, and `manual`; a conflict writes an `integration_events` row of `kind: conflict` and one `integration_conflicts` row per contested field with both values, both timestamps, and the winner, and `manual` sets `calendar_event_links.review_state = 'needs_review'` with winner `none`; `ConflictList` reads those rows instead of a `jsonb` payload (FR-F029-11).
 - **SR-S058-05:** The `chat_sync` job imports Slack and Teams thread replies as F016 comments with `source: provider`, mapping authors by email or attributing to the owner (FR-F029-12).
-- **SR-S058-06:** Adapters honor provider `429` and `Retry-After`, retry 3 times with backoff, and log every call in `integration_events` (FR-F029-13, NFR-F029-04).
+- **SR-S058-06:** Adapters honor provider `429` and `Retry-After`, retry 3 times with backoff, and log every call as an `integration_events` row appended by `IntegrationEventRepository::append_call_event` (FR-F029-13, NFR-F029-04).
 - **SR-S058-07:** `NotifyTestDialog`, `CalendarBindingDialog`, `ConflictList`, and `CallLogTable` implement the states in ticket section 3 (FR-F029-15, NFR-F029-03).
 - **SR-S058-08:** The full F029 harness with mocked providers passes, including a 1,000-row calendar sync under 5 minutes and notification p95 under 3 s (NFR-F029-01, NFR-F029-02).
 
 ## Surfaces
 
 - Infrastructure/container: worker jobs `calendar_sync`, `chat_sync`, `notify` registered with per-connection concurrency 1
+- Data access: `crates/persistence/src/integrations/{binding_repository.rs, event_repository.rs, connection_repository.rs}` hold every SQL statement for this slice — `CalendarBindingRepository` owns `calendar_bindings` and `calendar_event_links`, `IntegrationEventRepository` owns `integration_events` and `integration_conflicts` — and the `notify.rs`, `calendar.rs`, `conflict.rs`, and `chat.rs` domain modules, the `handlers_notify.rs` route, and the three worker jobs call them through traits with no `sqlx::query*` call of their own; each sync page applies its link rows, cursor, conflict rows, and F008 cell writes in one `UnitOfWork` (decision section 2.1)
 - Rust service/API: `crates/domain/src/integrations/{notify.rs, templates.rs, calendar.rs, conflict.rs, chat.rs, adapters/{microsoft365_calendar.rs, google_calendar.rs, slack_chat.rs, teams_chat.rs}}`; `services/api/src/integrations/{handlers_notify.rs, binding_validation.rs}`; `services/worker/src/integrations/{calendar_sync.rs, chat_sync.rs, notify.rs}`
-- Data/migration: none new; uses `calendar_bindings`, `calendar_event_links`, `integration_events` from S057
+- Data/migration: none new; uses `calendar_bindings`, `calendar_event_links` (including `review_state`), `integration_events`, and `integration_conflicts` from S057
 - React/UI: `apps/web/src/features/integrations/{NotifyTestDialog.tsx, CalendarBindingDialog.tsx, ConflictList.tsx, CallLogTable.tsx}`
 - Mocks/fixtures: mock providers with Graph delta, Calendar sync token, `chat.postMessage`, `conversations.replies`, and programmable 429 responses; sheet with 50 rows and a 1,000-row generator
 

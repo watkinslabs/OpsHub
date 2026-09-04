@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F014
 parent_story: S027
 depends_on: [T053]
-owned_paths: [crates/domain/src/forms/**, services/api/src/forms/**, apps/web/src/features/forms/**, testing/features/F014/api/**, testing/features/F014/frontend/**, testing/features/F014/accessibility/**]
+owned_paths: [crates/domain/src/forms/**, crates/persistence/src/forms/**, services/api/src/forms/**, apps/web/src/features/forms/**, testing/features/F014/api/**, testing/features/F014/frontend/**, testing/features/F014/accessibility/**]
 feature_flag: F014_FEATURE
 branch: t054-conditional-rules
 started_at: null
@@ -33,15 +33,15 @@ Implement field validation rules and the shared `show_if` condition evaluator on
 
 ## Specification
 
-- Owned paths: `crates/domain/src/forms/{conditions.rs, validation.rs}`, `services/api/src/forms/handlers_form.rs` (field validation wiring), `apps/web/src/features/forms/{FormBuilderPage.tsx, FieldPalette.tsx, FieldEditor.tsx, ConditionEditor.tsx, FormPreview.tsx, PublishDialog.tsx, ShareDialog.tsx, conditions.ts, api.ts, hooks.ts, routes.ts}`
-- Contract/input: `ConditionAst = Cmp { field: key, op: eq|ne|gt|lt|contains|is_empty, value } | And(Vec) | Or(Vec)` with depth ≤ 4 and at most 32 leaves; `FieldValidation { regex?, min?, max?, options_subset? }` checked against the column type from F007 (`regex` only on text, `min`/`max` on number, currency, date, `options_subset` on select); generated `FormsApi` client; route params `workspaceId`, `formId`.
-- Output/behavior: `evaluate(ast, values) -> bool` is deterministic and identical in Rust and TypeScript against `testing/fixtures/forms/conditions.json` (64 cases); hidden fields are not required and their values are dropped before validation; the builder renders loading skeleton, empty palette hint, error banner with correlation ID, denied state for submitters, stale banner on `conflict`, and success toasts; `FormPreview` re-evaluates conditions on every keystroke; `PublishDialog` shows the token once and the `ShareDialog` offers internal, link, and embed tabs with the `<iframe>` snippet; telemetry `form_created`, `form_published`, `form_shared`.
+- Owned paths: `crates/domain/src/forms/{conditions.rs, validation.rs}`, `crates/persistence/src/forms/form_version_repository.rs` (field, option, frame-ancestor, and MIME-allowlist row writes), `services/api/src/forms/handlers_form.rs` (field validation wiring, no SQL), `apps/web/src/features/forms/{FormBuilderPage.tsx, FieldPalette.tsx, FieldEditor.tsx, ConditionEditor.tsx, FormPreview.tsx, PublishDialog.tsx, ShareDialog.tsx, conditions.ts, api.ts, hooks.ts, routes.ts}`
+- Contract/input: `ConditionAst = Cmp { field: key, op: eq|ne|gt|lt|contains|is_empty, value } | And(Vec) | Or(Vec)` with depth ≤ 4 and at most 32 leaves; `FieldValidation { regex?, min?, max?, options_subset? }` keeps its nested shape on the wire and is checked against the column type from F007 (`regex` only on text, `min`/`max` on number, currency, date, `options_subset` on select), persisting as `form_fields.validation_regex|validation_min|validation_max` plus ordered `form_field_options` rows; the `show_if` AST stays a `jsonb` payload because it is user-authored, of arbitrary shape to depth 4, and evaluated in memory rather than read by key in SQL; generated `FormsApi` client; route params `workspaceId`, `formId`.
+- Output/behavior: `evaluate(ast, values) -> bool` is deterministic and identical in Rust and TypeScript against `testing/fixtures/forms/conditions.json` (64 cases); hidden fields are not required and their values are dropped before validation; the builder renders loading skeleton, empty palette hint, error banner with correlation ID, denied state for submitters, stale banner on `conflict`, and success toasts; `FormPreview` re-evaluates conditions on every keystroke; `PublishDialog` shows the token once and the `ShareDialog` offers internal, link, and embed tabs with the `<iframe>` snippet and an origin list editor whose entries become `form_version_frame_ancestors` rows, rejecting a duplicate origin against the `(version_id, origin)` unique constraint; telemetry `form_created`, `form_published`, `form_shared`.
 - Dependencies: T053 routes and tables; F007 column types and options; F005 workspace shell for the `Forms` tab.
 - Feature flag: `F014_FEATURE` read through the flag hook; routes are not registered when off.
 
 ## TDD
 
-- Failing test first: `testing/features/F014/api/condition_tests.rs::condition_hidden_field_not_required`, `::condition_depth_over_four_invalid`, `::validation_regex_only_on_text_columns`; `testing/features/F014/frontend/ConditionEditor.test.tsx::evaluator_matches_shared_fixtures`, `::preview_hides_field_when_condition_false`; `testing/features/F014/frontend/FormBuilderPage.test.tsx::shows_denied_state_for_submitter`, `::publish_dialog_shows_token_once`; `testing/features/F014/accessibility/forms.a11y.spec.ts::builder_has_no_serious_axe_violations`
+- Failing test first: `testing/features/F014/api/condition_tests.rs::condition_hidden_field_not_required`, `::condition_depth_over_four_invalid`, `::validation_regex_only_on_text_columns`, `::options_subset_persisted_as_ordered_option_rows`; `testing/features/F014/frontend/ConditionEditor.test.tsx::evaluator_matches_shared_fixtures`, `::preview_hides_field_when_condition_false`; `testing/features/F014/frontend/FormBuilderPage.test.tsx::shows_denied_state_for_submitter`, `::publish_dialog_shows_token_once`; `testing/features/F014/accessibility/forms.a11y.spec.ts::builder_has_no_serious_axe_violations`
 - Targeted command: `cargo xtask test-feature F014`
 - Full command: `cargo xtask test-all`
 - Fixtures/mocks: shared `conditions.json`; MSW handlers from the 12-column sheet fixture; axe-core via Playwright

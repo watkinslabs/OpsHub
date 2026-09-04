@@ -6,7 +6,7 @@ parent_epic: E006
 parent_feature: F026
 parent_story: S051
 depends_on: [T101]
-owned_paths: [crates/domain/src/sso/**, services/api/src/sso/**, apps/web/src/features/sso/**, testing/features/F026/api/**, testing/features/F026/frontend/**]
+owned_paths: [crates/domain/src/sso/**, crates/persistence/src/sso/**, services/api/src/sso/**, apps/web/src/features/sso/**, testing/features/F026/api/**, testing/features/F026/frontend/**]
 feature_flag: F026_FEATURE
 branch: t102-scim-endpoints
 started_at: null
@@ -28,7 +28,7 @@ Implement SCIM bearer-token authentication with rotation, the RFC 7644 `Users` a
 
 ## Specification
 
-- Owned paths: `crates/domain/src/sso/scim/{mod.rs, token.rs, filter.rs, users.rs, groups.rs, errors.rs}`, `services/api/src/sso/{handlers_scim.rs, scim_auth.rs, scim_dto.rs}`, `apps/web/src/features/sso/{ScimTokenDialog.tsx, ProvisioningTab.tsx}`
+- Owned paths: `crates/domain/src/sso/scim/{mod.rs, token.rs, filter.rs, users.rs, groups.rs, errors.rs}`, `crates/persistence/src/sso/{scim_token_repository.rs, sync_log_repository.rs}`, `services/api/src/sso/{handlers_scim.rs, scim_auth.rs, scim_dto.rs}`, `apps/web/src/features/sso/{ScimTokenDialog.tsx, ProvisioningTab.tsx}`
 - Contract/input: `Authorization: Bearer <token>`; `ScimUser { schemas, id, externalId, userName, name { givenName, familyName }, emails [ { value, primary } ], active, groups, meta }`, `ScimGroup { schemas, id, externalId, displayName, members [ { value, display } ], meta }`, `ScimPatch { schemas, Operations [ { op: add|remove|replace, path?, value } ] }`; list query `filter` (`userName eq`, `externalId eq`, `displayName eq`), `startIndex` (1-based), `count` (1–200).
 - Output/behavior: routes `GET /scim/v2/Users`, `POST /scim/v2/Users`, `PATCH /scim/v2/Users/{id}`, `DELETE /scim/v2/Users/{id}`, `GET /scim/v2/Groups`, `POST /scim/v2/Groups`, `PATCH /scim/v2/Groups/{id}` with `Content-Type: application/scim+json`; `ListResponse { totalResults, startIndex, itemsPerPage, Resources }`; errors `{ schemas, status, scimType, detail }` with `uniqueness` on duplicate `userName`, 404 on unknown ID or foreign tenant, 401 on unknown, revoked, or expired token; `PATCH { rotate_scim_token: true }` on the connection returns the plaintext token once, stores SHA-256, and revokes the previous token after 15 minutes; `token.rs` uses constant-time comparison; 60 requests per minute per token via F038 `rate_limit_buckets` keyed `scim:<token_id>`; each write appends `scim_sync_log` and publishes `scim.user-synced.v1` or `scim.group-synced.v1`; `active: false` delegates to `lifecycle::suspend` (T103 completes the ownership transfer; this task revokes sessions).
 - Dependencies: T101 connection tables and router; F002 `users` and `groups` services; F038 session revocation and rate-limit buckets.

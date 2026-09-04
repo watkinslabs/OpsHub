@@ -11,7 +11,7 @@ depends_on: [F035, F021, F048]
 blocks: []
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/ai-assist/**, services/api/src/ai-assist/**, services/worker/src/ai-assist/**, apps/web/src/features/ai-assist/**, services/api/migrations/*_ai-assist_*.sql, testing/features/F039/**]
+owned_paths: [crates/domain/src/ai-assist/**, crates/persistence/src/ai-assist/**, services/api/src/ai-assist/**, services/worker/src/ai-assist/**, apps/web/src/features/ai-assist/**, services/api/migrations/*_ai-assist_*.sql, testing/features/F039/**]
 feature_flag: F039_FEATURE
 flag_default: off
 branch: f039-ai-formulas-queries
@@ -25,7 +25,7 @@ finished_at: null
 
 - Branch: `f039-ai-formulas-queries`
 - Capability area: AI capabilities (spec 5.10 AI-01, AI-03; section 10 provider-neutral adapter decision)
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 7; `docs/capability-contracts.md` row F039
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 7; `docs/capability-contracts.md` row F039
 - Aggregate: `ai-query`
 - Module slug: `ai-assist`
 

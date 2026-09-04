@@ -5,7 +5,7 @@ status: planned
 parent_epic: E003
 parent_feature: F049
 depends_on: [F005]
-owned_paths: [crates/domain/src/i18n/**, services/api/src/i18n/**, services/api/migrations/*_i18n_*.sql, testing/features/F049/**]
+owned_paths: [crates/domain/src/i18n/**, crates/persistence/src/i18n/**, services/api/src/i18n/**, services/api/migrations/*_i18n_*.sql, testing/features/F049/**]
 feature_flag: F049_FEATURE
 branch: s097-locale-formatting
 started_at: null
@@ -36,17 +36,17 @@ As any authenticated user, I want the server to resolve my effective locale and 
 - **SR-S097-02:** `EffectiveLocaleLayer` resolves user override, then tenant default, then `en-US`/`UTC`/`monday`/`h12`, and stamps `X-OpsHub-Locale` and `X-OpsHub-Timezone` on every authenticated response in under 1 ms from cache (FR-F049-04, NFR-F049-01).
 - **SR-S097-03:** `format_number`, `format_currency`, `format_date`, and `format_datetime` produce the ICU output for each supported locale, apply DST for `datetime` values, and leave `date` values unchanged across timezones (FR-F049-05, FR-F049-06).
 - **SR-S097-04:** `normalize_text` converts input to NFC, `grapheme_len` counts clusters for length limits, and invalid UTF-8 maps to `400 invalid` with `field_errors.<name> = "encoding"` (FR-F049-07).
-- **SR-S097-05:** `GET /api/v1/messages/{locale}` returns the catalog with `ETag` and `Cache-Control: public, max-age=86400, immutable`, answers `304` to a matching `If-None-Match`, and returns `404 not_found` for an unsupported locale (FR-F049-08).
-- **SR-S097-06:** `render_message` falls back to `en-US` for a missing key and increments `i18n_missing_key_total{locale,key}` once per key per process; plural and select arguments follow ICU rules per locale (FR-F049-09, FR-F049-10).
-- **SR-S097-07:** Migration creates `tenant_locales`, `user_locales`, and `message_catalogs` with check constraints and the tenant-creation trigger; the readiness probe fails when tzdata is missing (NFR-F049-04).
+- **SR-S097-05:** `GET /api/v1/messages/{locale}` returns the one-document catalog assembled by `MessageCatalogRepository::load_catalog` from the `message_catalog_entries` rows in a single query, with the `ETag` read from `message_catalogs.etag` and `Cache-Control: public, max-age=86400, immutable`, answers `304` to a matching `If-None-Match`, and returns `404 not_found` for an unsupported locale (FR-F049-08).
+- **SR-S097-06:** `render_message` falls back per key to the `en-US` entry row through `find_pattern` and increments `i18n_missing_key_total{locale,key}` once per key per process; plural and select arguments follow ICU rules per locale (FR-F049-09, FR-F049-10).
+- **SR-S097-07:** Migration creates `tenant_locales`, `user_locales`, `message_catalogs`, and `message_catalog_entries` with check constraints, the `entry_count` check, the entry foreign key, the `message_catalog_entries(message_key)` index, and the tenant-creation trigger; the readiness probe fails when tzdata is missing (NFR-F049-04).
 
 ## Surfaces
 
 - Infrastructure/container: `TZ=UTC` and `ICU_DATA` build argument in the API image; no new compose services
-- Rust service/API: `crates/domain/src/i18n/{mod.rs, locale.rs, timezone.rs, resolve.rs, format.rs, text.rs, catalog.rs, errors.rs}`; `services/api/src/i18n/{mod.rs, routes.rs, middleware.rs, handlers_locales.rs, handlers_messages.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_i18n_create_tables.sql` creating the three tables, checks, trigger, and indexes from ticket section 4
+- Rust service/API: `crates/domain/src/i18n/{mod.rs, locale.rs, timezone.rs, resolve.rs, format.rs, text.rs, catalog.rs, errors.rs}` (repository traits only, no SQL); `crates/persistence/src/i18n/{mod.rs, tenant_locale_repository.rs, user_locale_repository.rs, message_catalog_repository.rs}`; `services/api/src/i18n/{mod.rs, routes.rs, middleware.rs, handlers_locales.rs, handlers_messages.rs, dto.rs}`
+- Data/migration: `services/api/migrations/<ts>_i18n_create_tables.sql` creating the four tables, checks, trigger, and indexes from ticket section 4
 - React/UI: none in this story (S098 covers pages and the provider)
-- Mocks/fixtures: `testing/fixtures/i18n.rs` tenants A (`de-DE`/`Europe/Berlin`) and B (`en-US`/`UTC`), user with `pt-BR` override, DST instants, eight seeded catalogs of 2,000 keys; in-process metrics registry
+- Mocks/fixtures: `testing/fixtures/i18n.rs` tenants A (`de-DE`/`Europe/Berlin`) and B (`en-US`/`UTC`), user with `pt-BR` override, DST instants, eight seeded catalog headers with 2,000 entry rows each; in-process metrics registry
 
 ## TDD harness
 

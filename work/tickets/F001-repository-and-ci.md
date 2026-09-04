@@ -91,6 +91,7 @@ Excluded: xtask commands themselves (F041, F042, F043, F044), container images a
 - `rust-toolchain.toml`: `channel = "stable"`, `components = ["rustfmt", "clippy"]`, `profile = "minimal"`.
 - `.cargo/config.toml`: `[build] target-dir = "target"` overridable by `CARGO_TARGET_DIR`; `[env] SQLX_OFFLINE = "true"`; `[alias] xtask = "run --package xtask --"`.
 - `rustfmt.toml`: `edition = "2024"`, `max_width = 110`; `clippy.toml`: `too-many-arguments-threshold = 8`.
+- Data access (decision 2.1): this feature owns no table and adds no repository. The `sqlx` pin lives in `[workspace.dependencies]` but only `crates/persistence` declares it as a member dependency, so every table is reached through a repository class in that crate; `crates/domain`, the four services, and `automation/xtask` take no SQLx dependency in their skeleton manifests, and the F068 `check-persistence` gate keeps it that way.
 - Error mapping: none (no runtime code); build failures map to non-zero process exit and `BLOCKED:` lines from xtask.
 
 ### PostgreSQL/SQLx

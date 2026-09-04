@@ -90,6 +90,7 @@ Canonical contract: aggregate `execution-lane`; module `xtask-lanes`; surface `c
 - Persistence: `.lanes/<ID>.toml` (TOML via `toml` crate), `.lanes/slots.toml`, `.lanes/history.log`; the work file move rewrites only the `status`, `started_at`, and `finished_at` lines and preserves every other byte.
 - Git access through `support::git`: `worktree add`, `worktree remove`, `worktree list --porcelain`, `rev-parse`, `status --porcelain`, `config user.email`.
 - Error mapping: precondition failures → `Refusal { code, message }` exit 3; validator findings → exit 1; git/I-O → exit 2; `--json` errors carry the same `code`.
+- Data access (decision 2.1): this feature owns no table and adds no repository; an `execution-lane` lives in `.lanes/<ID>.toml`, and `allocate-fixture` only names the PostgreSQL schema a lane will use — it opens no connection and issues no SQL, so the lane runtime never touches a table outside `crates/persistence`.
 - Authorization: maintainer role implicit; lane ownership by email enforced per FR-F043-13; overrides logged.
 - Telemetry: `history.log` lines and manifest `commands`; no events (contracts row lists none).
 - Refusal codes: `lane.precondition`, `lane.exists`, `lane.branch_exists`, `lane.slots_exhausted`, `lane.not_owner`, `lane.dirty`, `lane.inconsistent`, `lane.port_in_use`, `artifacts.too_large`, `artifacts.symlink_escape`.

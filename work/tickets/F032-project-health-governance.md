@@ -11,7 +11,7 @@ depends_on: [F031, F020]
 blocks: []
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/governance/**, services/api/src/governance/**, services/worker/src/governance/**, apps/web/src/features/governance/**, services/api/migrations/*_governance_*.sql, testing/features/F032/**]
+owned_paths: [crates/domain/src/governance/**, crates/persistence/src/governance/**, services/api/src/governance/**, services/worker/src/governance/**, apps/web/src/features/governance/**, services/api/migrations/*_governance_*.sql, testing/features/F032/**]
 feature_flag: F032_FEATURE
 flag_default: off
 branch: f032-project-health-governance
@@ -25,7 +25,7 @@ finished_at: null
 
 - Branch: `f032-project-health-governance`
 - Capability area: project governance (spec 5.7 PPM-01 governance checkpoints, PPM-04; low-level bullets "Health is configurable from weighted indicators (schedule, budget, scope, risk, resource) with manual override and reason" and "Stage gates require defined evidence, decision, approver, date, and audit event"; 5.11 Control Center intake and stage gates absorbed here)
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 7, 9; `docs/capability-contracts.md` row F032
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 9; `docs/capability-contracts.md` row F032
 - Aggregate: `project-governance`
 - Module slug: `governance`
 

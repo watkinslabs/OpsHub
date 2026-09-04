@@ -1,0 +1,17 @@
+# F068 e2e cases
+
+End to end here means the whole gate over fixture repository trees and the whole crate over a real database — no browser is started, because this feature has no screen. Files: `testing/features/F068/e2e/{gate_e2e.rs,repository_e2e.rs}` driving the built `xtask` binary and the `services/api` user routes against a throwaway PostgreSQL 18. Flag `F068_FEATURE`.
+
+- `clean_tree_passes_with_exit_zero` — FR-F068-14, FR-F068-16: `trees/clean/` with the crate, the catalog excerpt, and the policy file produces `check-persistence passed`, empty stderr, and exit 0.
+- `sql_literal_in_handler_is_raw_sql` — FR-F068-14: `trees/raw_sql/` holds `services/api/src/tenants/handlers_user.rs` containing `"select id from users where tenant_id = $1"`; the finding is `persist.raw_sql` with that path and line, exit 1. The same tree's `sqlx::query_as!` call in `crates/domain` is a second finding, and the identical literal inside `crates/persistence/src/users/queries.rs` is not.
+- `pool_type_outside_crate_is_connection_type` — FR-F068-14: `trees/connection_leak/` passes a `PgPool` into a worker job and re-exports `PgConnection` from `crates/persistence/src/lib.rs`; both are reported, and F004's `crates/persistence/src/runtime/**` pool builder is not.
+- `pub_fn_named_query_is_escape_hatch` — FR-F068-14, FR-F068-13: `trees/escape_hatch/` adds `pub async fn query(&self, sql: &str)` to the crate; the finding is `persist.escape_hatch` naming the function and its `sql` parameter.
+- `catalog_table_without_spec_is_unmapped` — FR-F068-14, NFR-F068-05: `catalog/missing_table.md` lists `group_members` while `trees/unmapped_table/` registers no specification claiming it in `TABLE` or `CO_TABLES`; the finding is `persist.table_unmapped group_members`.
+- `two_specs_on_one_table_is_double_write` — FR-F068-14: `trees/double_write/` declares `TABLE = "users"` in two specifications; the finding is `persist.table_double_write` naming both source files, so a table never has two writers.
+- `array_column_in_migration_is_reported_with_owning_feature` — FR-F068-15: `migrations/arrays/` carries F029's `capabilities text[]`, `scopes text[]`, `missing_scopes text[]`, and `granted_scopes text[]`; four `persist.array_column` findings name the columns and F029, with no exemption.
+- `jsonb_column_absent_from_policy_is_unlisted` — FR-F068-15: `migrations/jsonb_unlisted/` adds `sheets.filters jsonb`; the finding is `persist.jsonb_unlisted`, while `migrations/jsonb_listed/` with `cells.value` and `audit_events.field_diff` passes; `migrations/stale_policy/` yields `persist.policy_stale`.
+- `baseline_widening_refuses_with_exit_three` — FR-F068-16: a run whose findings match `baseline.json` exits 1 with the recorded findings; adding one new finding prints `REFUSED: persist.baseline_widened` and exits 3; `--write-baseline` without `XTASK_ROLE=maintainer` also exits 3 and writes nothing.
+- `user_routes_write_through_the_repository_only` — FR-F068-13, FR-F068-06: `POST /api/v1/users`, `PATCH /api/v1/users/{id}`, and `POST /api/v1/users/{id}/deactivate` against a seeded tenant each leave one `audit_events` row and one `outbox_events` row carrying `user.created.v1`, `user.updated.v1`, and `user.deactivated.v1`, and `GET /api/v1/users` pages with the signed cursor.
+- `unknown_flag_exits_two` — FR-F068-16: `check-persistence --bogus` prints the usage line on stderr and exits 2 without scanning.
+
+Evidence: captured gate output, fixture tree diffs, and API logs under `testing/evidence/F068/e2e/`.

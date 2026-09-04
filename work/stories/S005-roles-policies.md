@@ -32,9 +32,9 @@ As a tenant administrator, I want system and custom roles, resource ACLs with in
 ## Requirements
 
 - **SR-S005-01:** The migration seeds the seven system roles per tenant through a trigger on `tenants` insert, with `is_system = true` and immutable slugs (covers FR-F003-01).
-- **SR-S005-02:** `GET/POST /api/v1/roles` and `PATCH /api/v1/roles/{id}` manage custom roles with unique slugs, catalogue-validated permissions, `If-Match`, and `role.updated.v1` (FR-F003-02).
-- **SR-S005-03:** `GET /api/v1/resources/{kind}/{id}/acl` returns direct, inherited, and caller-resolved entries; `PUT` replaces direct entries atomically (≤ 500), requires `acl:manage`, and emits `acl.updated.v1` with the entry diff (FR-F003-03, FR-F003-04).
-- **SR-S005-04:** `check` evaluates suspended → explicit deny on resource or ancestor → allow entry or role binding at scope or ancestor → deny, returning `decision`, `reason`, `matched_rule`; guests never match tenant-scoped bindings (FR-F003-05, FR-F003-06).
+- **SR-S005-02:** `GET/POST /api/v1/roles` and `PATCH /api/v1/roles/{id}` manage custom roles with unique slugs, catalogue-validated permissions written as one `role_permissions` row per permission and replaced atomically on update, `If-Match`, and `role.updated.v1` (FR-F003-02).
+- **SR-S005-03:** `GET /api/v1/resources/{kind}/{id}/acl` returns direct, inherited, and caller-resolved entries; `PUT` replaces direct entries and their `resource_acl_permissions` rows atomically (≤ 500), requires `acl:manage`, and emits `acl.updated.v1` with the entry diff (FR-F003-03, FR-F003-04).
+- **SR-S005-04:** `check` evaluates suspended → explicit deny on resource or ancestor → allow entry or role binding at scope or ancestor → deny, joining `role_permissions` and `resource_acl_permissions` rows to match a permission, and returning `decision`, `reason`, `matched_rule`; guests never match tenant-scoped bindings (FR-F003-05, FR-F003-06).
 - **SR-S005-05:** `POST /api/v1/authz/check` serves the caller, or another principal for tenant-admin, and denies delegated checks for others (FR-F003-07).
 - **SR-S005-06:** `authz::require` and `RequirePermission<P>` map missing read to `404`, missing mutate to `403`, cache per request and 30 s across requests, and invalidate on `acl.updated.v1` / `role.updated.v1` (FR-F003-08).
 - **SR-S005-07:** `/admin/roles` and the reusable `AclEditor` drawer render the matrix, entries, and all UI states (FR-F003-14, NFR-F003-03).
@@ -43,8 +43,8 @@ As a tenant administrator, I want system and custom roles, resource ACLs with in
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/authz/{mod.rs, permissions.rs, role.rs, acl.rs, principal.rs, ancestry.rs, engine.rs, cache.rs, require.rs, errors.rs, service_roles.rs, service_acl.rs, schema.rs}`; `services/api/src/authz/{mod.rs, routes.rs, handlers_roles.rs, handlers_acl.rs, handlers_check.rs, extractor.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_authz_create_tables.sql` creating `roles`, `role_bindings`, `resource_acls`, and partitioned `audit_events` with triggers and indexes from ticket section 4 (audit rows are written by S006)
+- Rust service/API: `crates/domain/src/authz/{mod.rs, permissions.rs, role.rs, acl.rs, principal.rs, ancestry.rs, engine.rs, cache.rs, require.rs, errors.rs, service_roles.rs, service_acl.rs, schema.rs}`; `services/api/src/authz/{mod.rs, routes.rs, handlers_roles.rs, handlers_acl.rs, handlers_check.rs, extractor.rs, dto.rs}`; all SQL lives in `crates/persistence/src/authz/` behind `RoleRepository` (`roles`, `role_permissions`), `RoleBindingRepository` (`role_bindings`), and `ResourceAclRepository` (`resource_acls`, `resource_acl_permissions`), with `GroupMembershipSource` reading `group_members` through F002's `GroupRepository`; the use cases, evaluator, extractor, handlers, and tests call those repository traits and the shared `UnitOfWork` and contain no SQL (decision 2.1)
+- Data/migration: `services/api/migrations/<ts>_authz_create_tables.sql` creating `roles`, `role_permissions(tenant_id, role_id, permission, granted_at, primary key (role_id, permission))`, `role_bindings`, `resource_acls`, `resource_acl_permissions(tenant_id, acl_id, permission, primary key (acl_id, permission))` — both permission tables cascading with their parent and checking the `<resource>:<verb>` permission format — and partitioned `audit_events` with triggers and indexes from ticket section 4, reached only through the `crates/persistence/src/authz/` repositories (audit rows are written by S006)
 - React/UI: `apps/web/src/features/authz/{RolesPage.tsx, RoleEditor.tsx, PermissionMatrix.tsx, AclEditor.tsx, AclEntryRow.tsx, PrincipalPicker.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: `testing/fixtures/authz.rs` with the synthetic 4-level `AncestryResolver`, role `Reviewer`, bindings, guest principal; in-memory outbox recorder
 
@@ -54,7 +54,7 @@ As a tenant administrator, I want system and custom roles, resource ACLs with in
 - Feature flag: `F003_FEATURE`
 - Targeted command: `cargo xtask test-feature F003`
 - Full command: `cargo xtask test-all`
-- First failing tests: `system_roles_seeded_per_tenant`, `role_unknown_permission_invalid`, `acl_replace_emits_diff_event`, `deny_on_ancestor_beats_allow_on_resource`, `guest_ignores_tenant_binding`, `require_maps_missing_read_to_not_found`, `cache_invalidated_after_acl_update`, `check_cached_p95`
+- First failing tests: `system_roles_seeded_per_tenant`, `role_permission_rows_replaced_atomically`, `acl_permission_rows_cascade_with_entry`, `role_unknown_permission_invalid`, `acl_replace_emits_diff_event`, `deny_on_ancestor_beats_allow_on_resource`, `guest_ignores_tenant_binding`, `require_maps_missing_read_to_not_found`, `cache_invalidated_after_acl_update`, `check_cached_p95`
 
 ## Exit criteria
 

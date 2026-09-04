@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 1, 2, 3, 4, 7, 9, 10
-- Capability contract: `docs/capability-contracts.md` rows F001, F062, F002, F038, F003, F004, F066
+- Capability contract: `docs/capability-contracts.md` rows F001, F062, F068, F002, F038, F003, F004, F066
 - Product spec: `docs/product-capability-spec.md` sections 3, 4, 5.8, 6, 7 (Phase 0 and Phase 1), 10
 
 # E001 — Platform foundation
@@ -30,6 +30,7 @@ A clean checkout boots the complete multi-tenant runtime (API, web, worker, real
 
 - F001 Repository and CI: Rust 2024 workspace, React 19 app shell, `gates.yml` CI matrix, line-limit and attribution gates. Depends on F041, F042.
 - F062 Design system and UI primitives: token scales for color, type, spacing, radius, elevation, motion and density, light and dark themes, and the shared `apps/web/src/ui/**` primitive and pattern library every feature composes. Depends on F001.
+- F068 Persistence layer and data access classes: the `Repository` and `UnitOfWork` contracts in `crates/persistence`, one data access class per object type, and the `check-persistence` gate that keeps SQL out of the domain and services (`persistence` module).
 - F002 Tenant, users, and groups: `tenants`, `users`, `groups`, `group_members` tables, twelve admin routes, seven events, the reusable two-tenant fixture. Depends on F001.
 - F038 Authentication and MFA: OIDC login, sessions, refresh tokens, TOTP and WebAuthn factors, API tokens, rate-limit buckets, tenant security policy, gateway `ActorContext`. Depends on F002.
 - F003 Authorization and audit: roles, role bindings, resource ACLs, policy engine, `RequirePermission` middleware, append-only `audit_events`, audit query API. Depends on F002, F038.

@@ -6,7 +6,7 @@ parent_epic: E006
 parent_feature: F026
 parent_story: S052
 depends_on: [S052]
-owned_paths: [crates/domain/src/sso/**, services/api/src/sso/**, apps/web/src/features/sso/**, testing/features/F026/api/**, testing/features/F026/frontend/**]
+owned_paths: [crates/domain/src/sso/**, crates/persistence/src/sso/**, services/api/src/sso/**, apps/web/src/features/sso/**, testing/features/F026/api/**, testing/features/F026/frontend/**]
 feature_flag: F026_FEATURE
 branch: t103-group-mapping
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S052` Lifecycle sync
 - Owner: platform
 - Branch: `t103-group-mapping`
-- Decision references: `docs/architecture-decisions.md` section 4; `docs/capability-contracts.md` row F026
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 4; `docs/capability-contracts.md` row F026
 
 ## Objective
 
@@ -28,10 +28,11 @@ Implement suspended-user behavior with ownership transfer, group-to-role mapping
 
 ## Specification
 
-- Owned paths: `crates/domain/src/sso/{lifecycle.rs, ownership.rs, mapping.rs}`, `services/api/src/sso/handlers_mapping.rs`, `apps/web/src/features/sso/{GroupMappingEditor.tsx, SyncLogTable.tsx}`
-- Contract/input: `UpdateConnectionRequest.group_mappings: [ { external_id?, display_name?, role_ids } ]` (at least one of `external_id`/`display_name`, 1–10 roles each, max 200 mappings); SCIM `PATCH Users { active }` and `PATCH Groups { Operations }` from T102.
-- Output/behavior: `lifecycle::suspend(user)` revokes sessions, refresh tokens, and API tokens through F038, keeps shares, and calls `ownership::transfer_all(from, to)` which reassigns `owner_id` on sheets, workspaces, dashboards, and workflows in one transaction with a 5 s budget, writing `ownership.transferred` per object and `scim_sync_log.outcome = partial` with the remaining IDs when the budget is exceeded; `lifecycle::reinstate` sets `active` without touching ownership; `mapping::apply(connection, group, members)` computes the role set from all mappings for the user's current mapped groups, inserts F003 `role_bindings` with `source = 'scim:<mapping_id>'`, deletes only bindings with that source prefix that are no longer implied, and publishes `scim.group-synced.v1`; the editor lists mappings with role pickers and shows last sync outcome from `scim_sync_log`.
+- Owned paths: `crates/domain/src/sso/{lifecycle.rs, ownership.rs, mapping.rs}`, `crates/persistence/src/sso/mapping_repository.rs`, `services/api/src/sso/handlers_mapping.rs`, `apps/web/src/features/sso/{GroupMappingEditor.tsx, SyncLogTable.tsx}`
+- Contract/input: `UpdateConnectionRequest.group_mappings: [ { external_id?, display_name?, role_ids } ]` (at least one of `external_id`/`display_name`, 1–10 roles each, max 200 mappings) — the request keeps the `role_ids` array, `GroupMappingRepository::replace_mapping_roles` stores it as `group_mapping_roles` rows, and the response reassembles the array so the API is unchanged; SCIM `PATCH Users { active }` and `PATCH Groups { Operations }` from T102.
+- Output/behavior: `lifecycle::suspend(user)` revokes sessions, refresh tokens, and API tokens through F038, keeps shares, and calls `ownership::transfer_all(from, to)` which reassigns `owner_id` on sheets, workspaces, dashboards, and workflows in one transaction with a 5 s budget, writing `ownership.transferred` per object and `scim_sync_log.outcome = partial` with the remaining IDs when the budget is exceeded; `lifecycle::reinstate` sets `active` without touching ownership; `mapping::apply(connection, group, members)` computes the role set from all mappings for the user's current mapped groups, reads the role set with `GroupMappingRepository::list_mappings_for_external_id` joined to `group_mapping_roles`, inserts F003 `role_bindings` with `source = 'scim:<mapping_id>'` through `RoleBindingRepository`, deletes only bindings with that source prefix that are no longer implied, and publishes `scim.group-synced.v1`; the editor lists mappings with role pickers and shows last sync outcome from `scim_sync_log`.
 - Dependencies: T102 SCIM handlers; F003 `role_bindings` with `source` column and `authz::rebind`; F038 revocation; F005/F006/F018/F023 owner columns.
+- Data access: `lifecycle.rs`, `ownership.rs`, and `mapping.rs` hold no SQL; ownership transfer runs one `UnitOfWork` over the F005/F006/F018/F023 repositories, and the sync-log row is appended by `ScimSyncLogRepository::append_sync_entry` (decision section 2.1).
 - Feature flag: `F026_FEATURE`
 
 ## TDD

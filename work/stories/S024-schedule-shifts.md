@@ -5,7 +5,7 @@ status: planned
 parent_epic: E003
 parent_feature: F012
 depends_on: [S023]
-owned_paths: [crates/domain/src/dependencies/**, services/api/src/dependencies/**, apps/web/src/features/dependencies/**, testing/features/F012/**]
+owned_paths: [crates/domain/src/dependencies/**, crates/persistence/src/dependencies/**, services/api/src/dependencies/**, apps/web/src/features/dependencies/**, testing/features/F012/**]
 feature_flag: F012_FEATURE
 branch: s024-schedule-shifts
 started_at: null
@@ -34,7 +34,7 @@ As a project editor, I want to preview and commit a shift of one task or the who
 
 - **SR-S024-01:** `POST /api/v1/sheets/{sheet_id}/schedule/shift` with `{ row_id, delta_days, preview: true }` returns `ShiftResponse { committed: false, affected }` listing every transitively affected row with old and new start/finish and writes nothing (FR-F012-11).
 - **SR-S024-02:** `{ anchor_date, preview: false }` re-anchors the sheet so its earliest start equals `anchor_date`, moving every row by the same working-day distance and skipping calendar exceptions from F011 (FR-F012-11).
-- **SR-S024-03:** A committed shift updates start and end cells of all affected rows in one transaction under the sheet `If-Match` schedule version, writes one audit event with before/after dates, publishes `schedule.shifted.v1` once, and returns the new `schedule_version` (FR-F012-12).
+- **SR-S024-03:** A committed shift updates start and end cells of all affected rows through the F006/F007 cell repositories and rewrites `schedule_results` in one `UnitOfWork` under the sheet `If-Match` schedule version, writes one audit event with before/after dates, publishes `schedule.shifted.v1` once, and returns the new `schedule_version` (FR-F012-12).
 - **SR-S024-04:** Shifts affecting more than 10,000 rows or exceeding 2 s return `503 unavailable` with `details.reason = "shift_budget"` and change nothing (FR-F012-13).
 - **SR-S024-05:** `GanttChart` renders bars, arrows, milestone diamonds, and parent summary bars from the dependency and critical-path APIs; `CriticalPathToggle` highlights zero-float rows; drag and `Shift+Arrow` open `ShiftDialog` with the preview table before commit (FR-F012-14, NFR-F012-03).
 - **SR-S024-06:** Gantt shows loading, empty (no schedule settings), error, denied, stale, and offline states; viewers see read-only bars and non-members get not-found (FR-F012-14, FR-F012-15).
@@ -43,7 +43,7 @@ As a project editor, I want to preview and commit a shift of one task or the who
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/dependencies/{shift.rs, service_shift.rs}`; `services/api/src/dependencies/handlers_shift.rs`
+- Rust service/API: `crates/domain/src/dependencies/{shift.rs, service_shift.rs}` (no SQL); `crates/persistence/src/dependencies/{mod.rs, schedule_result_repository.rs}`; `services/api/src/dependencies/handlers_shift.rs`
 - Data/migration: none new; uses tables from S023
 - React/UI: `apps/web/src/features/dependencies/{GanttPage.tsx, GanttChart.tsx, GanttBar.tsx, MilestoneMarker.tsx, SummaryBar.tsx, DependencyArrow.tsx, DependencyDialog.tsx, CriticalPathToggle.tsx, ShiftDialog.tsx, ShiftPreviewTable.tsx, BaselineOverlaySlot.tsx, api.ts, hooks.ts}`
 - Mocks/fixtures: seeded 12-row schedule with a holiday exception; 10,000-row/20,000-link generator for performance lane; MSW handlers for component tests

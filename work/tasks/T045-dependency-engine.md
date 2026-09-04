@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F012
 parent_story: S023
 depends_on: [S023]
-owned_paths: [services/api/migrations/*_dependencies_*.sql, crates/domain/src/dependencies/**, services/api/src/dependencies/**, testing/features/F012/database/**, testing/features/F012/api/**]
+owned_paths: [services/api/migrations/*_dependencies_*.sql, crates/domain/src/dependencies/**, crates/persistence/src/dependencies/**, services/api/src/dependencies/**, testing/features/F012/database/**, testing/features/F012/api/**]
 feature_flag: F012_FEATURE
 branch: t045-dependency-engine
 started_at: null
@@ -33,10 +33,10 @@ Create the `row_dependencies` and `schedule_results` schema and implement the de
 
 ## Specification
 
-- Owned paths: `services/api/migrations/<ts>_dependencies_create_tables.sql`, `services/api/migrations/<ts>_dependencies_create_tables.down.sql`, `crates/domain/src/dependencies/{mod.rs, dependency.rs, errors.rs, service.rs, schema.rs}`, `services/api/src/dependencies/{mod.rs, routes.rs, handlers_dependency.rs, dto.rs}`
+- Owned paths: `services/api/migrations/<ts>_dependencies_create_tables.sql`, `services/api/migrations/<ts>_dependencies_create_tables.down.sql`, `crates/domain/src/dependencies/{mod.rs, dependency.rs, errors.rs, service.rs, schema.rs}` (repository traits only, no SQL), `crates/persistence/src/dependencies/{mod.rs, row_dependency_repository.rs, schedule_result_repository.rs}`, `services/api/src/dependencies/{mod.rs, routes.rs, handlers_dependency.rs, dto.rs}`
 - Contract/input: DDL per F012 ticket section 4 (`row_dependencies` with kind and lag checks, pair unique index, side indexes; `schedule_results` keyed by `(sheet_id, row_id)`); `CreateDependencyRequest { predecessor_row_id, successor_row_id, kind, lag?, lag_unit? }`, `UpdateDependencyRequest { kind?, lag?, lag_unit? }`, list query `{ cursor?, limit? ≤ 1000, row_id?, kind? }`; headers `Idempotency-Key`, `If-Match`.
-- Output/behavior: routes `GET /api/v1/sheets/{sheet_id}/dependencies`, `POST /api/v1/dependencies`, `PATCH /api/v1/dependencies/{id}`, `DELETE /api/v1/dependencies/{id}` return `DependencyResponse { id, sheet_id, predecessor_row_id, successor_row_id, kind, lag, lag_unit, version, created_at, updated_at }`; self, cross-sheet, parent-row, and lag-range errors map to `400 invalid`; duplicate pair to `409 conflict` with `existing_id`; 20,001st link to `400 invalid` `field_errors.sheet_id = "limit"`; events `dependency.created.v1`, `dependency.updated.v1`, `dependency.deleted.v1` written to `outbox_events` in the same transaction; `sqlx migrate run` and `revert` apply cleanly; the cycle hook from T046 is called through a trait `CycleChecker` that this task stubs as always-pass.
-- Dependencies: F006 `rows` and `sheets` tables; F009 `row_hierarchy` for the parent-row check; F011 `sheet_schedule_settings` row used as the per-sheet lock; F003 `authz::require(actor, Permission::ProjectEdit, sheet)`; F004 outbox writer.
+- Output/behavior: routes `GET /api/v1/sheets/{sheet_id}/dependencies`, `POST /api/v1/dependencies`, `PATCH /api/v1/dependencies/{id}`, `DELETE /api/v1/dependencies/{id}` return `DependencyResponse { id, sheet_id, predecessor_row_id, successor_row_id, kind, lag, lag_unit, version, created_at, updated_at }`; self, cross-sheet, parent-row, and lag-range errors map to `400 invalid`; duplicate pair to `409 conflict` with `existing_id`; 20,001st link to `400 invalid` `field_errors.sheet_id = "limit"`; `RowDependencyRepository` exposes `list_for_sheet`, `find_pair`, `load_graph_for_sheet`, and `delete_for_sheet`, and `ScheduleResultRepository` exposes `upsert_schedule_results` and `list_critical`; events `dependency.created.v1`, `dependency.updated.v1`, `dependency.deleted.v1` are enqueued to `outbox_events` by the base `Repository` contract in the same `UnitOfWork`; `sqlx migrate run` and `revert` apply cleanly; the cycle hook from T046 is called through a trait `CycleChecker` that this task stubs as always-pass.
+- Dependencies: F006 `rows` and `sheets` tables; F009 `row_hierarchy` for the parent-row check; F011 `SheetScheduleSettingsRepository::lock_for_schedule(sheet_id)` taking the `sheet_schedule_settings` row lock as the per-sheet serializer; F003 `authz::require(actor, Permission::ProjectEdit, sheet)`; F004 outbox writer.
 - Feature flag: `F012_FEATURE` gates router mounting; migration runs regardless.
 - Large-table note: no existing data; future columns must be additive and nullable.
 

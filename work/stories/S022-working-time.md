@@ -5,7 +5,7 @@ status: planned
 parent_epic: E003
 parent_feature: F011
 depends_on: [S021]
-owned_paths: [crates/domain/src/schedules/**, services/api/src/schedules/**, apps/web/src/features/schedules/**, testing/features/F011/**]
+owned_paths: [crates/domain/src/schedules/**, crates/persistence/src/schedules/**, services/api/src/schedules/**, apps/web/src/features/schedules/**, testing/features/F011/**]
 feature_flag: F011_FEATURE
 branch: s022-working-time
 started_at: null
@@ -33,8 +33,8 @@ As a project editor, I want to declare which columns hold my schedule, read the 
 ## Requirements
 
 - **SR-S022-01:** `PUT /api/v1/sheets/{sheet_id}/schedule-settings` validates column roles against F007 column types and returns `ScheduleSettingsResponse` with `version`; type mismatches return `field_errors.<field> = "type_mismatch"` (FR-F011-05).
-- **SR-S022-02:** `GET /api/v1/sheets/{sheet_id}/schedule` returns settings, resolved calendar, and a cursor page of `RowSchedule` with `status: unscheduled` for rows lacking a start (FR-F011-06).
-- **SR-S022-03:** `POST /api/v1/rows/{id}/reschedule` computes the missing member of start/end/duration, snaps to working days, rejects `end < start` and durations over 3,650 days, and emits `row.rescheduled.v1` (FR-F011-08).
+- **SR-S022-02:** `GET /api/v1/sheets/{sheet_id}/schedule` returns settings from `SheetScheduleSettingsRepository::get_for_sheet`, the resolved calendar from `WorkingCalendarRepository::load_resolved_calendar` (its `week` and `exceptions[].hours` assembled from the interval rows), and a cursor page of `RowSchedule` from `page_row_schedules(sheet_id, cursor, limit)` with `status: unscheduled` for rows lacking a start (FR-F011-06).
+- **SR-S022-03:** `POST /api/v1/rows/{id}/reschedule` computes the missing member of start/end/duration with pure `calendar_math` functions over the loaded `ResolvedCalendar`, writes cells through F006/F007's `RowRepository`/`CellRepository` inside one `UnitOfWork`, snaps to working days, rejects `end < start` and durations over 3,650 days, and emits `row.rescheduled.v1` (FR-F011-08).
 - **SR-S022-04:** Milestone rows are forced to zero duration and parent rows with roll-up rules are rejected with `parent_rollup` (FR-F011-09, FR-F011-10).
 - **SR-S022-05:** `datetime` display uses sheet, then user, then tenant timezone, then UTC and returns `display_timezone` (FR-F011-12).
 - **SR-S022-06:** `ScheduleSettingsPanel`, `DateCellEditor`, and `WorkingCalendarPage` render loading, empty, error, denied, stale, and offline states and are keyboard operable with the snap announcement (FR-F011-14, NFR-F011-03).
@@ -43,8 +43,8 @@ As a project editor, I want to declare which columns hold my schedule, read the 
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/schedules/{settings.rs, schedule_read.rs, service_reschedule.rs, timezone.rs}`; `services/api/src/schedules/{handlers_settings.rs, handlers_schedule.rs, handlers_reschedule.rs}`
-- Data/migration: none new; uses `sheet_schedule_settings` from S021
+- Rust service/API: `crates/domain/src/schedules/{settings.rs, schedule_read.rs, service_reschedule.rs, timezone.rs}` (use cases over repository traits, no SQL); `crates/persistence/src/schedules/{mod.rs, working_calendar_repository.rs, sheet_schedule_settings_repository.rs}` for `get_for_sheet` and `page_row_schedules`; `services/api/src/schedules/{handlers_settings.rs, handlers_schedule.rs, handlers_reschedule.rs}`
+- Data/migration: none new; uses `sheet_schedule_settings`, `working_calendars`, and the interval tables from S021
 - React/UI: `apps/web/src/features/schedules/{ScheduleSettingsPanel.tsx, ColumnRolePicker.tsx, CalendarPicker.tsx, TimezoneSelect.tsx, WorkingCalendarPage.tsx, WeekEditor.tsx, ExceptionTable.tsx, DateCellEditor.tsx, DurationInput.tsx, SnapHint.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: seeded sheet with start/end/duration/milestone columns and 50 rows; 100,000-row generator for performance; MSW handlers for component tests
 

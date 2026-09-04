@@ -6,7 +6,7 @@ parent_epic: E004
 parent_feature: F046
 parent_story: S091
 depends_on: [T181]
-owned_paths: [crates/domain/src/realtime/**, services/api/src/realtime/**, services/realtime/src/realtime/**, testing/features/F046/api/**, testing/features/F046/requirements/**]
+owned_paths: [crates/domain/src/realtime/**, crates/persistence/src/realtime/**, services/api/src/realtime/**, services/realtime/src/realtime/**, testing/features/F046/api/**, testing/features/F046/requirements/**]
 feature_flag: F046_FEATURE
 branch: t182-operation-ordering
 started_at: null
@@ -28,9 +28,9 @@ Implement sequential document change application with acknowledgements and dedup
 
 ## Specification
 
-- Owned paths: `crates/domain/src/realtime/{change.rs, patch.rs, ordering.rs}`, `services/realtime/src/realtime/{changes.rs, patches.rs, fanout.rs}`, `services/api/src/realtime/{mod.rs, routes.rs, handlers_sessions.rs, dto.rs}`
+- Owned paths: `crates/domain/src/realtime/{change.rs, patch.rs, ordering.rs}`, `crates/persistence/src/realtime/{document_change_repository.rs, collaboration_session_repository.rs}`, `services/realtime/src/realtime/{changes.rs, patches.rs, fanout.rs}`, `services/api/src/realtime/{mod.rs, routes.rs, handlers_sessions.rs, dto.rs}`
 - Contract/input: `change { change_base64 (≤ 256 KB Automerge change), deps, rev }`; `patch { row_id, column_id, value, if_match_version }`; JetStream subjects `realtime.doc.{document_id}` and `realtime.sheet.{sheet_id}`; HTTP `GET /api/v1/collaboration/sessions` list query `{ cursor?, limit?, filter[target_type]?, filter[actor_id]? }`.
-- Output/behavior: `append_change` takes `pg_advisory_xact_lock(hashtext(document_id))`, assigns `rev = max + 1`, inserts, commits, then replies `ack { seq, rev }` and publishes to the subject with `document.change-applied.v1` in the outbox; duplicate `(document_id, hash)` returns the original `rev`; unknown deps → `error { code: conflict, missing_deps }`; `apply_sheet_patch` calls the F008 row update with `If-Match`, acks `{ seq, rev, row_version }`, emits `sheet.patch-applied.v1`, and on `StaleVersion` replies `conflict { row_id, column_id, server_value, server_version }`; viewers sending `change` or `patch` get `error denied`; `fanout.rs` keeps one durable consumer per connected target per node, applies by `rev`, drops the consumer when the last local session leaves; session list route for tenant-admin or self.
+- Output/behavior: `DocumentChangeRepository::next_rev`/`append_change` in `crates/persistence` take `pg_advisory_xact_lock(hashtext(document_id))` and run the `select coalesce(max(rev), 0) + 1 ... for update` that assigns `rev = max + 1` — only the SQL moved out of the service, and the same per-document lock in the same transaction still serializes concurrent appenders; one `UnitOfWork` covers the rev assignment, the `document_changes` row, its `document_change_deps` rows, and the F045 `current_revision` bump through `DocumentRevisionRepository`, and only after that commit does the service reply `ack { seq, rev }` and publish to the subject with `document.change-applied.v1` in the outbox; duplicate `(document_id, hash)` is resolved by `find_by_hash(document_id, hash)` and returns the original `rev`; `find_missing_deps(document_id, hashes)` joins `document_change_deps` against `document_changes(document_id, hash)` and any unresolved hash → `error { code: conflict, missing_deps }`; `apply_sheet_patch` calls the F008 row update and its cell repository with `If-Match`, acks `{ seq, rev, row_version }`, emits `sheet.patch-applied.v1`, and on `StaleVersion` replies `conflict { row_id, column_id, server_value, server_version }`; viewers sending `change` or `patch` get `error denied`; `fanout.rs` keeps one durable consumer per connected target per node, applies by `rev`, drops the consumer when the last local session leaves; session list route for tenant-admin or self.
 - Dependencies: T181 sessions and envelope; F008 `update_row` service; F004 JetStream client and outbox; `automerge` crate for dependency validation.
 - Feature flag: `F046_FEATURE`
 

@@ -16,6 +16,21 @@ Status: FROZEN 2026-09-03. These decisions are prerequisites for implementation 
 - Soft deletion is default; purge requires a privileged, audited job.
 - All writes require an idempotency key and optimistic version check.
 - Changes publish through a transactional outbox; consumers are idempotent.
+- The schema is normalized to third normal form as the default. No repeating groups, no repeated columns (`option_1`, `option_2`), and no column holding a delimited list.
+- Every enumerable set of values belongs to a child table with a foreign key, never an array column. `scopes`, `capabilities`, `permissions`, `tags`, `domains`, `events`, `origins` and their kind are rows, so they can be joined, constrained, indexed and audited.
+- A closed enum whose members carry no data stays a `text` column with a `check` constraint. An enum whose members carry data, or that a tenant may extend, is a lookup table with a stable key.
+- Every foreign key is declared, with `on delete restrict` by default and `cascade` only where the child cannot outlive its parent.
+- `jsonb` is permitted only for genuinely user-defined, schema-less payloads: typed cell values, view and widget settings, event payloads, provider response snapshots, and diffs. It is never used for data the product filters, joins, sorts, aggregates, or enforces a constraint on. A `jsonb` column that the product queries by key is a modelling error and becomes a table.
+- Denormalization is allowed only as a derived, rebuildable cache — never as the source of truth — and every such column or table names the query it serves and the job that rebuilds it.
+
+## 2.1 Data access
+
+- Every table is reached through exactly one data access class in `crates/persistence/src/<aggregate>/`, named `<Aggregate>Repository`: `UserRepository`, `SheetRepository`, `DepartmentRepository`, one per object type. Two classes never write the same table.
+- All SQL lives in `crates/persistence`. No SQL string, `sqlx::query*` call, or connection is permitted in `crates/domain`, `services/*/src`, or any handler, job, or test outside that crate; the domain depends on repository traits, not on SQLx.
+- Every repository implements the shared `Repository` contract: `get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, and `purge`. Beyond it, a repository exposes named, intention-revealing queries — never a generic query escape hatch.
+- The tenant predicate, the soft-delete filter, the optimistic version check, the audit row, and the outbox enqueue are applied by the base contract, not by callers, so a new repository cannot forget them.
+- Multi-table writes run inside one `UnitOfWork` that owns the transaction; a repository never opens its own transaction when it is handed one.
+- `cargo xtask check-persistence` enforces all of the above and fails the build on a violation.
 
 ## 3. API and events
 

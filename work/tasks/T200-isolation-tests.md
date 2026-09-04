@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S100` Controlled editing
 - Owner: platform
 - Branch: `t200-isolation-tests`
-- Decision references: `docs/architecture-decisions.md` sections 4, 9, 10; `docs/capability-contracts.md` row F050
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 4, 9, 10; `docs/capability-contracts.md` row F050
 
 ## Objective
 

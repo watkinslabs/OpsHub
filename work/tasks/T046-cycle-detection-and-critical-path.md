@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F012
 parent_story: S023
 depends_on: [T045]
-owned_paths: [crates/domain/src/dependencies/**, services/api/src/dependencies/**, testing/features/F012/api/**, testing/features/F012/requirements/**, testing/features/F012/performance/**]
+owned_paths: [crates/domain/src/dependencies/**, crates/persistence/src/dependencies/**, services/api/src/dependencies/**, testing/features/F012/api/**, testing/features/F012/requirements/**, testing/features/F012/performance/**]
 feature_flag: F012_FEATURE
 branch: t046-cycle-detection-and-critical-path
 started_at: null
@@ -33,10 +33,10 @@ Implement the sheet dependency graph with cycle detection on create and update, 
 
 ## Specification
 
-- Owned paths: `crates/domain/src/dependencies/{graph.rs, cycle.rs, critical_path.rs, rollup.rs, recompute.rs}`, `services/api/src/dependencies/handlers_critical_path.rs`, `services/api/src/dependencies/consumers.rs`
-- Contract/input: `SheetGraph::load(sheet_id)` builds nodes from rows with the F011 `sheet_schedule_settings` start, end, and duration columns and edges from `row_dependencies`; `detect_cycle(graph, candidate_edge) -> Result<(), CyclePath>` uses Kahn topological sort and, on failure, DFS to return the cycle in traversal order; `compute_critical_path(graph, calendar, exceptions, timezone) -> Vec<ScheduleResult>` applies constraints `FS: start ≥ pred.finish + lag`, `SS: start ≥ pred.start + lag`, `FF: finish ≥ pred.finish + lag`, `SF: finish ≥ pred.start + lag` with `add_working_days`/`add_working_hours` and float via `working_days_between`.
-- Output/behavior: `POST/PATCH` dependency now call the real `CycleChecker`, returning `400 invalid` with `field_errors.successor_row_id = "cycle"` and `details.cycle_path`; `GET /api/v1/sheets/{sheet_id}/critical-path` returns `CriticalPathResponse { schedule_version, computed_at, rows }` and upserts `schedule_results`; parents get min start/max finish of descendants and are rejected as link endpoints; zero-duration rows are milestones; a consumer on `row.updated.v1`, `cell.updated.v1`, `row.reparented.v1` recomputes the sheet, debounced 500 ms, within a 2 s budget; metrics `dependencies_cycle_rejections_total`, `critical_path_duration_ms`.
-- Dependencies: T045 tables and routes; F011 `crates/domain/src/schedules/working_time.rs`; F009 `GET /api/v1/rows/{id}/children` hierarchy data via the domain crate.
+- Owned paths: `crates/domain/src/dependencies/{graph.rs, cycle.rs, critical_path.rs, rollup.rs, recompute.rs}` (pure in-memory graph work, no SQL), `crates/persistence/src/dependencies/{row_dependency_repository.rs, schedule_result_repository.rs}`, `services/api/src/dependencies/handlers_critical_path.rs`, `services/api/src/dependencies/consumers.rs`
+- Contract/input: `SheetGraph::load(sheet_id)` builds nodes from the F006/F007 cell repositories using the F011 `sheet_schedule_settings` start, end, and duration columns and edges from `RowDependencyRepository::load_graph_for_sheet(sheet_id)`; `detect_cycle(graph, candidate_edge) -> Result<(), CyclePath>` uses Kahn topological sort and, on failure, DFS to return the cycle in traversal order; `compute_critical_path(graph, calendar, exceptions, timezone) -> Vec<ScheduleResult>` applies constraints `FS: start ≥ pred.finish + lag`, `SS: start ≥ pred.start + lag`, `FF: finish ≥ pred.finish + lag`, `SF: finish ≥ pred.start + lag` with `add_working_days`/`add_working_hours` and float via `working_days_between`.
+- Output/behavior: `POST/PATCH` dependency now call the real `CycleChecker`, returning `400 invalid` with `field_errors.successor_row_id = "cycle"` and `details.cycle_path`; `GET /api/v1/sheets/{sheet_id}/critical-path` returns `CriticalPathResponse { schedule_version, computed_at, rows }` and persists them through `ScheduleResultRepository::upsert_schedule_results(sheet_id, rows)`, with `list_critical(sheet_id)` serving the Gantt overlay; parents get min start/max finish of descendants and are rejected as link endpoints; zero-duration rows are milestones; a consumer on `row.updated.v1`, `cell.updated.v1`, `row.reparented.v1` recomputes the sheet, debounced 500 ms, within a 2 s budget; metrics `dependencies_cycle_rejections_total`, `critical_path_duration_ms`.
+- Dependencies: T045 tables, repositories, and routes; F011 `SheetScheduleSettingsRepository::lock_for_schedule(sheet_id)` for the per-sheet cycle-check lock; F011 `crates/domain/src/schedules/working_time.rs`; F009 `GET /api/v1/rows/{id}/children` hierarchy data via the domain crate.
 - Feature flag: `F012_FEATURE`
 
 ## TDD

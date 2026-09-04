@@ -86,7 +86,7 @@ Excluded: row grouping (F013), tree data (F009), aggregation (F022) and file exp
 
 ### Rust backend
 
-- None. F062 is a web-only feature and owns no Rust path, no route, no event, and no table; the catalog row lists its surface as `apps/web/src/design/**`, `apps/web/src/ui/**`, `pnpm --filter web storybook`, and `pnpm --filter web test:ui`. Nothing here reaches the API, and the harness asserts that absence.
+- None. F062 is a web-only feature and owns no Rust path, no route, no event, no table, and therefore no repository class under `crates/persistence` (decision 2.1); the catalog row lists its surface as `apps/web/src/design/**`, `apps/web/src/ui/**`, `pnpm --filter web storybook`, and `pnpm --filter web test:ui`. Nothing here reaches the API, and the harness asserts that absence.
 
 ### PostgreSQL/SQLx
 

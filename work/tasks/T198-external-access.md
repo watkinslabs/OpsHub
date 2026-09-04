@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F050
 parent_story: S099
 depends_on: [T197]
-owned_paths: [crates/domain/src/dynamic-views/**, services/api/src/dynamic-views/**, testing/features/F050/api/**, testing/features/F050/requirements/**, testing/features/F050/performance/**]
+owned_paths: [crates/domain/src/dynamic-views/**, crates/persistence/src/dynamic-views/**, services/api/src/dynamic-views/**, testing/features/F050/api/**, testing/features/F050/requirements/**, testing/features/F050/performance/**]
 feature_flag: F050_FEATURE
 branch: t198-external-access
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S099` Restricted views
 - Owner: platform
 - Branch: `t198-external-access`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 10; `docs/capability-contracts.md` row F050
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 10; `docs/capability-contracts.md` row F050
 
 ## Objective
 

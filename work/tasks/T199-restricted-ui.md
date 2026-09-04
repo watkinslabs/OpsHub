@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F050
 parent_story: S100
 depends_on: [S100]
-owned_paths: [crates/domain/src/dynamic-views/**, services/api/src/dynamic-views/**, apps/web/src/features/dynamic-views/**, testing/features/F050/api/**, testing/features/F050/frontend/**]
+owned_paths: [crates/domain/src/dynamic-views/**, crates/persistence/src/dynamic-views/**, services/api/src/dynamic-views/**, apps/web/src/features/dynamic-views/**, testing/features/F050/api/**, testing/features/F050/frontend/**]
 feature_flag: F050_FEATURE
 branch: t199-restricted-ui
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S100` Controlled editing
 - Owner: platform
 - Branch: `t199-restricted-ui`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 6; `docs/capability-contracts.md` row F050
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6; `docs/capability-contracts.md` row F050
 
 ## Objective
 

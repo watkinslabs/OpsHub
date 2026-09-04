@@ -5,7 +5,7 @@ status: planned
 parent_epic: E006
 parent_feature: F026
 depends_on: [F038, F002]
-owned_paths: [crates/domain/src/sso/**, services/api/src/sso/**, apps/web/src/features/sso/**, services/api/migrations/*_sso_*.sql, testing/features/F026/**]
+owned_paths: [crates/domain/src/sso/**, crates/persistence/src/sso/**, services/api/src/sso/**, apps/web/src/features/sso/**, services/api/migrations/*_sso_*.sql, testing/features/F026/**]
 feature_flag: F026_FEATURE
 branch: s051-saml-login
 started_at: null
@@ -19,7 +19,7 @@ finished_at: null
 - Parent feature: `F026` SSO/SCIM
 - Owner: platform
 - Branch: `s051-saml-login`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4; `docs/capability-contracts.md` row F026
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4; `docs/capability-contracts.md` row F026
 
 ## Vertical slice
 
@@ -27,7 +27,7 @@ As a tenant administrator, I want to register a SAML 2.0 connection for my email
 
 ## Requirements
 
-- **SR-S051-01:** `POST /api/v1/identity/connections` creates a draft connection with `sp_entity_id`, ACS URL, one certificate, and `version` 1; domains are validated and unique across active connections (covers FR-F026-01, FR-F026-02).
+- **SR-S051-01:** `POST /api/v1/identity/connections` creates a draft connection with `sp_entity_id`, ACS URL, one certificate, and `version` 1 through `IdentityConnectionRepository`, writing one `identity_connection_domains` row per domain and four `identity_connection_attribute_maps` rows; domains are validated and unique across active connections (covers FR-F026-01, FR-F026-02).
 - **SR-S051-02:** `GET /auth/saml/{connection_id}/metadata` renders SP metadata and `GET /auth/saml/{connection_id}/login` issues a signed `AuthnRequest` whose ID is stored for 10 minutes (FR-F026-03).
 - **SR-S051-03:** `POST /auth/saml/{connection_id}/acs` verifies signature, audience, recipient, `InResponseTo`, and time conditions with the configured skew, and rejects each failure with `401 denied` and a reason code (FR-F026-04, NFR-F026-02).
 - **SR-S051-04:** A verified assertion creates an F038 session for the matching user, JIT-provisions when enabled, and refuses suspended users (FR-F026-05).
@@ -40,8 +40,9 @@ As a tenant administrator, I want to register a SAML 2.0 connection for my email
 ## Surfaces
 
 - Infrastructure/container: none beyond F004 baseline
+- Data access: `crates/persistence/src/sso/{connection_repository.rs, certificate_repository.rs, scim_token_repository.rs, assertion_repository.rs}` hold every SQL statement for this slice; the domain services and the `services/api/src/sso` handlers depend on the repository traits and contain no `sqlx::query*` call (decision section 2.1)
 - Rust service/API: `crates/domain/src/sso/{connection.rs, certificate.rs, errors.rs, service.rs, saml/{parse.rs, verify.rs, conditions.rs, request.rs, metadata.rs}, scim/{token.rs, filter.rs, users.rs, groups.rs}}`; `services/api/src/sso/{routes.rs, handlers_connection.rs, handlers_saml.rs, handlers_scim.rs, scim_auth.rs, dto.rs, scim_dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_sso_create_tables.sql` creating `identity_connections`, `identity_connection_domains`, `saml_certificates`, `saml_assertion_ids`, `scim_tokens`, `scim_sync_log`, `group_mappings`
+- Data/migration: `services/api/migrations/<ts>_sso_create_tables.sql` creating `identity_connections`, `identity_connection_domains`, `identity_connection_attribute_maps`, `saml_certificates`, `saml_assertion_ids`, `scim_tokens`, `scim_sync_log`, `group_mappings`, `group_mapping_roles`
 - React/UI: `apps/web/src/features/sso/{SsoPage.tsx, ConnectionTable.tsx, ConnectionForm.tsx, CertificatePanel.tsx, TestResultList.tsx, SamlErrorPage.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: `testing/fixtures/sso.rs` stub IdP signer with RSA-2048 and P-256 keys, Microsoft and Google assertion shapes; in-memory outbox recorder
 
@@ -51,7 +52,7 @@ As a tenant administrator, I want to register a SAML 2.0 connection for my email
 - Feature flag: `F026_FEATURE`
 - Targeted command: `cargo xtask test-feature F026`
 - Full command: `cargo xtask test-all`
-- First failing tests: `connection_create_returns_sp_metadata_fields`, `connection_duplicate_domain_conflicts`, `acs_accepts_signed_assertion_within_skew`, `acs_rejects_replayed_assertion_id`, `acs_rejects_unsigned_assertion`, `rotation_accepts_either_current_certificate`, `member_cannot_create_connection`
+- First failing tests: `connection_create_returns_sp_metadata_fields`, `connection_duplicate_domain_row_conflicts`, `acs_accepts_signed_assertion_within_skew`, `acs_rejects_replayed_assertion_id`, `acs_rejects_unsigned_assertion`, `rotation_accepts_either_current_certificate`, `member_cannot_create_connection`
 
 ## Exit criteria
 

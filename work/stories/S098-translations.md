@@ -5,7 +5,7 @@ status: planned
 parent_epic: E003
 parent_feature: F049
 depends_on: [S097]
-owned_paths: [crates/domain/src/i18n/**, services/api/src/i18n/**, apps/web/src/features/i18n/**, testing/features/F049/**]
+owned_paths: [crates/domain/src/i18n/**, crates/persistence/src/i18n/**, services/api/src/i18n/**, apps/web/src/features/i18n/**, testing/features/F049/**]
 feature_flag: F049_FEATURE
 branch: s098-translations
 started_at: null
@@ -32,19 +32,19 @@ As a tenant administrator, I want to set the tenant locale, timezone, week start
 
 ## Requirements
 
-- **SR-S098-01:** `PATCH /api/v1/tenants/{id}/locale` accepts `{ locale, timezone, first_day_of_week?, hour_cycle?, currency? }` as `tenant-admin`, rejects unsupported locales and unknown timezones with `400 invalid` field errors, requires `If-Match`, and emits `locale.updated.v1` with `scope: "tenant"` (covers FR-F049-02).
-- **SR-S098-02:** `PATCH /api/v1/users/{id}/locale` succeeds for `self` or `tenant-admin`, treats `null` as clearing an override, returns `403 denied` for another user's id, and `404 not_found` for a foreign-tenant id (FR-F049-03, FR-F049-14).
+- **SR-S098-01:** `PATCH /api/v1/tenants/{id}/locale` accepts `{ locale, timezone, first_day_of_week?, hour_cycle?, currency? }` as `tenant-admin`, writes through `TenantLocaleRepository::upsert_tenant_locale`, rejects unsupported locales and unknown timezones with `400 invalid` field errors, requires `If-Match`, and emits `locale.updated.v1` with `scope: "tenant"` (covers FR-F049-02).
+- **SR-S098-02:** `PATCH /api/v1/users/{id}/locale` succeeds for `self` or `tenant-admin`, writes through `UserLocaleRepository::upsert_user_override` and treats `null` as `clear_user_override`, returns `403 denied` for another user's id, and `404 not_found` for a foreign-tenant id (FR-F049-03, FR-F049-14).
 - **SR-S098-03:** `I18nProvider` loads the catalog for the effective locale with `ETag` caching, exposes `t`, `formatDate`, `formatDateTime`, `formatNumber`, `formatCurrency`, falls back to the bundled `en-US` catalog per key, and emits `i18n_missing_key` telemetry (FR-F049-09, FR-F049-10).
 - **SR-S098-04:** `TenantLocalePage` at `/admin/locale` renders pickers and a live `FormatPreview`, saves with `If-Match`, shows the conflict banner on `409`, and shows the denied page for non-admins (FR-F049-11).
 - **SR-S098-05:** `UserLocalePage` at `/me/locale` lets a user pick overrides or `Use tenant default`; saving re-renders the app in the new locale without reload and updates `<html lang>` (FR-F049-12, NFR-F049-03).
-- **SR-S098-06:** With `F049_PSEUDO_LOCALE=true` the `en-XA` catalog wraps every pattern and the E2E run flags any visible string not wrapped (FR-F049-13).
+- **SR-S098-06:** With `F049_PSEUDO_LOCALE=true` the generator writes a wrapped `en-XA` entry row for every `en-US` entry row through `replace_catalog` and the E2E run flags any visible string not wrapped (FR-F049-13).
 - **SR-S098-07:** Both pages pass axe with zero serious violations, comboboxes are keyboard operable, and the locale change is announced by a live region (NFR-F049-03).
 
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/i18n/{settings.rs, service.rs}`; `services/api/src/i18n/{handlers_tenant.rs, handlers_user.rs}`
-- Data/migration: none new; uses tables from S097
+- Rust service/API: `crates/domain/src/i18n/{settings.rs, service.rs}` (repository traits only, no SQL); `crates/persistence/src/i18n/{tenant_locale_repository.rs, user_locale_repository.rs}`; `services/api/src/i18n/{handlers_tenant.rs, handlers_user.rs}`
+- Data/migration: none new; writes reach the S097 tables through `TenantLocaleRepository` and `UserLocaleRepository`
 - React/UI: `apps/web/src/features/i18n/{I18nProvider.tsx, useI18n.ts, TenantLocalePage.tsx, UserLocalePage.tsx, LocaleSelect.tsx, TimezoneSelect.tsx, WeekStartSelect.tsx, HourCycleToggle.tsx, CurrencySelect.tsx, FormatPreview.tsx, LocaleBanner.tsx, api.ts, hooks.ts, routes.ts, catalogs/*.json}`
 - Mocks/fixtures: MSW handlers for the four routes; seeded catalogs; Playwright projects pinned to `TZ=Europe/Berlin` and `TZ=America/Sao_Paulo`
 

@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F013
 parent_story: S025
 depends_on: [T049]
-owned_paths: [crates/domain/src/views/**, services/api/src/views/**, apps/web/src/features/views/**, testing/features/F013/api/**, testing/features/F013/frontend/**, testing/features/F013/accessibility/**]
+owned_paths: [crates/domain/src/views/**, crates/persistence/src/views/**, services/api/src/views/**, apps/web/src/features/views/**, testing/features/F013/api/**, testing/features/F013/frontend/**, testing/features/F013/accessibility/**]
 feature_flag: F013_FEATURE
 branch: t050-card-view
 started_at: null
@@ -33,10 +33,10 @@ Implement the permission-filtered view row list and the view page shell with swi
 
 ## Specification
 
-- Owned paths: `crates/domain/src/views/service_rows.rs`, `services/api/src/views/handlers_rows.rs`, `apps/web/src/features/views/{ViewPage.tsx, ViewSwitcher.tsx, ViewSettingsPanel.tsx, FilterBuilder.tsx, SortEditor.tsx, CardView.tsx, CardLane.tsx, ViewCard.tsx, api.ts, hooks.ts, routes.ts}`
+- Owned paths: `crates/domain/src/views/service_rows.rs` (repository traits only, no SQL), `crates/persistence/src/views/view_repository.rs` (row-specification composition from `views`, `view_sorts`, `view_columns`), `services/api/src/views/handlers_rows.rs`, `apps/web/src/features/views/{ViewPage.tsx, ViewSwitcher.tsx, ViewSettingsPanel.tsx, FilterBuilder.tsx, SortEditor.tsx, CardView.tsx, CardLane.tsx, ViewCard.tsx, api.ts, hooks.ts, routes.ts}`
 - Contract/input: `GET /api/v1/views/{id}/rows` query `{ cursor?, limit? ≤ 500, range_start?, range_end? }`; generated `ViewsApi` client plus `GridApi.patchCells` from F008; route params `workspaceId`, `sheetId`, `viewId`.
-- Output/behavior: `list_view_rows` ANDs the compiled filter into the F008 permission-filtered row query, orders by `group_by` then sorts then position, projects visible columns plus the primary column, and returns `Page<ViewRowResponse { row_id, group_key, version, cells }>`; `CardView` renders a `CardLane` per option of the lane select column with `card_fields` on each `ViewCard`, optional swimlanes; drag or Space/Arrow/Enter move calls `patchCells` with `If-Match` optimistically and rolls back on `conflict` with the stale banner; `FilterBuilder` edits the AST with operators limited to the chosen column type and a 50-leaf cap; states: loading skeleton, empty with `Clear filters`, error banner with correlation ID, viewer without drag handles, not-found page, offline badge; telemetry `view_opened`, `view_created`, `card_lane_moved`.
-- Dependencies: T049 view routes and filter compiler; F008 cell patch handler and row query; F007 column types for operator lists.
+- Output/behavior: `list_view_rows` loads the view through `ViewRepository`, ANDs the compiled `views.filter` specification into the F008 permission-filtered row query executed by F008's row repository, orders by `group_by_column_id` then the `view_sorts` rows then position, projects the `view_columns` visible columns plus the primary column, and returns `Page<ViewRowResponse { row_id, group_key, version, cells }>`; `CardView` renders a `CardLane` per option of the `lane_column_id` select column with the `view_card_fields` columns on each `ViewCard`, optional swimlanes from `swimlane_column_id`; drag or Space/Arrow/Enter move calls `patchCells` with `If-Match` optimistically and rolls back on `conflict` with the stale banner; `FilterBuilder` edits the AST with operators limited to the chosen column type and a 50-leaf cap; states: loading skeleton, empty with `Clear filters`, error banner with correlation ID, viewer without drag handles, not-found page, offline badge; telemetry `view_opened`, `view_created`, `card_lane_moved`.
+- Dependencies: T049 view routes, repositories, and filter compiler; F008 cell patch handler and row query; F007 column types for operator lists.
 - Feature flag: `F013_FEATURE` read through the flag hook; routes not registered when off.
 
 ## TDD

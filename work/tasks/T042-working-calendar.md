@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F011
 parent_story: S021
 depends_on: [T041]
-owned_paths: [crates/domain/src/schedules/**, services/api/src/schedules/**, testing/features/F011/api/**, testing/features/F011/requirements/**, testing/features/F011/performance/**]
+owned_paths: [crates/domain/src/schedules/**, crates/persistence/src/schedules/**, services/api/src/schedules/**, testing/features/F011/api/**, testing/features/F011/requirements/**, testing/features/F011/performance/**]
 feature_flag: F011_FEATURE
 branch: t042-working-calendar
 started_at: null
@@ -33,9 +33,9 @@ Implement the working-calendar domain service, the pure working-day arithmetic, 
 
 ## Specification
 
-- Owned paths: `crates/domain/src/schedules/{calendar.rs, calendar_math.rs, service_calendar.rs}`, `services/api/src/schedules/{mod.rs, routes.rs, handlers_calendar.rs, dto.rs}`
+- Owned paths: `crates/domain/src/schedules/{calendar.rs, calendar_math.rs, service_calendar.rs}` (no SQL), `crates/persistence/src/schedules/{mod.rs, working_calendar_repository.rs}`, `services/api/src/schedules/{mod.rs, routes.rs, handlers_calendar.rs, dto.rs}`
 - Contract/input: `CreateCalendarRequest { name, timezone, week: { mon..sun: [{ start, end }] }, hours_per_day, is_default?, exceptions?: [{ date, kind, hours?, label }] }`, `UpdateCalendarRequest` with the same optional fields; headers `Idempotency-Key`, `If-Match`; list query `{ cursor?, limit? ≤ 100, include_deleted? }`.
-- Output/behavior: routes `GET /api/v1/working-calendars`, `POST /api/v1/working-calendars`, `PATCH /api/v1/working-calendars/{id}` return `CalendarResponse { id, name, timezone, week, hours_per_day, is_default, exceptions, version, created_at, updated_at }`; `ensure_default_calendar` creates `Standard` on first list; `calendar_math.rs` exposes `add_working_days(cal, date, days) -> NaiveDate`, `working_days_between(cal, a, b) -> Decimal`, `next_working_day`, `previous_working_day`, `snap_start`, `snap_end`, all evaluated on calendar dates in the calendar timezone; default swap and exception replacement happen in one transaction; events `working-calendar.updated.v1`; errors map per ticket section 4.
+- Output/behavior: routes `GET /api/v1/working-calendars`, `POST /api/v1/working-calendars`, `PATCH /api/v1/working-calendars/{id}` return `CalendarResponse { id, name, timezone, week, hours_per_day, is_default, exceptions, version, created_at, updated_at }`; `ensure_default_calendar` creates `Standard` on first list through `WorkingCalendarRepository::ensure_default`; `WorkingCalendarRepository` owns `working_calendars`, `working_calendar_intervals`, `calendar_exceptions`, `calendar_exception_intervals` and adds `list_for_tenant`, `find_default`, `ensure_default`, `replace_week_intervals`, `replace_exceptions`, `load_resolved_calendar(calendar_id)` on top of the shared `Repository` contract, assembling `week` and `exceptions[].hours` from the interval rows so `CalendarResponse` is unchanged; `calendar_math.rs` takes a loaded `ResolvedCalendar` and exposes `add_working_days(cal, date, days) -> NaiveDate`, `working_days_between(cal, a, b) -> Decimal`, `next_working_day`, `previous_working_day`, `snap_start`, `snap_end`, all evaluated on calendar dates in the calendar timezone; default swap, `replace_week_intervals`, and `replace_exceptions` happen in one `UnitOfWork` transaction; events `working-calendar.updated.v1`; errors map per ticket section 4.
 - Dependencies: T041 types and tables; F003 `authz::require(actor, Permission::CalendarManage, tenant)`; F004 outbox writer.
 - Feature flag: `F011_FEATURE` gates router mounting.
 

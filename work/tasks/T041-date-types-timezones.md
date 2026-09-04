@@ -29,20 +29,20 @@ finished_at: null
 
 ## Objective
 
-Define the `WorkDate`, `WorkDateTime`, `WorkDuration`, and timezone types with parsing, serialization, and validation, and create the three schedule tables with constraints and rollback.
+Define the `WorkDate`, `WorkDateTime`, `WorkDuration`, and timezone types with parsing, serialization, and validation, and create the five schedule tables with constraints and rollback.
 
 ## Specification
 
-- Owned paths: `crates/domain/src/schedules/{mod.rs, types.rs, timezone.rs, errors.rs, schema.rs}`, `services/api/migrations/<ts>_schedules_create_tables.sql`, `services/api/migrations/<ts>_schedules_create_tables.down.sql`
+- Owned paths: `crates/domain/src/schedules/{mod.rs, types.rs, timezone.rs, errors.rs}` holding Rust types only — no DDL and no SQL, which live in the migration files and in `crates/persistence/src/schedules/` respectively; `services/api/migrations/<ts>_schedules_create_tables.sql`, `services/api/migrations/<ts>_schedules_create_tables.down.sql`
 - Contract/input: cell JSON shapes `"2026-09-14"` for date, `"2026-09-14T07:00:00.000000Z"` for datetime, `{ "value": "3", "unit": "days" }` for duration; timezone strings validated with `chrono_tz::Tz::from_str`; `resolve_timezone(sheet: Option<Tz>, user: Option<Tz>, tenant: Option<Tz>) -> Tz` defaulting to UTC.
-- Output/behavior: types implement `FromStr`, `Display`, `Serialize`, `Deserialize`, `sqlx::Type`; invalid input maps to `ScheduleError::InvalidValue { column_id, reason }`; DDL per F011 ticket section 4 PostgreSQL: `working_calendars`, `calendar_exceptions`, `sheet_schedule_settings`, unique name index, single-default partial index, `(calendar_id, date)` uniqueness, `hours_per_day` check, restrict on referenced calendar; `sqlx migrate run` applies on a database with F006/F007 tables and `sqlx migrate revert` drops them.
+- Output/behavior: types implement `FromStr`, `Display`, `Serialize`, `Deserialize`, `sqlx::Type`; invalid input maps to `ScheduleError::InvalidValue { column_id, reason }`; DDL per F011 ticket section 4 PostgreSQL: `working_calendars`, `working_calendar_intervals`, `calendar_exceptions`, `calendar_exception_intervals`, `sheet_schedule_settings`, unique name index, single-default partial index, `(calendar_id, date)` uniqueness, `(calendar_id, weekday, position)` and `(calendar_id, weekday, start_time)` uniqueness with `position between 1 and 4`, `(exception_id, position)` uniqueness, `end_time > start_time` checks, `hours_per_day` check, cascade from calendar to both interval tables, restrict on referenced calendar; `sqlx migrate run` applies on a database with F006/F007 tables and `sqlx migrate revert` drops all five.
 - Dependencies: F007 `columns.type` enum values `date`, `datetime`, `duration`, `boolean`, `number`; F006 `sheets` table for the settings foreign key.
 - Feature flag: `F011_FEATURE` (migration runs regardless; routes are gated)
 - Large-table note: no existing data; later columns must be additive and nullable.
 
 ## TDD
 
-- Failing test first: `testing/features/F011/api/type_tests.rs::date_types_parse_and_reject`, `::datetime_round_trips_microseconds`, `::duration_rejects_negative_and_unknown_unit`, `::resolve_timezone_prefers_sheet_then_user_then_tenant`; `testing/features/F011/database/migration_tests.rs::schedule_tables_exist_with_constraints`, `::second_default_calendar_rejected`, `::rollback_drops_tables`
+- Failing test first: `testing/features/F011/api/type_tests.rs::date_types_parse_and_reject`, `::datetime_round_trips_microseconds`, `::duration_rejects_negative_and_unknown_unit`, `::resolve_timezone_prefers_sheet_then_user_then_tenant`; `testing/features/F011/database/migration_tests.rs::schedule_tables_exist_with_constraints`, `::second_default_calendar_rejected`, `::fifth_interval_for_weekday_rejected`, `::rollback_drops_tables`
 - Targeted command: `cargo xtask test-feature F011`
 - Full command: `cargo xtask test-all`
 - Fixtures/mocks: schema-per-worker database from `testing/harness/db.rs`; no external mocks

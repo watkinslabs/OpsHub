@@ -28,20 +28,20 @@ finished_at: null
 
 ## Objective
 
-Create the `tenants`, `users`, `groups`, and `group_members` tables with the `citext` extension, unique indexes, check constraints, the same-tenant membership trigger, and a verified rollback.
+Create the `tenants`, `tenant_settings`, `users`, `groups`, and `group_members` tables with the `citext` extension, unique indexes, check constraints, the settings-row and same-tenant triggers, and a verified rollback.
 
 ## Specification
 
-- Owned paths: `services/api/migrations/<ts>_tenants_create_tables.sql`, `services/api/migrations/<ts>_tenants_create_tables.down.sql`, `crates/domain/src/tenants/schema.rs` (typed column and index names)
-- Contract/input: DDL per F002 ticket section 4 PostgreSQL: `create extension if not exists citext`; four tables with UUIDv7 ids, `tenant_id`, `version`, audit columns, `deleted_at`; check constraints on `plan`, `status`, and `region`; unique partial indexes `tenants_slug_idx`, `users_tenant_email_idx`, `groups_tenant_lower_name_idx`; `group_members` primary key `(group_id, user_id)` with `on delete cascade` from groups and `on delete restrict` from users; trigger `group_members_same_tenant` raising `tenant_mismatch`.
-- Output/behavior: `sqlx migrate run` applies on an empty database; `sqlx migrate revert` drops the trigger, tables, and the extension; `cargo xtask check-migrations` passes; `schema.rs` constants are used by every query in S003 and S004 so column renames fail at compile time.
+- Owned paths: `services/api/migrations/<ts>_tenants_create_tables.sql`, `services/api/migrations/<ts>_tenants_create_tables.down.sql`, `crates/domain/src/tenants/schema.rs` (typed column and index names consumed by the repositories)
+- Contract/input: DDL per F002 ticket section 4 PostgreSQL: `create extension if not exists citext`; five tables with UUIDv7 ids, `tenant_id`, `version`, audit columns, `deleted_at`; `tenant_settings(tenant_id uuid primary key references tenants(id) on delete cascade, default_locale text not null default 'en-US', default_timezone text not null default 'UTC', allow_guest_invites bool not null default false, operator_contact text, updated_by uuid, updated_at timestamptz not null)` replaces the dropped `tenants.settings jsonb` column, with check `default_locale ~ '^[a-z]{2}(-[A-Z]{2})?$'` and no index beyond its primary key; trigger `tenants_create_settings` on `tenants` insert writes exactly one defaulted settings row per tenant; check constraints on `plan`, `status`, and `region`; unique partial indexes `tenants_slug_idx`, `users_tenant_email_idx`, `groups_tenant_lower_name_idx`; indexes `users(tenant_id, status, display_name)`, `users(tenant_id, created_at desc)`, `group_members(tenant_id, user_id)`, `groups(tenant_id, updated_at desc)`; `group_members` primary key `(group_id, user_id)` with `on delete cascade` from groups and `on delete restrict` from users; trigger `group_members_same_tenant` raising `tenant_mismatch`.
+- Output/behavior: `sqlx migrate run` applies on an empty database; `sqlx migrate revert` drops both triggers, the five tables, and the extension; `cargo xtask check-migrations` passes; `schema.rs` constants are used by `TenantRepository`, `GroupRepository`, and `UserRepository` in `crates/persistence`, which hold every query against these tables, so column renames fail at compile time and no SQL reaches `crates/domain`, `services/api`, or the tests; `cargo xtask check-persistence` passes.
 - Dependencies: F001 workspace and CI PostgreSQL 18 service; no prior tables.
 - Feature flag: `F002_FEATURE` (migration runs regardless; routes are gated)
 - Large-table note: `users` is designed for 1,000,000 rows; all later additions must be nullable or defaulted to avoid full rewrites.
 
 ## TDD
 
-- Failing test first: `testing/features/F002/database/migration_tests.rs::tenants_tables_exist_with_constraints`, `::duplicate_slug_rejected`, `::duplicate_email_same_tenant_rejected_case_insensitive`, `::cross_tenant_group_member_rejected_by_trigger`, `::invalid_region_rejected_by_check`, `::rollback_drops_tables_and_extension`
+- Failing test first: `testing/features/F002/database/migration_tests.rs::tenants_tables_exist_with_constraints`, `::duplicate_slug_rejected`, `::duplicate_email_same_tenant_rejected_case_insensitive`, `::cross_tenant_group_member_rejected_by_trigger`, `::invalid_region_rejected_by_check`, `::tenant_settings_row_created_by_trigger`, `::tenant_settings_invalid_locale_rejected_by_check`, `::tenant_settings_cascade_on_tenant_delete`, `::rollback_drops_tables_and_extension`
 - Targeted command: `cargo xtask test-feature F002`
 - Full command: `cargo xtask test-all`
 - Fixtures/mocks: schema-per-worker database from `testing/harness/db.rs`; no external mocks

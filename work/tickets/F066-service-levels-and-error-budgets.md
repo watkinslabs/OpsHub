@@ -99,6 +99,7 @@ Canonical contract: aggregate `service-level`; module `slo`; surface `cargo xtas
 - Production call path: `verify_slo` is dispatched from `automation/xtask/src/main.rs` (`Some("verify-slo") => slo::verify_slo(args)`), a one-line addition made under the F041 owner's review at integration, and is invoked from `.github/workflows/gates.yml` as a step owned by F001; `infra/slo/README.md` carries the exact dispatch line and CI step text so both edits are mechanical.
 - Error mapping: `serde_yaml` failure → `slo.schema` at the reported line, exit 1; unreadable file or unknown flag → exit 2; `slo.budget_exhausted` and the missing operator role → exit 3; every other check returns findings and never panics.
 - No event is published and no aggregate is persisted; the catalog row lists `none` for events and this feature adds none.
+- Data access (decision 2.1): the `service-level` aggregate owns no table and no repository; `verify-slo` reads YAML and queries Prometheus only, holds no SQL string, `sqlx` dependency, or database connection, and the harness proves it by running the command with no database reachable.
 
 ### PostgreSQL/SQLx
 

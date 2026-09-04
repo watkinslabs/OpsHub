@@ -29,9 +29,9 @@ Prove that guests and link holders cannot escape their grants, that deny always 
 ## Specification
 
 - Owned paths: `apps/web/src/features/sharing/{PublicShareLanding.tsx, GuestAcceptPage.tsx, scopedClient.ts}` (hardening only: no navigation chrome, scoped token never persisted), `testing/features/F036/api/isolation_tests.rs`, `testing/features/F036/frontend/{LinkSection.test.tsx, PublicShareLanding.test.tsx}`, `testing/features/F036/e2e/sharing.spec.ts`, `testing/features/F036/accessibility/sharing.a11y.spec.ts`
-- Contract/input: seeded fixture with tenant A (owner `own`, admin `adm`, editor `eli`, `dana` in group `Contractors`, guest `client@example.com`), tenant B, a viewer link with `max_uses` 2, and the F006 row routes, F010 search route, and F005 workspace list as probe targets.
-- Output/behavior: isolation suite asserts for a scoped link token: `GET /api/v1/workspaces` → 403, `GET /api/v1/search` → 403, `PATCH /api/v1/rows/{id}` → 403, `GET /api/v1/sheets/{other}` → 404, `GET /api/v1/sheets/{target}` → 200, scoped token after expiry → 401 `denied`; for a guest session: workspace list contains only granted workspaces, other sheets → 404, `Share` route → 403; deny beats inherited allow for user and group; cross-tenant share, link, and invitation IDs → 404; tracing output contains no raw token; landing page renders without workspace navigation and stores the scoped token only in memory; E2E covers share with user and group, invite and accept a guest in a second browser context, create and copy a link, open it in an incognito context, revoke, reopen shows `This link is no longer valid`; accessibility covers dialog focus trap, role select, copy announcement, and landing page axe.
-- Dependencies: T143 routes and UI; F006 rows, F010 search, F005 workspace list available in the E2E stack.
+- Contract/input: fixtures are seeded through the sharing repository traits (`ShareRepository`, `ShareLinkRepository`, `GuestInvitationRepository`, `GuestUserRepository`) so no SQL lives in this suite; seeded fixture with tenant A (owner `own`, admin `adm`, editor `eli`, `dana` in group `Contractors`, guest `client@example.com`), tenant B, a viewer link with `max_uses` 2, and the F006 row routes, F010 search route, and F005 workspace list as probe targets.
+- Output/behavior: isolation suite asserts for a scoped link token: `GET /api/v1/workspaces` → 403, `GET /api/v1/search` → 403, `PATCH /api/v1/rows/{id}` → 403, `GET /api/v1/sheets/{other}` → 404, `GET /api/v1/sheets/{target}` → 200, scoped token after expiry → 401 `denied`; for a guest session: workspace list contains only granted workspaces, other sheets → 404, `Share` route → 403; deny beats inherited allow for user and group; cross-tenant share, link, and invitation IDs → 404; tracing output contains no raw token and no token hash, which never leaves the repository query; landing page renders without workspace navigation and stores the scoped token only in memory; E2E covers share with user and group, invite and accept a guest in a second browser context, create and copy a link, open it in an incognito context, revoke, reopen shows `This link is no longer valid`; accessibility covers dialog focus trap, role select, copy announcement, and landing page axe.
+- Dependencies: T143 routes, repositories, and UI; F006 rows, F010 search, F005 workspace list available in the E2E stack.
 - Feature flag: `F036_FEATURE`.
 
 ## TDD
@@ -44,7 +44,7 @@ Prove that guests and link holders cannot escape their grants, that deny always 
 ## Exit criteria
 
 - [ ] Tests written before implementation and observed failing
-- [ ] API isolation, component, E2E, and accessibility lanes pass
+- [ ] API isolation, component, E2E, and accessibility lanes pass, and `cargo xtask check-persistence` confirms the suite contains no SQL
 - [ ] Owned-path check passes
 - [ ] File limit and lint gates pass
 - [ ] Handoff evidence recorded in S072

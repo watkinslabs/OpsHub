@@ -41,6 +41,7 @@ Outcome: secure, observable, reproducible multi-tenant runtime. Milestone M1.
 
 | Feature | Stories | Tasks | Depends on |
 |---|---|---|---|
+| F068 Persistence layer and data access classes | S135 repository contract and unit of work; S136 normalization and access gate | T269 repository base contract; T270 unit of work and pagination; T271 check-persistence gate; T272 persistence harness | F001 |
 | F066 Service levels and error budgets | S131 objectives and measurement; S132 burn alerts and reporting | T261 objective definitions; T262 recording rules and burn alerts; T263 verify-slo gate; T264 SLO harness | F004 |
 | F001 Repository and CI | S001 workspace; S002 quality gates | T001 Rust workspace; T002 React app; T003 CI matrix; T004 line/attribution gates | F041, F042 |
 | F062 Design system and UI primitives | S123 design tokens and theming; S124 UI primitives and patterns | T245 token scales and themes; T246 MUI theme and component surface; T247 pattern components and app shell layout; T248 visual and accessibility harness | F001 |

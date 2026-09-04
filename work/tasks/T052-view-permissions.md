@@ -6,7 +6,7 @@ parent_epic: E003
 parent_feature: F013
 parent_story: S026
 depends_on: [T051]
-owned_paths: [crates/domain/src/views/**, services/api/src/views/**, apps/web/src/features/views/**, testing/features/F013/api/**, testing/features/F013/frontend/**, testing/features/F013/e2e/**, testing/features/F013/performance/**]
+owned_paths: [crates/domain/src/views/**, crates/persistence/src/views/**, services/api/src/views/**, apps/web/src/features/views/**, testing/features/F013/api/**, testing/features/F013/frontend/**, testing/features/F013/e2e/**, testing/features/F013/performance/**]
 feature_flag: F013_FEATURE
 branch: t052-view-permissions
 started_at: null
@@ -33,9 +33,9 @@ Implement view sharing to users, groups, and expiring links, the link actor with
 
 ## Specification
 
-- Owned paths: `crates/domain/src/views/{share.rs, service_share.rs, scoped_reader.rs}`, `services/api/src/views/{handlers_share.rs}`, `apps/web/src/features/views/{ShareViewDialog.tsx, ExportViewButton.tsx, ViewSwitcher.tsx}`
+- Owned paths: `crates/domain/src/views/{share.rs, service_share.rs, scoped_reader.rs}` (repository traits only, no SQL), `crates/persistence/src/views/{view_share_repository.rs, view_repository.rs}` holding `list_active_shares`, `revoke_shares_for_view`, and `list_visible_to`, `services/api/src/views/{handlers_share.rs}`, `apps/web/src/features/views/{ShareViewDialog.tsx, ExportViewButton.tsx, ViewSwitcher.tsx}`
 - Contract/input: `ShareViewRequest { principal_kind: user|group, principal_id, role: viewer|editor, expires_at? }` on `POST /api/v1/views/{id}/share`; list query `{ cursor?, limit?, kind?, sort? }` on `GET /api/v1/sheets/{sheet_id}/views`; `POST /api/v1/exports` (F010) with `{ view_id, format: csv }`.
-- Output/behavior: `share_view` requires owner, rejects a null `principal_id` and a `principal_kind` outside `user|group`, rejects a second live share for the same principal with `conflict`, publishes `view.shared.v1`, and returns `ViewShareResponse { id, principal_kind, principal_id, role, expires_at }`; `revoke_share` sets `revoked_at`; F013 mints no tokens and registers no unauthenticated route, so `list_views` unions private-owned, `sheet`, and shared views and hides everything else, and an F036 scoped-token actor targeting this view reads it through the same `view_rows` filtering path; `ShareViewDialog` lists user and group shares with revoke and links to F036 for public share links; `ExportViewButton` calls the F010 export with `view_id` and links to the job status; telemetry `view_shared`, `view_exported`.
+- Output/behavior: `share_view` requires owner, rejects a null `principal_id` and a `principal_kind` outside `user|group`, rejects a second live share for the same principal with `conflict`, publishes `view.shared.v1`, and returns `ViewShareResponse { id, principal_kind, principal_id, role, expires_at }`; `revoke_share` sets `revoked_at` and `revoke_shares_for_view` revokes every live share when the view is soft-deleted; F013 mints no tokens and registers no unauthenticated route, so `list_views` calls `ViewRepository::list_visible_to`, which unions private-owned, `sheet`, and shared views, hides everything else, and returns each view's `settings` composed from its typed columns and projection tables, and an F036 scoped-token actor targeting this view reads it through the same `view_rows` filtering path; `ShareViewDialog` lists user and group shares with revoke and links to F036 for public share links; `ExportViewButton` calls the F010 export with `view_id` and links to the job status; telemetry `view_shared`, `view_exported`.
 - Dependencies: T051 complete page; F003 principal resolution for groups; F010 export job accepting `view_id`; F036 is not required because view links are scoped to one view and use this feature's `view_shares` table.
 - Feature flag: `F013_FEATURE`.
 

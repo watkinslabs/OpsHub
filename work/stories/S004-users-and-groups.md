@@ -42,8 +42,8 @@ As a tenant administrator, I want to invite, update, and deactivate users and or
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/tenants/{user.rs, group.rs, status.rs, service_user.rs, service_group.rs}`; `services/api/src/tenants/{handlers_user.rs, handlers_group.rs}`
-- Data/migration: none new; uses tables from S003
+- Rust service/API: `crates/domain/src/tenants/{user.rs, group.rs, status.rs, service_user.rs, service_group.rs}`; `services/api/src/tenants/{handlers_user.rs, handlers_group.rs}`; `users` is reached only through `UserRepository` (`crates/persistence/src/users/`), `groups` and `group_members` only through `GroupRepository`, and the tenant settings shown on `/admin/tenant` only through `TenantRepository` (`crates/persistence/src/tenants/`); the services, handlers, React loaders, and tests contain no SQL, and the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the repository base contract (decision 2.1)
+- Data/migration: none new; uses `tenants`, `tenant_settings`, `users`, `groups`, and `group_members` from S003 through those repositories
 - React/UI: `apps/web/src/features/tenants/{TenantSettingsPage.tsx, TenantSettingsForm.tsx, SuspendTenantDialog.tsx, UsersPage.tsx, UsersTable.tsx, InviteUserDialog.tsx, DeactivateUserDialog.tsx, GroupsPage.tsx, GroupDetailPage.tsx, GroupMembersEditor.tsx, UserStatusBadge.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: `testing/fixtures/tenants.rs` completed (members, invited, deactivated users, three groups per tenant); 100,000-user generator; MSW handlers for component tests
 
