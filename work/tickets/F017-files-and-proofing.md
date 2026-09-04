@@ -94,6 +94,183 @@ Excluded: comment body attachments UI (F016 references file IDs), document revis
 - Validation: `file_name` 1–255 chars without path separators, `mime_type` in tenant allowlist, `size_bytes` ≤ tenant limit, `sha256` 64 hex chars, `reviewer_ids` 1–20 unique on the wire and stored as `proof_reviewers` rows, `reason` ≤ 2,000 chars; idempotency for 24 hours; `If-Match` on version routes.
 - Error mapping: `FileError::MimeNotAllowed → 400 invalid`, `FileError::TooLarge → 400 invalid`, `FileError::ObjectMissing → 409 conflict`, `FileError::ScanPending → 409 conflict`, `FileError::Quarantined → 403 denied`, `FileError::ProofAlreadyOpen → 409 conflict`, `FileError::DecisionExists → 409 conflict`, `FileError::NotReviewer → 403 denied`, `FileError::StaleVersion → 409 conflict`, `FileError::NotFound → 404 not_found`, `StoreError::Unavailable → 503 unavailable`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable; a missing optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per write.
+Unlisted fields are rejected with `400 invalid`. `Page<T>` and its opaque cursor are F028's; the
+error envelope and the six codes are the shared ones.
+
+**Upload flow.** Bytes never pass through the API. `POST /api/v1/files/uploads` validates the
+declaration and returns a presigned S3 PUT URL; the browser PUTs the object directly to object
+storage; `PUT /api/v1/files/uploads/{id}/complete` turns the ticket into `files` and `file_versions`
+rows. There is no multipart request body on any route in this feature, and the API never accepts
+file bytes.
+
+**File states.** A version moves through exactly these, and every one is observable:
+
+| Stage | States | Moves on |
+|---|---|---|
+| ticket | `open` → `consumed` \| `expired` | `complete` consumes it; the hourly sweep expires it after 15 minutes |
+| `scan_state` | `pending` → `clean` \| `quarantined` | the `scan_file` worker; a dead-lettered scan leaves `pending`, never `clean` |
+| `preview_state` | `pending` → `ready` \| `unsupported` \| `failed` | the `render_preview` worker, only after `clean` |
+| file | live → soft-deleted → purged | `DELETE`, then the F027 retention job |
+| proof | `open` → `approved` \| `rejected` \| `changes_requested` \| `superseded` | reviewer decisions, or a new file version |
+
+`scan_state` gates download absolutely: `pending` is `409 conflict`, `quarantined` is `403 denied`,
+and only `clean` yields a URL. `preview_state` gates nothing.
+
+**`StartUploadRequest`** — `POST /api/v1/files/uploads`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target_kind` | `"row" \| "sheet" \| "comment" \| "document"` | yes | closed set, matching the `files.target_kind` check |
+| `target_id` | uuid | yes | a live target of that kind the caller holds `resource-editor` on; unreadable → `404 not_found`, readable but not editable → `403 denied` |
+| `file_name` | string | yes | 1–255 chars, no `/` or `\` and no `..` segment |
+| `mime_type` | string | yes | in the tenant allowlist, else `400 invalid` with `field_errors.mime_type = "not_allowed"` |
+| `size_bytes` | integer | yes | 1 to the tenant limit (default 250 MB, hard cap 2 GB), else `400 invalid` with `field_errors.size_bytes = "too_large"` |
+| `sha256` | string | yes | 64 lowercase hex chars; a client claim, re-derived by the scanner and never trusted alone |
+
+**`AddVersionRequest`** — `POST /api/v1/files/{id}/versions`: the same six fields, except
+`target_kind` and `target_id`, which are rejected because the version inherits the file's target.
+`If-Match: <file version>` is required.
+
+**`UploadTicketResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `upload_id` | uuid | pass to `complete` |
+| `put_url` | string | presigned S3 PUT, valid 15 minutes, bound to one object key |
+| `expires_at` | timestamp | when `put_url` and the ticket both die |
+| `max_size_bytes` | integer | the tenant limit that was applied, so the client can fail fast |
+
+**`CompleteUploadRequest`** — `PUT /api/v1/files/uploads/{id}/complete`: `{ sha256: string }`, the
+64-hex digest of the bytes actually PUT. It must equal the ticket's declared `sha256`; a mismatch is
+`400 invalid` with `field_errors.sha256`. `Idempotency-Key` is required; a replay returns the
+original `FileResponse`.
+
+**`FileVersionResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | integer | 1-based, dense |
+| `size_bytes` | integer | the size verified against object storage, not the declaration |
+| `sha256` | string | 64 hex chars; the scanner's recomputed digest once scanned, the declaration before that |
+| `scan_state` | `"pending" \| "clean" \| "quarantined"` | |
+| `preview_state` | `"pending" \| "ready" \| "unsupported" \| "failed"` | |
+| `created_by` / `created_at` | uuid / timestamp | |
+
+**`FileResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `target` | `{ kind, id }` | echoes `target_kind` and `target_id` |
+| `file_name` / `mime_type` | string | |
+| `size_bytes` / `sha256` | integer / string | of the current version |
+| `current_version` | integer | |
+| `scan_state` | `"pending" \| "clean" \| "quarantined"` | of the current version, mirrored here so a list needs no join on the client |
+| `preview` | `{ state, url? }` | `url` is a 15-minute presigned GET, present only when `state` is `"ready"` |
+| `versions` | FileVersionResponse[] | newest first, every version the file has |
+| `proof` | ProofSummary? | present only while a proof exists on this file |
+| `version` | integer | the aggregate version, `If-Match` for the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | | |
+| `deleted_at` | timestamp? | never present on a normal read; a soft-deleted file is `404 not_found` |
+
+**`ProofSummary`**: `{ proof_id, state, file_version, due_at?, approved_count, reviewer_count }` — the
+counts let a card render `Approved 2/2` without fetching the proof.
+
+**`CreateProofRequest`** — `POST /api/v1/files/{id}/proofs`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `reviewer_ids` | uuid[] | yes | 1–20 distinct live users of this tenant, each with read access to the file's target; empty, over 20, duplicated or lacking access → `400 invalid` with `field_errors.reviewer_ids`. Array order becomes `proof_reviewers.position` 1..n |
+| `due_at` | timestamp? | no | must be in the future |
+| `instructions` | string? | no | ≤ 2,000 chars |
+
+The proof binds to the file's `current_version` at creation; a second `open` proof on the same file
+is `409 conflict`.
+
+**`ProofResponse`**: `{ id, file_id, file_version, state, due_at?, instructions?, reviewer_ids: uuid[], decisions: ProofDecisionResponse[], version, created_at, created_by }`. `reviewer_ids` is
+assembled from `proof_reviewers` ordered by `position`, so it always round-trips the request order.
+
+**`ProofDecisionResponse`**: `{ reviewer_id, decision, reason?, decided_at }` — one entry per reviewer
+who has decided; reviewers who have not appear only in `reviewer_ids`.
+
+**`DecisionRequest`** — `POST /api/v1/proofs/{id}/decisions`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `decision` | `"approved" \| "rejected" \| "changes_requested"` | yes | closed set |
+| `reason` | string? | conditional | required and 1–2,000 chars for `rejected` and `changes_requested`, optional for `approved` |
+
+The caller must hold a `proof_reviewers` row on the proof, else `403 denied`; a second decision by
+the same reviewer is `409 conflict`; a decision on a proof not in `open` is `409 conflict`.
+
+**Markup on a proof.** F017 records a decision and its `reason` text and nothing more: there is no
+annotation, coordinate, region or drawing payload on any route or table in this feature. Visual
+markup over the rendered preview is not in scope here and belongs to a feature that declares its own
+tables; a client must not smuggle it through `reason`, which is plain text.
+
+**`DownloadRedirect`** — `GET /api/v1/files/{id}/download?version=<n>`: no response body. `302` with
+`Location` set to a 15-minute presigned GET URL bound to that single object. `version` is optional
+and defaults to `current_version`; it must name an existing version whose `scan_state` is `clean`.
+
+**List route.** `GET /api/v1/{target_kind}/{target_id}/files` returns `Page<FileResponse>` with query
+`{ scan_state?: "pending" \| "clean" \| "quarantined", sort?: "file_name" \| "created_at" (default "created_at" descending), cursor?: string, limit?: 1–100 (default 25) }`. `target_kind` in the path is
+the same closed set. Soft-deleted files are excluded, and the caller needs read access to the target
+or the route is `404 not_found`.
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | reads and `complete`; `201` on upload start, version add and proof create; `204` on delete; `302` on a ready download |
+| `400 invalid` | MIME outside the allowlist, size over the tenant limit, a malformed `file_name` or `sha256`, a digest that disagrees with the ticket, `reviewer_ids` empty, over 20, duplicated or lacking target access, a missing `reason` on a non-approval, a `due_at` in the past |
+| `403 denied` | a viewer starting an upload, adding a version, deleting, or creating a proof; a non-reviewer posting a decision; downloading a `quarantined` version, with `field_errors.scan_state = "quarantined"` |
+| `404 not_found` | unknown, soft-deleted, foreign-tenant or invisible file, target, version, proof or upload ticket; an expired ticket, which is reported as `not_found` rather than `410` |
+| `409 conflict` | the object is missing from storage at `complete` (`field_errors.upload = "object_missing"`); a download while `scan_state` is `pending` (`field_errors.scan_state = "pending"`); a second `open` proof; a repeat decision; a decision on a closed proof; a stale `If-Match` on a version add; a replayed `Idempotency-Key` with a different body |
+| `429 rate_limited` | the shared per-actor request limit |
+| `503 unavailable` | `StoreError::Unavailable` when object storage or `clamd` cannot be reached; the request is safe to retry and no state changed |
+
+### Use case signatures
+
+In `crates/domain/src/files/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` for writes or a repository for reads — never a pool or a connection — and returns the
+shared `DomainError`. Object storage and the scanner are reached only through the `ObjectStore` and
+`ClamScanner` traits, which are arguments, not globals, so the evaluator of every rule stays testable
+without S3.
+
+```rust
+fn start_upload(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, req: StartUpload) -> Result<UploadTicket, DomainError>;
+fn complete_upload(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, ticket: UploadId, sha256: Checksum) -> Result<File, DomainError>;
+fn add_version(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, id: FileId, expected: Version, req: StartUpload) -> Result<UploadTicket, DomainError>;
+fn get_file(ctx: &Ctx, repo: &FileRepository, proofs: &ProofRepository, id: FileId) -> Result<File, DomainError>;
+fn list_files(ctx: &Ctx, repo: &FileRepository, target: TargetRef, filter: FileFilter, page: Cursor) -> Result<Page<File>, DomainError>;
+fn sign_download(ctx: &Ctx, repo: &FileRepository, store: &dyn ObjectStore, id: FileId, version: Option<i32>) -> Result<SignedUrl, DomainError>;
+fn delete_file(ctx: &Ctx, uow: &mut UnitOfWork, id: FileId, expected: Version) -> Result<(), DomainError>;
+fn create_proof(ctx: &Ctx, uow: &mut UnitOfWork, id: FileId, req: CreateProof) -> Result<Proof, DomainError>;
+fn record_decision(ctx: &Ctx, uow: &mut UnitOfWork, id: ProofId, req: Decision) -> Result<Proof, DomainError>;
+fn supersede_proof(ctx: &Ctx, uow: &mut UnitOfWork, id: FileId, new_version: i32) -> Result<Option<Proof>, DomainError>;
+fn scan_file(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, scanner: &dyn ClamScanner, id: FileId, version: i32) -> Result<ScanOutcome, DomainError>;
+fn render_preview(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, id: FileId, version: i32) -> Result<PreviewState, DomainError>;
+```
+
+**Transaction boundaries.** `complete_upload` runs one `UnitOfWork` covering the `files` upsert, the
+`file_versions` insert at `current_version`, the `files.current_version` bump and the ticket's
+consumption, so a ticket can never be spent twice and a file can never exist without the version it
+points at. `create_proof` writes the `proofs` row and all 1–20 `proof_reviewers` rows in one
+boundary, which is what enforces the lower bound the `position` check cannot express: an empty
+reviewer set never commits. `record_decision` writes the `proof_decisions` row and the proof's state
+transition together, so the `approved` state and the last approving decision are always consistent
+and `proof.decided.v1` is emitted exactly once per transition. `add_version` plus `supersede_proof`
+share one boundary at completion time: the new `file_versions` row and the closing of any `open`
+proof as `superseded` commit together (FR-F017-13), so no reviewer can decide against a version that
+has already been replaced. `scan_file` commits the `file_scans` row and the `file_versions.scan_state`
+change in one boundary, and the quarantine `copy_object` runs before that commit, so a version marked
+`quarantined` always has its object already moved out of the servable prefix.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_files_*.sql` creates `files(id uuid pk, tenant_id uuid not null, target_kind text not null, target_id uuid not null, file_name text not null, mime_type text not null, current_version int not null default 1, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `file_versions(tenant_id, file_id uuid references files(id) on delete restrict, version int, storage_key text not null, size_bytes bigint not null, sha256 bytea not null, scan_state text not null default 'pending', preview_state text not null default 'pending', preview_key text, created_by, created_at, primary key (file_id, version))`, `file_scans(id uuid pk, tenant_id, file_id, version, engine text, signature_db_version text, result text not null, signature text, duration_ms int, scanned_at timestamptz)`, `proofs(id uuid pk, tenant_id, file_id, file_version int, state text not null default 'open', due_at timestamptz, instructions text, version, audit fields)`, `proof_reviewers(id uuid pk, tenant_id uuid not null, proof_id uuid not null references proofs(id) on delete cascade, reviewer_id uuid not null references users(id) on delete restrict, position smallint not null, created_by, created_at)`, `proof_decisions(id uuid pk, tenant_id, proof_id uuid references proofs(id) on delete cascade, reviewer_id uuid not null, decision text not null, reason text, decided_at timestamptz not null)`, `file_upload_tickets(id uuid pk, tenant_id, file_id uuid, target_kind, target_id, storage_key, file_name, mime_type, size_bytes, sha256, expires_at, created_by, created_at)`. The reviewer set is a joined, constrained, audited set, so it is `proof_reviewers` rows rather than a `reviewer_ids uuid[]` column on `proofs`; `file_versions`, `file_scans`, and `file_upload_tickets` carry no array or `jsonb` column and are already normalized — the scan verdict is the typed `result`/`signature` pair, not a provider blob.

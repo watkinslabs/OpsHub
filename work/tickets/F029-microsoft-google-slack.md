@@ -96,6 +96,225 @@ Excluded: API applications and webhooks (F028); notification preferences and dig
 - Validation: provider enabled; capabilities subset of provider capabilities; `display_name` ≤ 120; `target` per provider (Slack channel ID or user ID, Teams channel or chat ID, Chat space name); binding columns must be date/datetime and text/person types.
 - Error mapping: `IntegrationError::ProviderDisabled → 400 invalid`, `::BadState → 400 invalid`, `::ExchangeFailed → 502 unavailable`, `::NeedsReauth → 409 conflict`, `::TestRateLimited → 429 rate_limited`, `::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Conventions are F028's: `Page<T>`, the signed cursor, the error body with its six codes,
+`Idempotency-Key`, and `If-Match`. `T?` is nullable; an absent optional field and an explicit `null`
+are the same thing; timestamps are RFC 3339 UTC; ids are UUIDv7 strings. Unlisted request fields are
+rejected with `400 invalid`. No token, ciphertext, `code_verifier`, or client secret appears in any
+shape below — that is a property of the interface, not an omission (NFR-F029-02).
+
+**`ProviderId`** — `microsoft365`, `google`, `slack`. **`Capability`** — `notify`, `calendar_sync`,
+`chat_sync`.
+
+**`ProviderResponse`** — items of `GET /api/v1/integrations/providers` (FR-F029-01)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `ProviderId` | |
+| `display_name` | string | from the `integration_providers` row |
+| `capabilities` | `Capability` array | reassembled from `integration_provider_capabilities`, sorted |
+| `scopes` | map<`Capability`, string array> | the provider scopes each capability requires, from `integration_provider_capability_scopes` |
+| `enabled` | bool | `false` when the deployment holds no client credentials for the provider; derived per request and never stored |
+
+The route returns `{ items: ProviderResponse[] }` — a fixed three-element set, not a page.
+
+**`StartConnectionRequest`** — `POST /api/v1/integrations/connections` (FR-F029-02)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `provider` | `ProviderId` | yes | must be `enabled`, else `400 invalid` with `field_errors.provider`; caller is `integration-admin`, else `403 denied` |
+| `capabilities` | `Capability` array | yes | 1–3 entries, no duplicates, each with an `integration_provider_capabilities` row for that provider, else `400 invalid` with `field_errors.capabilities`. One `integration_connection_capabilities` row per entry |
+| `display_name` | string? | no | ≤ 120 chars; defaults to the provider display name |
+
+**`StartConnectionResponse`** — `202`
+
+| Field | Type | Notes |
+|---|---|---|
+| `connection_id` | uuid | the row is written with `status: pending` before the redirect |
+| `status` | `"pending"` | always, on this response |
+| `authorize_url` | string | the provider consent URL carrying the S256 `code_challenge`, the requested scopes, the fixed deployment redirect URI, and the `state` below |
+
+**`state`** — the opaque parameter of the authorize URL and of
+`GET /auth/integrations/{provider}/callback` (FR-F029-03). One `oauth_states` row, single use.
+
+| Field | Type | Notes |
+|---|---|---|
+| `state` | string | the row's primary key; random, and the only thing the browser carries |
+| `tenant_id` / `actor_id` / `connection_id` | uuid | bound at issue; the callback derives the tenant from these and never from a session, since the callback has none |
+| `expires_at` | timestamp | issue time plus 10 minutes |
+| `consumed_at` | timestamp? | set by `claim_state`; a second use finds it non-null |
+
+An unknown, expired, or already-consumed `state` returns `400 invalid` and writes the
+`integration.callback-rejected` audit event. A `state` issued in tenant A can never complete a
+connection in tenant B, because the tenant is read from the row rather than from the request. On
+success the callback redirects to `/admin/integrations?connected={id}`; it never returns JSON.
+
+**`ConnectionResponse`** — items of `GET /api/v1/integrations/connections` (FR-F029-07)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `provider` | `ProviderId` | |
+| `display_name` | string | |
+| `capabilities` | `Capability` array | from `integration_connection_capabilities`, sorted |
+| `scopes` | string array | the `integration_connection_scopes` rows with `state = 'granted'`, sorted |
+| `missing_scopes` | string array | the same rows with `state = 'missing'`; non-empty exactly when `status` is `limited` |
+| `owner` | `{ id, display_name }` | the user who completed the consent |
+| `status` | `"pending" \| "active" \| "limited" \| "needs_reauth" \| "error" \| "revoked"` | |
+| `external_account_label` | string? | the workspace, tenant, or account name shown in the UI |
+| `last_success_at` | timestamp? | last successful provider call or refresh |
+| `last_error` | `ConnectionError?` | the connection's one `integration_connection_errors` row, `null` after a success clears it |
+| `refresh_failures` | integer | 0–3; three sets `status: needs_reauth` |
+| `revoked_at` / `revoked_by` | timestamp? / uuid? | present only when `status` is `revoked` |
+| `version`, `created_at`, `created_by`, `updated_at`, `updated_by` | | |
+
+**`ConnectionError`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `error_class` | `"invalid_grant" \| "access_denied" \| "rate_limited" \| "provider_unavailable" \| "network" \| "unexpected"` | the class the retry and `needs_reauth` logic branches on |
+| `provider_status_code` | integer? | the HTTP status the provider returned, when there was one |
+| `message` | string | provider text, already redacted of tokens |
+| `occurred_at` | timestamp | |
+
+`GET /api/v1/integrations/connections` returns `Page<ConnectionResponse>` sorted by `-created_at`
+with `id` as tiebreak, filters `provider` and `status`, `limit` 1–200 (default 50).
+`DELETE /api/v1/integrations/connections/{id}` returns `204`;
+`POST /api/v1/integrations/connections/{id}/refresh` takes no body and returns the refreshed
+`ConnectionResponse`, or `409 conflict` when the connection is already `needs_reauth`.
+
+**`NotifyTestRequest`** / **`NotifyTestResponse`** — `POST /api/v1/integrations/connections/{id}/notify-test` (FR-F029-09)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target` | string | yes | the provider address: a Slack channel or user id, a Teams channel or chat id, a Google Chat space name. Shape is validated per provider; a mismatch is `400 invalid` with `field_errors.target`. The connection must hold the `notify` capability, else `400 invalid` |
+
+| Field | Type | Notes |
+|---|---|---|
+| `delivered` | bool | resolved within 10 s; a slower provider is `false` with an `error` of class `provider_unavailable` |
+| `provider_message_id` | string? | present when `delivered` |
+| `error` | `ConnectionError?` | present when not `delivered`; the same shape as `last_error` but not stored on the connection |
+
+Allowed to `integration-admin` and to the connection owner. Over 10 tests per connection per hour is
+`429 rate_limited`.
+
+**`CalendarBindingRequest`** — not its own route: it is the `settings.calendar_binding` value of
+`PATCH /api/v1/sheets/{id}`, owned by F006 as sheet settings and validated here into
+`calendar_bindings` columns (FR-F029-10).
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `connection_id` | uuid | yes | an `active` or `limited` connection of this tenant holding `calendar_sync`, else `400 invalid` |
+| `sheet_id` | uuid | yes | at most one `active` binding per sheet; a second → `409 conflict` |
+| `start_column_id` | uuid | yes | a date or datetime column of that sheet, else `400 invalid` with `field_errors.start_column_id` |
+| `end_column_id` | uuid? | no | date or datetime |
+| `title_column_id` | uuid | yes | a text column |
+| `assignee_column_id` | uuid? | no | a person column |
+| `conflict_policy` | `"opshub_wins" \| "provider_wins" \| "newest_wins" \| "manual"` | no | default `newest_wins` |
+| `external_calendar_id` | string? | no | the provider calendar; the account's default when absent |
+| `status` | `"active" \| "paused"` | no | default `active` |
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | a disabled provider, a capability the provider does not offer, an unknown or reused `state`, a bad `target`, a binding column of the wrong type |
+| `403` | `denied` | a caller without `integration-admin` on any connection route; the owner on anything but `notify-test` |
+| `404` | `not_found` | a connection id that does not exist or belongs to another tenant |
+| `409` | `conflict` | a forced refresh on a `needs_reauth` connection, a second active binding for one sheet, a stale `If-Match`, an `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | over 10 `notify-test` calls per connection per hour |
+| `503` | `unavailable` | the token exchange or a provider call failed in a way the request cannot complete around; `IntegrationError::ExchangeFailed` maps here |
+
+**Provider adapter traits.** Every provider call goes through one of these (FR-F029-13). F030
+implements them for its own connectors and F063 implements the notify path for Microsoft Graph, so
+these definitions are the contract, not an internal detail. Each implementation carries the shared
+`HttpClient` wrapper that enforces the 10 s timeout, honours `Retry-After`, retries three times with
+exponential backoff, and appends the `integration_events` row per call outcome — an implementation
+never does its own HTTP.
+
+```rust
+pub trait ProviderAdapter: Send + Sync {
+    fn provider(&self) -> ProviderId;
+    fn scopes_for(&self, capabilities: &CapabilitySet) -> ScopeSet;
+    fn authorize_url(&self, state: &str, challenge: &PkceChallenge, scopes: &ScopeSet) -> Url;
+    fn exchange_code(&self, ctx: &Ctx, code: &str, verifier: &PkceVerifier) -> Result<TokenSet, AdapterError>;
+    fn refresh(&self, ctx: &Ctx, refresh_token: &Secret<String>) -> Result<TokenSet, AdapterError>;
+    fn revoke(&self, ctx: &Ctx, token: &Secret<String>) -> Result<(), AdapterError>;
+}
+
+pub trait NotifyAdapter: Send + Sync {
+    fn send(&self, ctx: &Ctx, target: &NotifyTarget, message: &ProviderMessage)
+        -> Result<ProviderReceipt, AdapterError>;
+}
+
+pub trait CalendarAdapter: Send + Sync {
+    fn list_changes(&self, ctx: &Ctx, cursor: Option<&SyncCursor>) -> Result<ChangePage, AdapterError>;
+    fn upsert_event(&self, ctx: &Ctx, event: &CalendarEvent) -> Result<ExternalEventId, AdapterError>;
+    fn delete_event(&self, ctx: &Ctx, id: &ExternalEventId) -> Result<(), AdapterError>;
+}
+
+pub trait ChatAdapter: Send + Sync {
+    fn fetch_thread_replies(&self, ctx: &Ctx, since: DateTime<Utc>) -> Result<Vec<ThreadReply>, AdapterError>;
+}
+```
+
+Supporting types. `TokenSet { access: Secret<String>, refresh: Option<Secret<String>>, expires_at,
+granted_scopes: ScopeSet, external_account_id, external_account_label }` — the caller seals it
+through the vault; no adapter touches `oauth_tokens`. `AdapterError { class: ErrorClass, provider_status_code:
+Option<u16>, message: String, retry_after: Option<Duration> }`, whose `ErrorClass` is the six
+`error_class` values of `ConnectionError` above, so a failed call maps onto the connection's error
+row without translation. `NotifyTarget` is the validated `target` string plus its provider.
+`ProviderMessage { title, body, link, kind }` where `kind` is one of `mention`, `assignment`,
+`approval`, `due_soon`, `workflow_failed`, and each adapter renders it as an Adaptive Card, a Google
+Chat card, or a Block Kit message (FR-F029-08). `ChangePage { changes: Vec<ExternalEvent>,
+next_cursor: Option<SyncCursor> }` carries the Graph delta token or the Google `syncToken` opaquely.
+`ThreadReply { external_message_id, parent_external_message_id, author_email: Option<String>,
+author_display_name, text, posted_at }`.
+
+A connection holding `notify` registers one F037 `DeliveryTransport` per provider through F037's
+`ChannelRegistry` (FR-F029-08); this feature implements that trait over `NotifyAdapter` and does not
+define a second delivery path or a second template system.
+
+### Use case signatures
+
+In `crates/domain/src/integrations/`. `ctx` carries tenant, actor, and correlation id; a use case
+takes a `UnitOfWork` or repository traits, never a pool or connection, and returns the shared
+`DomainError` mapped above.
+
+```rust
+fn list_providers(ctx: &Ctx, repo: &dyn IntegrationProviderRepository, creds: &DeploymentCredentials) -> Result<Vec<Provider>, DomainError>;
+fn start_connection(ctx: &Ctx, uow: &mut UnitOfWork, req: StartConnection, adapter: &dyn ProviderAdapter) -> Result<StartedConnection, DomainError>;
+fn complete_callback(ctx: &Ctx, uow: &mut UnitOfWork, provider: ProviderId, state: &str, code: &str, adapter: &dyn ProviderAdapter) -> Result<IntegrationConnection, DomainError>;
+fn refresh_connection(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, adapter: &dyn ProviderAdapter) -> Result<IntegrationConnection, DomainError>;
+fn revoke_connection(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, adapter: &dyn ProviderAdapter) -> Result<(), DomainError>;
+fn list_connections(ctx: &Ctx, repo: &dyn IntegrationConnectionRepository, filter: ConnectionFilter, cursor: Option<Cursor>, limit: u16) -> Result<Page<IntegrationConnection>, DomainError>;
+fn send_test_notification(ctx: &Ctx, uow: &mut UnitOfWork, id: ConnectionId, target: NotifyTarget, adapter: &dyn NotifyAdapter) -> Result<NotifyTestOutcome, DomainError>;
+fn register_notification_channel(ctx: &Ctx, connection: &IntegrationConnection, registry: &dyn ChannelRegistry) -> Result<(), DomainError>;
+fn bind_calendar(ctx: &Ctx, uow: &mut UnitOfWork, req: CalendarBinding) -> Result<CalendarBinding, DomainError>;
+fn run_calendar_sync(ctx: &Ctx, uow: &mut UnitOfWork, binding: BindingId, adapter: &dyn CalendarAdapter) -> Result<SyncSummary, DomainError>;
+fn resolve_conflict(policy: ConflictPolicy, ours: &FieldSnapshot, theirs: &FieldSnapshot) -> ConflictOutcome;
+fn import_thread_reply(ctx: &Ctx, uow: &mut UnitOfWork, connection: ConnectionId, reply: ThreadReply) -> Result<Option<CommentId>, DomainError>;
+```
+
+`resolve_conflict` is pure — policy, two snapshots with their `updated_at`, one winner — so the four
+policies are unit tested without a database or a provider.
+
+Transaction boundaries. `complete_callback` runs in one `UnitOfWork`: `claim_state` consuming the
+`oauth_states` row, the `integration_connections` status and account fields, the full
+`integration_connection_capabilities` and `integration_connection_scopes` sets (granted and missing
+in one pass), the sealed `oauth_tokens` row with its `oauth_token_scopes` rows, the audit row, and
+`integration.connected.v1`. That single boundary is what makes the flow safe against a replayed
+callback: the state is consumed in the same transaction that stores the tokens, so a redelivery
+finds `consumed_at` set and writes nothing. `refresh_connection` commits the new token row, the
+`integration_connection_errors` upsert or clear, `refresh_failures`, and any `status` change
+together, so the connection can never show `active` beside a stale error row. `run_calendar_sync`
+holds one `UnitOfWork` per page of changes covering the `calendar_event_links` upserts, the cell
+writes through the F006 and F008 repositories, the `integration_events` conflict row, its
+`integration_conflicts` rows, and `save_binding_cursor` — the cursor advances only with the writes it
+covers, so a crash re-reads the page instead of skipping it. The provider HTTP call always happens
+outside the transaction; a transaction is never held open across a network round trip.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_integrations_*.sql` creates `integration_connections(id uuid pk, tenant_id uuid not null, provider text not null references integration_providers(id) on delete restrict, display_name text, owner_id uuid not null references users(id) on delete restrict, external_account_id text, external_account_label text, status text not null default 'pending' check (status in ('pending','active','limited','needs_reauth','error','revoked')), last_success_at timestamptz, refresh_failures smallint not null default 0 check (refresh_failures between 0 and 3), revoked_at timestamptz, revoked_by uuid references users(id) on delete restrict, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `oauth_tokens(connection_id uuid pk references integration_connections(id) on delete cascade, tenant_id, key_id text not null, nonce bytea not null, access_ciphertext bytea not null, refresh_ciphertext bytea, expires_at timestamptz not null, updated_at)`, `integration_events(id uuid pk, tenant_id, connection_id uuid not null references integration_connections(id) on delete cascade, kind text not null check (kind in ('call','conflict','notify','sync')), operation text, status_code int, duration_ms int, detail jsonb, occurred_at timestamptz not null)`, `oauth_states(state text pk, tenant_id, actor_id uuid not null references users(id) on delete restrict, connection_id uuid not null references integration_connections(id) on delete cascade, code_verifier_ciphertext bytea not null, expires_at timestamptz not null, consumed_at timestamptz)`, `calendar_bindings(id uuid pk, tenant_id, connection_id uuid not null references integration_connections(id) on delete cascade, sheet_id uuid not null references sheets(id) on delete cascade, start_column_id uuid not null, end_column_id uuid, title_column_id uuid not null, assignee_column_id uuid, conflict_policy text not null default 'newest_wins' check (conflict_policy in ('opshub_wins','provider_wins','newest_wins','manual')), cursor text, external_calendar_id text, status text not null default 'active' check (status in ('active','paused')), version, audit fields)`, `calendar_event_links(tenant_id, binding_id uuid not null references calendar_bindings(id) on delete cascade, row_id uuid not null, external_event_id text not null, opshub_updated_at timestamptz, provider_updated_at timestamptz, review_state text not null default 'clean' check (review_state in ('clean','needs_review')), primary key (binding_id, row_id))`.

@@ -104,6 +104,215 @@ Canonical contract: `docs/capability-contracts.md` row F007.
 - Validation and limits: label 1–120 chars, description ≤ 2,000 chars, width 40–1,000, precision 0–8, ≤ 200 options per column, ≤ 16 validation rules per column with at most one row per rule name, regex ≤ 512 chars compiled by `regex` crate (RE2), 500 columns per sheet checked with a row lock on `sheets`. Async re-normalization above 10,000 rows runs as a JetStream job consumed by the F004 worker runtime calling `renormalize_cells` in batches of 1,000.
 - Error mapping: `ColumnError::LabelTaken → 409 conflict`, `ColumnError::Limit → 400 invalid (column_limit)`, `ColumnError::UnsupportedConversion → 400 invalid`, `ColumnError::PrimaryImmutable → 400 invalid`, `ColumnError::StaleVersion → 409 conflict`, `ColumnError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, its type, whether it is required, and the constraint
+that makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the
+same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, and `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>` and the opaque cursor are F028's
+envelope `{ items, next_cursor, has_more, total? }`; error codes are the shared six.
+
+#### `CellValue`
+
+One cell as every feature sees it: F006 `RowResponse.cells`, F008 grid reads and edits, F009 link and
+roll-up cells, F010 import rows, F014 form submissions, F035 formula inputs. This feature owns the
+definition; no other ticket restates it. It is a JSON object discriminated by the **type of its
+column**, never by a tag inside the payload, because `cells` is keyed by `column_id` and the reader
+already holds the column.
+
+| Field | Type | Notes |
+|---|---|---|
+| `raw` | RawValue? | exactly what the writer submitted (`cells.raw`); `null` is an empty cell |
+| `normalized` | NormalizedValue? | canonical form (`cells.normalized`); `null` when `raw` is `null` or `validation.state` is `invalid` |
+| `display` | string | rendered from `normalized` and `ColumnSettings` (`cells.display`); `""` when `raw` is `null` |
+| `validation` | CellValidation | the cell's `cell_validation_states` row |
+
+On write only `raw` travels: a `cells` map entry and F008's `edits[].value` carry the RawValue
+itself, unwrapped; sending `normalized`, `display` or `validation` is `400 invalid`. Writing `null`
+clears the cell. An empty cell has no `cell_validation_states` row and reads as
+`{ state: "valid", code: null, message: null }` unless a `required` rule applies.
+
+| Column type | `raw` | `normalized` | `null` means | Cell-writable |
+|---|---|---|---|---|
+| `text` | string, the entered text verbatim | the same string | never entered or cleared — distinct from `""`, which satisfies no `required` rule either | yes |
+| `number` | string, the entered text (`"1 234,5"`); a JSON number is accepted and stored as its canonical decimal string | decimal as a **string** so no client does float arithmetic, scaled by `settings.precision` (`"1234.50"`) | no number entered; `min`/`max` do not apply | yes |
+| `currency` | as `number` | as `number`; the unit is `settings.currency_code`, never repeated per cell | no amount; not zero | yes |
+| `date` | string `YYYY-MM-DD` | the same string | no date; `date_range` does not apply | yes |
+| `datetime` | string RFC 3339 with any offset | RFC 3339 in UTC, microsecond precision, `Z` suffix | no instant | yes |
+| `boolean` | JSON `true` or `false` | the same boolean | unset — distinct from `false` | yes |
+| `person` | string, a `users.id` of this tenant | the same id | nobody is set on the cell | yes |
+| `select` | string option id when `settings.multi` is false, array of option ids when true | always an array of option ids in the column's option `position` order, `[]` when nothing is chosen | no option chosen; `[]` after every option was removed, which `required` also rejects | yes |
+| `duration` | object `{ value: string decimal ≥ 0, unit: "days" \| "hours" }` (F011 FR-F011-01) | ISO 8601 duration string, `"P3D"` or `"PT12H"` (FR-F007-08); `days`↔`hours` convert through the F011 calendar `hours_per_day` | no duration; not zero | yes |
+| `file` | array of `files.id` (F017) already readable by the actor, in display order | the same array | no attachment | yes |
+| `link` | always `null` | always `null` | the cell has no `cell_links` row | no — F009 routes only (FR-F007-15) |
+| `formula` | always `null` | the evaluated value in the shape of the result type below | not yet evaluated | no — F035 owns the expression (FR-F007-15) |
+
+For `link`, `display` is the target cell's display value copied by F009 and `validation` carries
+`broken_link`; for `formula`, `display` is F035's rendering of `normalized`. Both remain `CellValue`
+objects so a reader needs no second shape.
+
+**`CellValidation`** — one `cell_validation_states` row
+
+| Field | Type | Notes |
+|---|---|---|
+| `state` | `"valid" \| "invalid" \| "pending"` | `pending` while an async re-normalization (FR-F007-06) or roll-up has not finished |
+| `code` | ValidationCode? | present only when `state` is `invalid` |
+| `message` | string? | the rule's `message`, or the type's default text; present only with `code` |
+| `checked_at` | timestamp | |
+
+`ValidationCode` is exactly `required`, `min`, `max`, `regex`, `allowed_options`, `date_range`,
+`unique`, `type_mismatch`, `unknown_person`, `unsupported_conversion`, plus `broken_link` written by
+F009. A failing cell write is not rejected: the cell stores `raw`, leaves `normalized` null, and
+records the code — which is what F008 returns as a per-cell `invalid` outcome.
+
+**`ColumnSettings`** — the column's one `column_settings` row, always present in responses with its
+defaults materialised. A field set on a type it does not apply to is `400 invalid` with
+`field_errors.settings.<field> = "not_applicable"`.
+
+| Field | Type | Required | Applies to | Constraint / default |
+|---|---|---|---|---|
+| `precision` | integer? | no | number, currency, duration | 0–8; `null` keeps the scale as entered, capped at 8 |
+| `currency_code` | string? | yes for currency | currency | ISO 4217 alpha-3; absent on a currency column is `400 invalid` with `field_errors.settings.currency_code = "required"` |
+| `display_format` | string? | no | number, currency, date, datetime, duration | ≤ 64 chars; `null` uses the type default (`YYYY-MM-DD`, RFC 3339 in the resolved zone, grouped decimal at `precision`, `<value><unit>`) |
+| `multi` | bool | no | select | default `false`; true on any other type is `not_applicable` |
+| `time_zone` | string? | no | datetime | IANA name validated against the bundled tz database; `null` defers to F011's resolution order |
+
+**`ValidationRule`** — one `column_validation_rules` row; at most one per `rule` name, at most 16 per
+column, replaced as a set by `PATCH`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `rule` | `"required" \| "min" \| "max" \| "regex" \| "allowed_options" \| "date_range" \| "unique"` | yes | one row per name; a repeat is `400 invalid` with `field_errors.validation = "duplicate_rule"` |
+| `min_number` | decimal string? | yes for `min` on number, currency, duration | the row must carry exactly the bounds its rule uses |
+| `max_number` | decimal string? | yes for `max` on those types | as above |
+| `min_datetime` | timestamp? | yes for `min`/`date_range` on date, datetime | a bare date is read at 00:00:00Z |
+| `max_datetime` | timestamp? | yes for `max`/`date_range` on date, datetime | `max_datetime` ≥ `min_datetime`, else `400 invalid` |
+| `pattern` | string? | yes for `regex` | RE2 syntax, ≤ 512 chars, compiles, text columns only |
+| `message` | string? | no | ≤ 500 chars; overrides the default message on the cell |
+
+`allowed_options` takes no bound: it restricts a `select` cell to non-archived options of its own
+column. `unique` applies to text and number only and is evaluated across non-deleted rows of the
+sheet.
+
+**`ColumnOption`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | uuid | no on create, yes on update | an id absent from the request is deleted when unreferenced, archived otherwise |
+| `label` | string | yes | 1–120 chars, unique per column among non-archived options |
+| `color` | ColorToken | yes | one of the 12 token names in `apps/web/src/design/tokens.css` |
+| `archived` | bool | no | default `false`; archived options stay valid on existing cells and are rejected on new writes (FR-F007-07) |
+
+**`CreateColumnRequest`** — `POST /api/v1/sheets/{sheet_id}/columns`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | ColumnType | yes | one of the twelve; `formula` and `link` are created as shells |
+| `label` | string | yes | 1–120 chars after trim, unique per sheet case-insensitively among non-deleted columns, else `409 conflict` |
+| `description` | string? | no | ≤ 2,000 chars |
+| `required` | bool | no | default `false`; equivalent to a `required` validation rule and reported as one |
+| `width` | integer | no | 40–1,000, default 160 |
+| `hidden` | bool | no | default `false` |
+| `after_column_id` | uuid? | no | a column of this sheet; `null` appends after the last |
+| `settings` | ColumnSettings? | no | defaults materialised when absent |
+| `validation` | ValidationRule[] | no | ≤ 16, rule names distinct, each applicable to `type` |
+| `options` | ColumnOption[] | no | select only, 1–200; other types give `not_applicable` |
+
+The 501st non-deleted column is `400 invalid` with `field_errors.sheet_id = "column_limit"` and
+writes nothing (FR-F007-02).
+
+**`UpdateColumnRequest`** — `PATCH /api/v1/columns/{id}`, every field optional, at least one present,
+`If-Match` required
+
+| Field | Type | Constraint |
+|---|---|---|
+| `label`, `description`, `required`, `width`, `hidden` | as create | the primary column rejects `hidden` and a non-`text` `type` with `field_errors.is_primary = "immutable"` |
+| `type` | ColumnType | allowed only by the conversion matrix, else `400 invalid` with `field_errors.type = "unsupported_conversion"` |
+| `settings` | ColumnSettings | replaces the row whole, not merged |
+| `validation` | ValidationRule[] | replaces the rule set atomically |
+| `options` | ColumnOption[] | replaces the option set; omitted ids are archived or deleted per the option table |
+| `dry_run` | bool | default `false`; `true` computes `preview` and writes nothing |
+
+**`ReorderColumnRequest`** — `POST /api/v1/columns/{id}/reorder`: `{ after_column_id: uuid? }`, where
+`null` means first after the primary column; the primary column itself cannot be reordered.
+
+**`ColumnResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `sheet_id` | uuid | `id` is immutable across rename and type change (FR-F007-04) |
+| `type` | ColumnType | |
+| `label`, `description` | string / string? | |
+| `required`, `is_primary`, `hidden` | bool | |
+| `position` | string | fractional index as a string, ordered by collation `C` |
+| `width` | integer | |
+| `settings` | ColumnSettings | defaults materialised |
+| `validation` | ValidationRule[] | ordered by `rule` name |
+| `options` | ColumnOption[] | select only, in `position` order; `[]` for every other type |
+| `last_validation` | ValidationSummary? | present once a validate job has run |
+| `preview` | TypeChangePreview? | present only on a `PATCH` that changed `type` or `validation` |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | timestamp / uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted column |
+
+**`TypeChangePreview`** `{ invalid_count: integer, mode: "sync" \| "async" }` — cells that will hold
+state `invalid`, and whether re-normalization ran in the request or was enqueued (FR-F007-06).
+**`ValidateJobResponse`** `{ job_id: uuid, status: "queued" }` — `POST /api/v1/columns/{id}/validate`.
+**`ValidationSummary`** `{ job_id: uuid, status: "queued" | "running" | "succeeded" | "failed",
+valid_count: integer, invalid_count: integer, checked_at: timestamp? }`, polled through
+`ColumnResponse.last_validation` (FR-F007-11).
+
+`GET /api/v1/sheets/{sheet_id}/columns` returns `Page<ColumnResponse>` sorted by `position`
+ascending. Query parameters: `cursor` (opaque), `limit` (1–500, default 100), `hidden` (bool, omitted
+returns both), `include_deleted` (bool, default `false`).
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | reads, `PATCH`, reorder, and validate acknowledgement |
+| `201` | column created |
+| `204` | `DELETE` |
+| `400 invalid` | label or description length, width out of 40–1,000, precision outside 0–8, unknown or `not_applicable` settings field, more than 16 rules or a duplicate rule name, regex over 512 chars or that fails to compile, more than 200 options, unsupported conversion, primary-column immutability, column limit reached, unlisted field |
+| `403 denied` | the actor can read the sheet but lacks `sheet-editor` for a mutation |
+| `404 not_found` | unknown column or sheet, a soft-deleted one, and every foreign-tenant or unreadable id — never `denied`, so ids do not leak |
+| `409 conflict` | duplicate label, stale `If-Match` (body carries the current `version`), `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant write quota on validate jobs |
+| `502 unavailable` | outbox or job-queue publish failed; the mutation is rolled back |
+
+### Use case signatures
+
+In `crates/domain/src/columns/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` to write or a repository to read, never a pool or a connection, and returns the shared
+`DomainError` mapped by the table above.
+
+```rust
+fn create_column(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: CreateColumn) -> Result<Column, DomainError>;
+fn update_column(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId, expected: Version, req: UpdateColumn) -> Result<Column, DomainError>;
+fn change_column_type(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId, expected: Version, to: ColumnType, dry_run: bool) -> Result<TypeChangePreview, DomainError>;
+fn delete_column(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId, expected: Version) -> Result<(), DomainError>;
+fn list_columns(ctx: &Ctx, repo: &dyn ColumnRepository, sheet: SheetId, filter: ColumnFilter, page: Cursor) -> Result<Page<Column>, DomainError>;
+fn reorder_column(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId, expected: Version, after: Option<ColumnId>) -> Result<Column, DomainError>;
+fn upsert_options(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId, expected: Version, options: Vec<ColumnOption>) -> Result<Vec<ColumnOption>, DomainError>;
+fn validate_column(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId) -> Result<ValidateJob, DomainError>;
+fn renormalize_cells(ctx: &Ctx, uow: &mut UnitOfWork, id: ColumnId, batch: RowBatch) -> Result<RenormalizeReport, DomainError>;
+fn evaluate(rules: &[ValidationRule], value: &Normalized, ctx: &TenantContext) -> ValidationOutcome;
+fn normalize(column: &Column, raw: &RawValue, ctx: &TenantContext) -> Result<Normalized, ValidationCode>;
+```
+
+`normalize` and `evaluate` are pure: they touch no repository, which is what lets F008 cell writes,
+F010 imports and F014 form submissions reuse them without a transaction.
+
+**Transaction boundaries.** One `UnitOfWork` per mutation. `create_column` writes `columns`,
+`column_settings`, `column_validation_rules` and `column_options` together, so a column can never
+exist without the settings row its normalization reads. `update_column` replaces the rule set and the
+option set inside the same boundary as the version bump, so a reader never sees half a rule set.
+`change_column_type` includes the `cells` and `cell_validation_states` rewrites when
+`preview.mode` is `sync`; when it is `async` the transaction commits the column and marks affected
+cells `pending`, and each `renormalize_cells` batch of 1,000 rows is its own `UnitOfWork` so a failed
+batch is retried without re-running the column write. Every boundary also carries the `audit_events`
+row and the outbox enqueue, so an unpublished event rolls the mutation back.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_columns_*.sql` creates `columns(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, type text not null check (type in (...twelve...)), label text not null, description text, required bool not null default false, is_primary bool not null default false, position text not null collate "C", width int not null default 160, hidden bool not null default false, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `column_settings(column_id uuid primary key references columns(id) on delete cascade, tenant_id uuid not null, precision smallint check (precision between 0 and 8), currency_code char(3), display_format text, multi bool not null default false, time_zone text, updated_by uuid, updated_at timestamptz not null)`, `column_validation_rules(tenant_id uuid not null, column_id uuid not null references columns(id) on delete cascade, rule text not null check (rule in ('required','min','max','regex','allowed_options','date_range','unique')), min_number numeric, max_number numeric, min_datetime timestamptz, max_datetime timestamptz, pattern text, message text, created_by uuid, created_at timestamptz not null, primary key (column_id, rule))`, `column_options(id uuid pk, tenant_id, column_id references columns(id) on delete restrict, label text not null, color text not null, position text not null collate "C", archived bool not null default false, version, audit fields)`, `cell_validation_states(tenant_id, row_id uuid references rows(id), column_id uuid references columns(id), state text not null check (state in ('valid','invalid','pending')), code text, message text, checked_at timestamptz not null, primary key (row_id, column_id))`.

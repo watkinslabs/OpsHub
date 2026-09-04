@@ -56,7 +56,7 @@ As a tenant member, I want to sign in with my organisation's identity provider, 
 - **FR-F038-11:** `POST /api/v1/api-tokens` with `{ name, scopes, expires_at? }` returns the plaintext token exactly once in the form `oh_` plus 8 visible characters plus 32 random characters, stores only a SHA-256 hash, writes one `api_token_scopes` row per requested scope in the same transaction, requires that set to be a subset of the creator's effective scopes, caps `expires_at` at `api_token_max_ttl_seconds`, and emits `api-token.created.v1`; `GET /api/v1/api-tokens` lists prefix, name, the joined scope rows, `last_used_at`, `expires_at`; `DELETE /api/v1/api-tokens/{id}` revokes and emits `api-token.revoked.v1`.
 - **FR-F038-12:** A request with `Authorization: Bearer oh_...` is authenticated by hash lookup, yields `ActorContext { auth_kind: ApiToken, scopes }`, updates `last_used_at` at most once per minute, and a revoked, expired, or unknown token returns `401 denied` with `reason = invalid_token`.
 - **FR-F038-13:** Rate limits are enforced through `rate_limit_buckets`: login start and callback 10 per minute per IP and 5 per minute per user, MFA verify and assert 5 per 10 minutes per user, API token authentication 600 per minute per token; exceeding a bucket returns `429 rate_limited` with `Retry-After` seconds and increments `auth_rate_limited_total{bucket}`.
-- **FR-F038-14:** `PATCH /api/v1/tenants/{id}/security-policy` (tenant-admin, `If-Match`) updates `mfa_required`, `session_max_age_seconds` (300–86400), `idle_timeout_seconds` (300–28800), `refresh_ttl_seconds` (3600–7776000), the allowed email domains (replaced as a set of `security_policy_email_domains` rows in the same transaction), and `api_token_max_ttl_seconds` (3600–31536000); out-of-range values return `400 invalid` with `field_errors`; turning on `mfa_required` does not revoke sessions but flags them `mfa_required` on the next request.
+- **FR-F038-14:** `GET /api/v1/tenants/{id}/security-policy`, `PATCH /api/v1/tenants/{id}/security-policy` (tenant-admin, `If-Match`) updates `mfa_required`, `session_max_age_seconds` (300–86400), `idle_timeout_seconds` (300–28800), `refresh_ttl_seconds` (3600–7776000), the allowed email domains (replaced as a set of `security_policy_email_domains` rows in the same transaction), and `api_token_max_ttl_seconds` (3600–31536000); out-of-range values return `400 invalid` with `field_errors`; turning on `mfa_required` does not revoke sessions but flags them `mfa_required` on the next request.
 - **FR-F038-15:** Every service extracts `ActorContext { tenant_id, actor_id, roles, scopes, correlation_id, auth_kind }` through the shared `crates/auth` extractor from either the session cookie or the bearer token; handlers never read cookies or headers themselves, and a request with neither credential on a non-public route returns `401 denied` with `reason = unauthenticated`.
 - **FR-F038-16:** Login success, login failure, refresh reuse, MFA enrol/verify/remove, token create/revoke, session revoke, and policy change each write an audit row through the `AuthAuditSink` (in-memory until F003 lands) with ip, user agent, and correlation id; secrets, codes, and token plaintext never appear in audit rows or logs.
 
@@ -99,6 +99,178 @@ Excluded: SAML 2.0, SCIM provisioning, group mapping (F026); role and permission
 - Authorization: `self` for sessions, factors, and tokens; `tenant-admin` for other users' sessions and the security policy; tenant scoping comes from the session or token row, never from the request; `SessionRevoker` implementation provided to F002 for deactivation.
 - Validation: slug per F002 rules, `return_to` must start with `/` and not `//`, TOTP code 6 digits, `name` 1–80 chars, `scopes` non-empty, deduplicated, and ≤ 32 entries (checked before the scope rows are written), `allowed_email_domains` ≤ 64 entries and lowercase, policy ranges per FR-F038-14. `RateLimitBucketRepository::consume` refills and debits one bucket row per key in a single upsert statement inside the repository.
 - Error mapping: `AuthError::Unauthenticated | InvalidToken | RefreshReuse → 401 denied`, `UserNotProvisioned | MfaRequired | Forbidden → 403 denied`, `InvalidCode | CounterReplay | FactorLimit | LastFactor | PolicyRange → 400 invalid`, `NotFound → 404 not_found`, `StaleVersion → 409 conflict`, `RateLimited → 429 rate_limited`, `ProviderUnavailable → 503 unavailable`.
+
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable, a missing optional field and an explicit `null` are the same
+thing, timestamps are RFC 3339 UTC, ids are UUIDv7 strings, and unlisted fields are rejected with
+`400 invalid`. Byte strings crossing the wire — challenges, credential ids, attestations,
+assertions — are base64url without padding. No response in this feature ever contains a secret, a
+code, a refresh token, or a token plaintext except the two one-time reveals marked below.
+
+**Login.** `GET /auth/oidc/start` takes query parameters, not a body: `tenant` (required, the F002
+slug, unknown → `404 not_found`) and `return_to` (optional, must start with `/` and not with `//`;
+anything else is replaced by `/` rather than rejected, per FR-F038-03). It responds `302` with
+`Location` set to the provider and sets `__Host-oh_oidc`. `GET /auth/oidc/callback` takes `code` and
+`state`, both required, and responds `302` to `return_to` with `__Host-oh_session` set. Neither route
+returns JSON on success; failures return the shared error body.
+
+**`RefreshRequest`** — `POST /auth/refresh` — `{ refresh_token: string }`, required, matched by
+SHA-256 hash. The response is `{ refresh_token: string, expires_at: timestamp }`: the rotated token,
+returned once and never readable again. `POST /auth/logout` takes no body and returns `204` with an
+empty body, on the first call and on every repeat.
+
+**`SessionResponse`** — `GET /api/v1/sessions` items and the `DELETE` target
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | pass to `DELETE /api/v1/sessions/{id}` |
+| `user_id` | uuid | present always; equals the caller unless a `tenant-admin` passed `user_id` |
+| `device_label` | string? | derived from the user agent at creation, never trusted input |
+| `ip` | string? | the creating address, IPv4 or IPv6 text |
+| `user_agent` | string? | truncated to 512 chars |
+| `created_at` / `last_seen_at` | timestamp | |
+| `expires_at` | timestamp | `created_at` plus `session_max_age_seconds` at creation |
+| `mfa_verified_at` | timestamp? | null until a factor is verified on this session |
+| `current` | bool | true for the session the request itself is authenticated with |
+
+`GET /api/v1/sessions` accepts one filter, `user_id`, which only a `tenant-admin` may pass; a member
+passing another user's id receives `404 not_found`. It returns `Page<SessionResponse>` — F028's
+envelope `{ items, next_cursor, has_more, total? }` — sorted by `last_seen_at` descending.
+
+**MFA.** `POST /api/v1/mfa/totp/enroll` takes `{ label?: string }` (≤ 80 chars) and returns
+**`TotpEnrollResponse`** `{ factor_id: uuid, otpauth_uri: string, secret: string }`, where
+`otpauth_uri` and `secret` are the one-time reveal: they are never returned again by any route.
+**`TotpVerifyRequest`** is `{ factor_id: uuid, code: string }` with `code` exactly six ASCII digits,
+accepted within ±1 step of 30 seconds; the response is **`MfaFactorResponse`**.
+
+**`WebAuthnRegisterRequest`** — `POST /api/v1/mfa/webauthn/register`, called twice
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `label` | string? | no | ≤ 80 chars; first call only |
+| `attestation` | object? | no | second call only; the browser's `PublicKeyCredential` with `id`, `raw_id`, `response.client_data_json`, `response.attestation_object`, all base64url. Absent → the response is the creation options; present → the credential is stored |
+
+The first call returns `{ challenge, rp, user, pub_key_cred_params, timeout, exclude_credentials }`
+with the challenge valid five minutes; the second returns `MfaFactorResponse`.
+**`WebAuthnAssertRequest`** — `POST /api/v1/mfa/webauthn/assert` — is
+`{ credential_id, client_data_json, authenticator_data, signature, user_handle? }`, all base64url and
+all required except `user_handle`; a sign count that does not increase returns `400 invalid`.
+
+**`MfaFactorResponse`** `{ id: uuid, kind: "totp" | "webauthn", label: string?, verified_at:
+timestamp?, last_used_at: timestamp?, created_at: timestamp }`. It never carries the secret, the
+credential public key, or the sign count. `DELETE /api/v1/mfa/factors/{id}` returns `204`.
+
+**`CreateApiTokenRequest`** — `POST /api/v1/api-tokens`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–80 chars after trim |
+| `scopes` | string[] | yes | 1–32 entries, deduplicated, each `^[a-z-]+:[a-z-]+$` and a subset of the creator's effective scopes; an entry outside that set → `403 denied`, a malformed entry → `400 invalid` with `field_errors.scopes` |
+| `expires_at` | timestamp? | no | future, and at most `api_token_max_ttl_seconds` ahead; beyond the cap → `400 invalid`. Null means the policy cap |
+
+**`ApiTokenCreatedResponse`** `{ id, prefix, token, scopes, expires_at }` — `token` is the one-time
+reveal, `oh_` plus 8 visible characters plus 32 random characters, and only the SHA-256 hash is
+stored. **`ApiTokenResponse`** `{ id, name, prefix, scopes: string[], last_used_at: timestamp?,
+expires_at: timestamp?, revoked_at: timestamp?, created_at }` is what every later read returns; it
+never contains `token`. `GET /api/v1/api-tokens` returns `Page<ApiTokenResponse>` sorted by
+`created_at` descending, filterable by `status` (`active` | `revoked` | `expired`), and lists only
+the caller's own tokens. `DELETE /api/v1/api-tokens/{id}` returns `204`.
+
+**`UpdateSecurityPolicyRequest`** — `PATCH /api/v1/tenants/{id}/security-policy`, `tenant-admin`, `If-Match`, all fields optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `mfa_required` | bool | no | turning it on revokes nothing; unverified sessions fail on their next request |
+| `session_max_age_seconds` | integer | no | 300–86400 |
+| `idle_timeout_seconds` | integer | no | 300–28800 |
+| `refresh_ttl_seconds` | integer | no | 3600–7776000 |
+| `api_token_max_ttl_seconds` | integer | no | 3600–31536000 |
+| `allowed_email_domains` | string[] | no | the complete set, replacing the `security_policy_email_domains` rows; 0–64 entries, lowercase, deduplicated. An empty array means any domain |
+
+Out-of-range values return `400 invalid` with `field_errors` naming each offending field.
+**`SecurityPolicyResponse`** returns the same six fields plus `version`, `updated_at` and
+`updated_by`, and is the body of the `PATCH` response; there is no separate read route.
+
+**Status codes.** The error body is decision 3's `{ code, message, field_errors, correlation_id }`,
+with `reason` carried alongside `code` where a requirement names one.
+
+| Status | Code | Produced by |
+|---|---|---|
+| 400 | `invalid` | wrong or reused TOTP code, WebAuthn counter replay, a sixth factor, removing the last verified factor under `mfa_required`, a policy value out of range, a malformed scope |
+| 401 | `denied` | no credential on a non-public route (`reason = unauthenticated`); an unknown, revoked or expired bearer token (`reason = invalid_token`); a replayed refresh token (`reason = refresh_reuse`, after revoking the family) |
+| 403 | `denied` | a user who is absent or not `active` at callback (`reason = user_not_provisioned`); a session without `mfa_verified_at` under a required policy (`reason = mfa_required`); a member patching the policy or reading another user's sessions; a token scope outside the caller's effective scopes |
+| 404 | `not_found` | unknown tenant slug at `/auth/oidc/start`; a session, factor or token belonging to another user or another tenant |
+| 409 | `conflict` | stale `If-Match` on the policy, with `current_version` in the body; an `Idempotency-Key` replayed with a different body |
+| 429 | `rate_limited` | any bucket of FR-F038-13, with `Retry-After` in seconds |
+| 503 | `unavailable` | the tenant has no provider configuration, or the provider's token endpoint is unreachable and no cached key can serve the request |
+
+An invisible resource always returns `not_found` and never `denied`, so an id never proves existence.
+
+### Use case signatures
+
+In `crates/domain/src/auth/`, over the repository traits of the Rust backend section.
+`ActorContext` is defined here and is not an HTTP payload: it is the value the `crates/auth` extractor
+builds from `__Host-oh_session` or `Authorization: Bearer`, and it is the concrete type behind the
+`ctx` argument of every use case in every other feature.
+
+```rust
+pub struct ActorContext {
+    pub tenant_id: TenantId,
+    pub actor_id: ActorId,          // a user id, or the minting user for a token
+    pub auth_kind: AuthKind,        // Session | ApiToken
+    pub session_id: Option<SessionId>,   // Some for AuthKind::Session
+    pub api_token_id: Option<ApiTokenId>, // Some for AuthKind::ApiToken
+    pub roles: Vec<RoleSlug>,       // resolved by F003; empty before F003 lands
+    pub scopes: Vec<Scope>,         // the token's stored scopes; empty for a session
+    pub mfa_verified_at: Option<Timestamp>,
+    pub tenant_status: TenantStatus, // F002's; the gate refuses writes when suspended
+    pub correlation_id: CorrelationId,
+    pub ip: Option<IpAddr>,
+    pub user_agent: Option<String>,
+}
+
+fn start_oidc(repo: &dyn SecurityPolicyRepository, slug: &TenantSlug, return_to: Option<&str>) -> Result<OidcRedirect, DomainError>;
+fn complete_oidc(uow: &mut UnitOfWork, provider: &dyn OidcProvider, req: OidcCallback) -> Result<(Session, RefreshToken), DomainError>;
+fn refresh_session(uow: &mut UnitOfWork, session: SessionId, presented: RefreshTokenHash) -> Result<RefreshToken, DomainError>;
+fn logout(ctx: &ActorContext, uow: &mut UnitOfWork) -> Result<(), DomainError>;
+fn list_sessions(ctx: &ActorContext, repo: &dyn SessionRepository, of: Option<UserId>, page: Cursor) -> Result<Page<Session>, DomainError>;
+fn revoke_session(ctx: &ActorContext, uow: &mut UnitOfWork, id: SessionId) -> Result<(), DomainError>;
+fn enroll_totp(ctx: &ActorContext, uow: &mut UnitOfWork, label: Option<String>) -> Result<TotpEnrolment, DomainError>;
+fn verify_totp(ctx: &ActorContext, uow: &mut UnitOfWork, id: FactorId, code: TotpCode) -> Result<MfaFactor, DomainError>;
+fn begin_webauthn_registration(ctx: &ActorContext, uow: &mut UnitOfWork, label: Option<String>) -> Result<CreationOptions, DomainError>;
+fn finish_webauthn_registration(ctx: &ActorContext, uow: &mut UnitOfWork, req: Attestation) -> Result<MfaFactor, DomainError>;
+fn assert_webauthn(ctx: &ActorContext, uow: &mut UnitOfWork, req: Assertion) -> Result<MfaFactor, DomainError>;
+fn remove_factor(ctx: &ActorContext, uow: &mut UnitOfWork, id: FactorId) -> Result<(), DomainError>;
+fn create_api_token(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateApiToken) -> Result<(ApiToken, TokenPlaintext), DomainError>;
+fn list_api_tokens(ctx: &ActorContext, repo: &dyn ApiTokenRepository, filter: TokenFilter, page: Cursor) -> Result<Page<ApiToken>, DomainError>;
+fn revoke_api_token(ctx: &ActorContext, uow: &mut UnitOfWork, id: ApiTokenId) -> Result<(), DomainError>;
+fn authenticate_bearer(repo: &dyn ApiTokenRepository, presented: &str) -> Result<ActorContext, DomainError>;
+fn update_security_policy(ctx: &ActorContext, uow: &mut UnitOfWork, expected: Version, req: UpdateSecurityPolicy) -> Result<SecurityPolicy, DomainError>;
+fn check_rate_limit(limiter: &dyn RateLimiter, bucket: BucketKey) -> Result<(), DomainError>;
+```
+
+`start_oidc` and `authenticate_bearer` take no `ActorContext`: they run before one exists, and
+`authenticate_bearer` is what produces it. Every other use case takes it, and no use case takes a
+pool, a connection, a cookie jar or a header map.
+
+**Transaction boundaries.** One `UnitOfWork` per use case, with the audit row from `AuthAuditSink`
+and any outbox row inside it:
+
+- `complete_oidc`: the `sessions` row, its first `refresh_tokens` row, and the `users.last_login_at`
+  update. The boundary protects the invariant that a session never exists without a refresh family,
+  which is what makes reuse detection sound.
+- `refresh_session`: marking the presented token `used_at` and inserting its successor in the same
+  `family_id`. On reuse the same unit instead revokes every session in the family — the detection and
+  the revocation commit together or not at all, so a stolen token cannot win a race.
+- `create_api_token`: the `api_tokens` row and one `api_token_scopes` row per scope, so a token is
+  never briefly visible with no scopes and therefore never ambiguous to the authorizer.
+- `update_security_policy`: the `security_policies` row under `If-Match` and the full replacement of
+  `security_policy_email_domains`. The boundary protects the invariant that the domain allow-list is
+  never half-applied while logins are being evaluated against it.
+- `remove_factor` and `revoke_session` each touch one table, but still run in a unit so the audit row
+  cannot survive a rolled-back revocation.
 
 ### PostgreSQL/SQLx
 
@@ -185,6 +357,14 @@ Scenario: Scoped API token cannot escalate
 - External dependencies: tenant OIDC provider metadata (discovery URL, client id, client secret via `SecretSource`); WebAuthn requires an HTTPS origin, so local E2E uses `https://localhost` with a dev certificate from `infra/`
 - Risks and mitigations: the F003 audit writer arrives after this feature, so audit goes through `AuthAuditSink` with an in-memory default swapped for the database sink under `F003_FEATURE`; clock skew with providers is bounded by a 60-second leeway on `iat`/`exp`; rate-limit buckets in PostgreSQL add a write per login, acceptable at the M1 scale and replaceable by a cache-backed `RateLimiter` implementation behind the trait; TOTP secrets depend on the F004 `SecretSource`, so the test cipher key is injected until F004 lands.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F038 interface work | `GET /api/v1/tenants/{id}/security-policy` declared; `api_token_scopes` and `security_policy_email_domains` added to the catalog row | The admin page read a policy no route returned, and the migration created two tables the row omitted |
 
 ## 7.1 Agent handoff
 

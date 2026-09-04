@@ -99,6 +99,178 @@ Canonical contract: `docs/capability-contracts.md` row F005 (aggregate `workspac
 - Validation: names 1–120 chars trimmed, description ≤ 2,000 chars, member set ≤ 500 entries with at least one `owner`, folder depth ≤ 10, folders per workspace ≤ 2,000, `limit` 1–100. Idempotency via `idempotency_keys(tenant_id, key, request_hash, response)` for 24 hours, written by the shared `IdempotencyKeyRepository` of the base contract rather than by this feature's repositories. Concurrency: `If-Match` compared inside the update transaction.
 - Error mapping: `WorkspaceError::NameTaken → 409 conflict`, `WorkspaceError::StaleVersion → 409 conflict`, `WorkspaceError::OwnerRequired → 400 invalid`, `FolderError::Cycle → 400 invalid`, `FolderError::MaxDepth → 400 invalid`, `FolderError::SiblingNameTaken → 409 conflict`, `NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, validation → `400 invalid` with `field_errors`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable, a missing optional field and an explicit `null` are the same
+thing, timestamps are RFC 3339 UTC, ids are UUIDv7 strings, `version` increments by one per write,
+and unlisted fields are rejected with `400 invalid`. `WorkspaceResponse`, `FolderResponse` and the
+tree below are the shapes F069's home surface and F070's trash both read; they are defined here and
+referenced there by name and owner.
+
+**`CreateWorkspaceRequest`** — `POST /api/v1/workspaces`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per tenant case-insensitively among live workspaces; taken → `409 conflict` with `field_errors.name = "taken"` |
+| `description` | string? | no | ≤ 2,000 chars |
+
+The creator becomes the single `owner` member in the same write; there is no `members` field on
+create (FR-F005-01).
+
+**`UpdateWorkspaceRequest`** — `PATCH /api/v1/workspaces/{id}`, `If-Match`, all optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | no | as above |
+| `description` | string? | no | ≤ 2,000 chars; explicit null clears it |
+| `settings` | WorkspaceSettings | no | replaces the object whole, not merged; written under the workspace `version` in the same transaction |
+
+**`WorkspaceSettings`** — the workspace's one `workspace_settings` row
+
+| Field | Type | Required | Default | Constraint |
+|---|---|---|---|---|
+| `default_folder_id` | uuid? | no | null | a live folder of this workspace; another workspace's folder → `400 invalid`. Set to null by the server when that folder is deleted |
+| `icon` | string? | no | null | one Lucide icon name from the shared set; an unknown name → `400 invalid` |
+
+**`WorkspaceResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `name` | string | |
+| `description` | string? | |
+| `settings` | WorkspaceSettings | always present, defaults materialised |
+| `my_role` | string | the caller's effective role — `owner`, `admin`, `editor`, `commenter` or `viewer` — which is what the UI hides affordances by. A `tenant-admin` who is not a member reads `admin` |
+| `member_count` | integer | member rows, users and groups counted alike |
+| `version` | integer | pass as `If-Match` on the next write |
+| `tree_version` | integer | the folder tree's own version; it is the `ETag` of the tree route and changes on every folder write without changing `version` |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | present only when a soft-deleted workspace is read, which only a member or `tenant-admin` may do |
+
+`GET /api/v1/workspaces` returns `Page<WorkspaceResponse>` — F028's envelope `{ items, next_cursor,
+has_more, total? }` — containing only workspaces the caller is a member of, or every workspace in the
+tenant for a `tenant-admin`. `limit` is 1–100 default 50, the filterable fields are `name` (prefix)
+and `deleted` (bool, default false), and the sort keys are `name` and `updated_at`, default `name`
+ascending. `DELETE` returns `204`; `POST /api/v1/workspaces/{id}/restore` takes no body and returns
+`WorkspaceResponse` at its new version, or `404 not_found` past the tenant retention window.
+
+**`MemberEntry`** — one element of the member set
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `subject_kind` | string | yes | `user` \| `group` |
+| `subject_id` | uuid | yes | a live user or group of the same tenant; a foreign or deactivated subject → `400 invalid` with `field_errors.members` |
+| `role` | string | yes | `owner` \| `admin` \| `editor` \| `commenter` \| `viewer`, the base resource roles `docs/authorization-model.md` section 3.1 defines; any other value → `400 invalid` |
+
+**`ReplaceMembersRequest`** — `PUT /api/v1/workspaces/{id}/members`, `If-Match` — is
+`{ members: MemberEntry[] }`, the complete set: 1–500 entries, at least one with `role = "owner"`
+(zero owners → `400 invalid` with `field_errors.members = "owner_required"`), and no repeated
+`(subject_kind, subject_id)` pair (→ `field_errors.members = "duplicate_subject"`). F002's
+`ReplaceMembersRequest` is a different type in a different module — group membership, a bare list of
+user ids with no roles — and the two never mix.
+
+**`MemberResponse`** `{ subject_kind, subject_id, role, display_name, created_at, created_by }`,
+where `display_name` is denormalised from F002's `UserResponse` or `GroupResponse` for rendering and
+is never accepted on write. `PUT` returns `{ members: MemberResponse[], version }` at the
+workspace's new version.
+
+**`CreateFolderRequest`** — `POST /api/v1/folders`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid | yes | caller holds `folder:create` there, else `403 denied`; a workspace the caller cannot read → `404 not_found` |
+| `name` | string | yes | 1–120 chars after trim, unique among live siblings case-insensitively; a clash → `409 conflict` |
+| `parent_folder_id` | uuid? | no | same workspace; null means the root. Resulting depth above 10 → `400 invalid` with `field_errors.parent_folder_id = "max_depth"` |
+| `after_folder_id` | uuid? | no | the sibling to order after; null appends. A non-sibling → `400 invalid` |
+
+**`UpdateFolderRequest`** — `PATCH /api/v1/folders/{id}`, `If-Match` — `{ name }`, the only field: a
+folder is moved by the move route, never by a patch, so a rename can never silently reparent.
+**`MoveFolderRequest`** — `POST /api/v1/folders/{id}/move`, `If-Match` — `{ parent_folder_id: uuid?,
+after_folder_id: uuid? }`, at least one present. Moving into the folder itself or any descendant →
+`400 invalid` with `field_errors.parent_folder_id = "cycle"`; the resulting depth of the deepest
+descendant above 10 → `"max_depth"`; a sibling name clash at the destination → `409 conflict`.
+
+**`FolderResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | stable across every move; a move never mints a new id |
+| `workspace_id` | uuid | |
+| `parent_folder_id` | uuid? | null at the root |
+| `name` | string | |
+| `path` | string | the `/`-joined chain of ancestor ids ending in this id — the materialised path, exposed because a client rendering a breadcrumb otherwise walks the tree |
+| `depth` | integer | 1 at the root, at most 10 |
+| `position` | string | the fractional index as a string, so a client never does float arithmetic on it |
+| `version` | integer | |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | present only when a soft-deleted folder is read directly; never in the tree |
+
+`DELETE /api/v1/folders/{id}` returns `204` and soft-deletes the folder and its whole subtree.
+
+**`FolderTreeResponse`** — `GET /api/v1/workspaces/{id}/tree` — is `{ tree_version: integer, roots:
+FolderNode[] }`, sent with `ETag` equal to `tree_version`; a matching `If-None-Match` returns `304`
+with no body. **`FolderNode`** is `{ id, name, parent_folder_id, depth, position, children:
+FolderNode[] }` — the six fields FR-F005-07 names and nothing else, ordered by `position` among
+siblings and capped at 2,000 nodes per workspace. Deleted folders are absent, and a folder carrying
+an explicit ACL deny for the caller is absent together with its whole subtree, so the tree never
+implies the existence of something the caller may not see (FR-F005-11).
+
+**Status codes.** The error body is decision 3's `{ code, message, field_errors, correlation_id }`.
+
+| Status | Code | Produced by |
+|---|---|---|
+| 400 | `invalid` | field validation, a member set with no owner or a duplicate subject, depth above 10, a move into a descendant, a foreign `after_folder_id` or `default_folder_id` |
+| 401 | `denied` | no credential; F038's extractor answers first |
+| 403 | `denied` | a member of the workspace whose role is below the action: a viewer creating a folder, an editor replacing members |
+| 404 | `not_found` | an unknown id, an id from another tenant, and a workspace the caller is not a member of — a non-member never learns that a workspace exists (FR-F005-14). A restore past the retention window is also `not_found` |
+| 409 | `conflict` | a taken workspace name, a sibling folder name clash, a stale `If-Match` with `current_version` in the body, an `Idempotency-Key` replayed with a different body |
+| 429 | `rate_limited` | F038's buckets; this feature declares none of its own |
+| 503 | `unavailable` | the outbox enqueue or the audit insert failed, which rolls the whole write back |
+
+### Use case signatures
+
+In `crates/domain/src/workspaces/`, over the two repository traits of the Rust backend section.
+`ctx` is F038's `ActorContext`; every read and write derives its tenant predicate from it.
+
+```rust
+fn create_workspace(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateWorkspace) -> Result<Workspace, DomainError>;
+fn get_workspace(ctx: &ActorContext, repo: &dyn WorkspaceRepository, id: WorkspaceId) -> Result<Workspace, DomainError>;
+fn list_workspaces(ctx: &ActorContext, repo: &dyn WorkspaceRepository, filter: WorkspaceFilter, page: Cursor) -> Result<Page<Workspace>, DomainError>;
+fn update_workspace(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkspaceId, expected: Version, req: UpdateWorkspace) -> Result<Workspace, DomainError>;
+fn delete_workspace(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkspaceId, expected: Version) -> Result<(), DomainError>;
+fn restore_workspace(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkspaceId) -> Result<Workspace, DomainError>;
+fn replace_members(ctx: &ActorContext, uow: &mut UnitOfWork, id: WorkspaceId, expected: Version, members: Vec<MemberEntry>) -> Result<Vec<WorkspaceMember>, DomainError>;
+fn get_tree(ctx: &ActorContext, repo: &dyn FolderRepository, id: WorkspaceId) -> Result<FolderTree, DomainError>;
+fn create_folder(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateFolder) -> Result<Folder, DomainError>;
+fn update_folder(ctx: &ActorContext, uow: &mut UnitOfWork, id: FolderId, expected: Version, req: UpdateFolder) -> Result<Folder, DomainError>;
+fn move_folder(ctx: &ActorContext, uow: &mut UnitOfWork, id: FolderId, expected: Version, req: MoveFolder) -> Result<Folder, DomainError>;
+fn delete_folder(ctx: &ActorContext, uow: &mut UnitOfWork, id: FolderId, expected: Version) -> Result<(), DomainError>;
+```
+
+No use case takes a pool or a connection, and none returns a row type. `get_tree` returns the domain
+`FolderTree`; the ACL filtering that removes denied subtrees happens inside it, in one pass over one
+pre-fetched deny set, never as a check per node.
+
+**Transaction boundaries.** One `UnitOfWork` per use case, carrying the audit row and the outbox row:
+
+- `create_workspace`: the `workspaces` row, its trigger-created `workspace_settings` row, and the
+  creator's `owner` row in `workspace_members`. The boundary protects the invariant that a workspace
+  never exists without an owner who can grant access to it.
+- `update_workspace`: `workspaces` and `workspace_settings` under one `If-Match` on the workspace
+  `version`, so a rename and a settings change cannot half-apply (FR-F005-04).
+- `replace_members`: `SELECT ... FOR UPDATE` on the workspace row, then the full replacement of
+  `workspace_members`. The lock is what makes the owner-required check sound: without it two
+  concurrent replacements each see an owner and commit a set that has none.
+- `move_folder`: the moved row's `parent_folder_id` and `position` plus the `path` rewrite of every
+  descendant, in one statement in one unit, and the workspace's `tree_version` increment. The
+  boundary protects the invariant that no reader ever sees a descendant whose path names an ancestor
+  it no longer has — a state in which the cycle check itself would be wrong.
+- `delete_workspace` cascades `deleted_at` to its folders in the same unit, and `restore_workspace`
+  clears both, so a workspace is never live with dead folders or the reverse.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_workspaces_*.sql` creates `workspaces(id uuid pk, tenant_id uuid not null, name text not null, description text, tree_version bigint not null default 1, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `workspace_settings(workspace_id uuid primary key references workspaces(id) on delete cascade, tenant_id uuid not null, default_folder_id uuid null references folders(id) on delete set null, icon text, updated_by uuid, updated_at timestamptz not null)` — typed columns instead of a `jsonb` blob, so the default folder is a declared foreign key that cannot dangle and the icon is constrained, `workspace_members(tenant_id, workspace_id, subject_kind text check (subject_kind in ('user','group')), subject_id uuid, role text check (role in ('owner','admin','editor','commenter','viewer')), created_by, created_at, primary key (workspace_id, subject_kind, subject_id))`, `folders(id uuid pk, tenant_id uuid not null, workspace_id uuid not null, parent_folder_id uuid null references folders(id) on delete restrict, name text not null, path text not null, depth smallint not null check (depth between 1 and 10), position text not null, version bigint not null default 1, audit fields, deleted_at)`.

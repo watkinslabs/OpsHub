@@ -247,6 +247,40 @@ Beyond the template, these are the rules that have actually been violated:
 - `cargo xtask check-completeness` measures all of this. `work/tickets/F006-sheets-boards-items.md`
   is the worked example of the depth expected.
 
+## Change control
+
+Everything built is represented in the ticket system. Implementation is where reality argues with
+the specification, and the answer is always to change the specification too — never to let the code
+quietly become the only description of what exists.
+
+- **No implementation without a ticket.** If it ships, a work item describes it. Code with no ticket
+  is undocumented by construction, and the next person cannot tell intent from accident.
+- **A discovery is an amendment or a new ticket, never a silent edit.** When implementation shows the
+  ticket is wrong, incomplete, or impossible as written, update it in the **same pull request as the
+  code**. The specification and the implementation land together or the specification is already a
+  lie.
+- **Which one to write:**
+  - The change is inside the feature's own contract → amend its ticket, and record the amendment.
+  - New behaviour that is separable → a new `F###` with its own stories, tasks and harness, linked
+    from the ticket that discovered it.
+  - Defect in something already archived → a `B###` bug ticket linked to the feature it belongs to.
+  - Unknown that must be resolved before work can proceed → a `P###` spike, linked from the blocked
+    item, with the answer written back into the ticket when it closes.
+  - A change to a shared rule, contract or technology → a `D###` decision, recorded in
+    `docs/architecture-decisions.md` and linked from every ticket it changes.
+- **Amendments are recorded, not just made.** An amended ticket carries an `## Amendments` section:
+  the date, the item that caused the change, what changed, and why. A reader six months later must be
+  able to see that section 4 says something different from what was reviewed, and why.
+- **Linkage runs both ways.** The amended ticket names the item that caused the change; that item
+  names every ticket it amended. A one-way link is how a change gets lost.
+- **A change crossing a contract boundary amends both sides in the same pull request.** Adding a
+  field to an event payload, a column to a shared table, or a parameter to a route means the
+  consuming features' tickets are amended too — `docs/event-map.md` names who those are.
+- **The catalog moves first.** A new route, event or table is a `docs/capability-contracts.md` change
+  in the same commit as the ticket that adds it. The gates enforce this, and it is the reason they do.
+- **Nothing is "temporary".** A workaround that ships is a documented decision with a follow-up
+  ticket, or it is not shipped.
+
 ## Milestones
 
 Every ticket declares a `target_milestone`. A feature may not depend on one in a later milestone —

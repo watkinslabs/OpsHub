@@ -97,6 +97,168 @@ Excluded: workspace and folder records themselves (F005), sharing grants, guests
 - Validation: slug regex, `permissions` deduplicated and ≤ 64 entries from the catalogue before the rows are written, ACL ≤ 500 entries, no duplicate `(principal, effect)` pairs, `limit` ≤ 200, `occurred_from ≤ occurred_to`.
 - Error mapping: `AuthzError::Denied → 403 denied`, `AuthzError::Hidden → 404 not_found`, `RoleError::SlugTaken | StaleVersion → 409 conflict`, `UnknownPermission | TooManyEntries | SystemRoleImmutable | RoleInUse → 400 invalid`, `NotFound → 404 not_found`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable, timestamps are RFC 3339 UTC, ids are UUIDv7 strings, and unlisted
+fields are rejected with `400 invalid`. Two vocabularies are not restated here because they have an
+owner: a permission string is `<resource>:<action>` drawn from the catalogue in
+`docs/authorization-model.md` section 1, and a role slug is one of the roles that document's section
+3 defines. A permission or role outside those sets is `400 invalid` with `field_errors.permissions`
+or `field_errors.role`, never a new vocabulary entry — adding one is an edit to that document first.
+
+**Shared shapes**, defined once and used by every route below.
+
+| Type | Shape |
+|---|---|
+| `Principal` | `{ kind: "user" \| "group", id: uuid }`. The id must exist in the caller's tenant; a foreign id → `400 invalid` |
+| `ResourceRef` | `{ kind: ResourceKind, id: uuid }` |
+| `ResourceKind` | `tenant` \| `workspace` \| `folder` \| `sheet` \| `report` \| `dashboard` \| `document` — the scope kinds of FR-F003-03; any other value → `400 invalid` |
+| `Effect` | `allow` \| `deny` |
+
+**`CreateRoleRequest`** — `POST /api/v1/roles`, `tenant-admin`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `slug` | string | yes | 3–40 chars, kebab case, unique per tenant among live roles; taken → `409 conflict`. Must not collide with a seeded system role |
+| `name` | string | yes | 1–120 chars after trim |
+| `permissions` | string[] | yes | 1–64 entries, deduplicated, each from the catalogue; written as one `role_permissions` row per entry |
+
+**`UpdateRoleRequest`** — `PATCH /api/v1/roles/{id}`, `If-Match`, at least one field present: `name`
+as above, and `permissions` as the complete replacement set, not a delta. `slug` is absent from this
+type: a role's slug never changes, and a system role rejects the whole request with `400 invalid`
+and `reason = system_role_immutable` (FR-F003-01).
+
+**`RoleResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `slug` / `name` | string | |
+| `permissions` | string[] | the joined `role_permissions` rows, sorted, so two reads compare equal |
+| `is_system` | bool | true for the seeded roles; the UI shows the lock and disables the slug field |
+| `binding_count` | integer | ACL entries referencing this role; a delete attempt reports this number |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+
+`GET /api/v1/roles` returns `Page<RoleResponse>` — F028's envelope `{ items, next_cursor, has_more,
+total? }` — sorted by `slug` ascending, filterable by `is_system` and by `slug` prefix, `limit`
+1–200 default 50.
+
+**`AclEntryDto`** — one entry, in both directions
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `id` | uuid | response only | absent on write; the server assigns it |
+| `principal` | Principal | yes | |
+| `effect` | Effect | yes | `(principal, effect)` must be unique within the request; a duplicate pair → `400 invalid` |
+| `role_id` | uuid? | no | a role binding: the entry grants that role's permission set. Exactly one of `role_id` and `permissions` is present |
+| `permissions` | string[]? | no | an explicit set, 1–64 entries from the catalogue, written as `resource_acl_permissions` rows |
+| `inherited_from` | ResourceRef? | response only | null on a direct entry; the ancestor that contributed it otherwise. Inherited entries are read-only |
+| `version` | integer | response only | |
+
+**`ReplaceAclRequest`** — `PUT /api/v1/resources/{kind}/{id}/acl`, `If-Match` — is `{ entries:
+AclEntryDto[] }`: the complete set of **direct** entries, 0–500 of them. Inherited entries are never
+sent and are rejected with `400 invalid` if they carry `inherited_from`.
+
+**`EffectiveAclResponse`** — `GET /api/v1/resources/{kind}/{id}/acl`
+
+| Field | Type | Notes |
+|---|---|---|
+| `resource` | ResourceRef | echoed, so a cached body identifies itself |
+| `entries` | AclEntryDto[] | direct entries on this resource, `inherited_from` null |
+| `inherited` | AclEntryDto[] | entries contributed by ancestors, nearest ancestor first, each with `inherited_from` set |
+| `caller_permissions` | string[] | the permission set the calling principal resolves to on this resource; what the UI hides affordances by |
+| `version` | integer | the resource's ACL version; pass as `If-Match` on the replace |
+
+**`CheckRequest`** — `POST /api/v1/authz/check` — `{ permission: string, resource: ResourceRef,
+principal: Principal? }`. `principal` may only be sent by a `tenant-admin`; anyone else sending it
+receives `403 denied` (FR-F003-07), and omitting it means the caller.
+**`CheckResponse`** `{ decision: "allowed" | "denied", reason: "suspended" | "explicit_deny" |
+"allow_entry" | "role_binding" | "no_match", matched_rule: { entry_id: uuid, scope: ResourceRef }? }`
+— `matched_rule` is null exactly when `reason` is `suspended` or `no_match`. The endpoint answers
+about visibility as well as action, so it returns `200` with `decision: "denied"` where the resource
+route would have returned `404`; it never itself reveals a resource of another tenant, which is
+`404 not_found`.
+
+**`AuditEventResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `actor_id` | uuid? | null for a system action |
+| `actor_kind` | string | `user` \| `api_token` \| `system` |
+| `action` | string | dotted, e.g. the `acl.replace` of this feature's audit actions |
+| `resource_kind` | string? | |
+| `resource_id` | uuid? | |
+| `before` / `after` | object? | opaque aggregate snapshots, rendered whole; fields tagged for redaction are already removed at insert (NFR-F003-02) |
+| `diff` | object? | the changed fields only |
+| `ip` | string? | |
+| `user_agent` | string? | |
+| `correlation_id` | uuid | joins every row written by one request |
+| `occurred_at` | timestamp | the partition key and the sort key |
+
+`GET /api/v1/audit-events` returns `Page<AuditEventResponse>` sorted by `occurred_at` descending —
+the only sort, because the index and the partition pruning depend on it — with `limit` 1–200 default
+50 and filters `actor_id`, `resource_kind`, `resource_id`, `action` (prefix), `correlation_id`,
+`occurred_from` and `occurred_to` (timestamps, `occurred_from ≤ occurred_to` or `400 invalid`). A
+filter naming another tenant's resource returns an empty page, not an error (FR-F003-13).
+
+**Status codes.** The error body is decision 3's `{ code, message, field_errors, correlation_id }`.
+
+| Status | Code | Produced by |
+|---|---|---|
+| 400 | `invalid` | a permission or role outside the authorization model, a duplicate `(principal, effect)` pair, more than 500 ACL entries, more than 64 permissions, an entry carrying both or neither of `role_id` and `permissions`, editing a system role, `occurred_from` after `occurred_to` |
+| 401 | `denied` | no credential; F038's extractor answers before any handler |
+| 403 | `denied` | the caller may read the resource but not the action: a commenter replacing an ACL, a member reading audit or creating a role, a non-admin passing `principal` to the check route |
+| 404 | `not_found` | the caller may not read the resource at all — the `AuthzError::Hidden` case — and every id from another tenant. The distinction is the whole point of FR-F003-08: missing read is `not_found`, present read with missing mutate is `denied` |
+| 409 | `conflict` | a taken role slug; a stale `If-Match` on a role or an ACL, with `current_version` in the body; an `Idempotency-Key` replayed with a different body |
+| 429 | `rate_limited` | F038's buckets; this feature declares none of its own |
+| 503 | `unavailable` | the audit insert or the outbox enqueue failed, which fails the whole mutation rather than losing the row (NFR-F003-04) |
+
+### Use case signatures
+
+In `crates/domain/src/authz/`, over the repository traits of the Rust backend section. `ctx` is
+F038's `ActorContext`. `check` is the one function the rest of the product calls; `require` is its
+handler-facing wrapper, and the `RequirePermission<P>` extractor is a thin Axum shell over `require`.
+
+```rust
+fn list_roles(ctx: &ActorContext, repo: &dyn RoleRepository, filter: RoleFilter, page: Cursor) -> Result<Page<Role>, DomainError>;
+fn create_role(ctx: &ActorContext, uow: &mut UnitOfWork, req: CreateRole) -> Result<Role, DomainError>;
+fn update_role(ctx: &ActorContext, uow: &mut UnitOfWork, id: RoleId, expected: Version, req: UpdateRole) -> Result<Role, DomainError>;
+fn get_effective_acl(ctx: &ActorContext, repo: &dyn ResourceAclRepository, resource: ResourceRef) -> Result<EffectiveAcl, DomainError>;
+fn replace_acl(ctx: &ActorContext, uow: &mut UnitOfWork, resource: ResourceRef, expected: Version, entries: Vec<AclEntry>) -> Result<EffectiveAcl, DomainError>;
+fn check(ctx: &ActorContext, engine: &PolicyEngine, principal: Principal, permission: Permission, resource: ResourceRef) -> Result<Decision, DomainError>;
+fn require(ctx: &ActorContext, permission: Permission, resource: ResourceRef) -> Result<(), AuthzError>;
+fn record_audit(uow: &mut UnitOfWork, event: AuditEvent) -> Result<(), DomainError>;
+fn list_audit_events(ctx: &ActorContext, repo: &dyn AuditEventRepository, filter: AuditFilter, page: Cursor) -> Result<Page<AuditEvent>, DomainError>;
+
+trait AncestryResolver { fn ancestors(&self, resource: ResourceRef) -> Result<Vec<ResourceRef>, DomainError>; }
+trait GroupMembershipSource { fn groups_of(&self, user: UserId) -> Result<Vec<GroupId>, DomainError>; }
+```
+
+`check` returns `Ok(Decision)` for both outcomes — a denial is an answer, not an error — while
+`require` collapses the same decision into `AuthzError::Denied` or `AuthzError::Hidden` so a handler
+cannot forget the `404`-versus-`403` rule. `PolicyEngine` holds the decision cache and the two
+traits above; it never holds a pool, and `AncestryResolver` is how workspaces and folders (F005)
+join the ancestry without this feature depending on them.
+
+**Transaction boundaries.** One `UnitOfWork` per mutation, and `record_audit` writes into the
+caller's unit rather than opening its own:
+
+- `create_role` and `update_role`: the `roles` row and the complete replacement of its
+  `role_permissions` rows. The boundary protects the invariant that a role is never briefly readable
+  with a partial permission set, which the evaluator would read as a real denial.
+- `replace_acl`: the `resource_acls` rows for the resource and their `resource_acl_permissions`
+  children, added, changed and removed together under one `If-Match`. The boundary protects the
+  invariant that a deny is never absent for an instant while its replacement allow is being written.
+- Cache invalidation is deliberately outside the transaction in one direction only: the local cache
+  is cleared synchronously after commit and other instances are invalidated by `acl.updated.v1` and
+  `role.updated.v1`, which is why the cross-request cache is bounded at 30 seconds (FR-F003-08).
+- `record_audit` never commits alone. A failed audit insert rolls back the mutation that called it,
+  so an unaudited change cannot exist.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_authz_*.sql` creates `roles(id uuid pk, tenant_id uuid not null references tenants(id), slug text not null, name text not null, is_system bool not null default false, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`; `role_permissions(tenant_id uuid not null, role_id uuid not null references roles(id) on delete cascade, permission text not null check (permission ~ '^(\*|[a-z-]+):(\*|[a-z-]+)$'), granted_at timestamptz not null, primary key (role_id, permission))`; `role_bindings(id uuid pk, tenant_id, role_id references roles(id), principal_kind text check (principal_kind in ('user','group')), principal_id uuid not null, scope_kind text not null, scope_id uuid not null, created_by, created_at)`; `resource_acls(id uuid pk, tenant_id, resource_kind text not null, resource_id uuid not null, principal_kind, principal_id, effect text check (effect in ('allow','deny')), role_id uuid, version bigint not null default 1, created_by, created_at, updated_by, updated_at)`; `resource_acl_permissions(tenant_id uuid not null, acl_id uuid not null references resource_acls(id) on delete cascade, permission text not null check (permission ~ '^(\*|[a-z-]+):(\*|[a-z-]+)$'), primary key (acl_id, permission))`; `audit_events(id uuid, tenant_id uuid not null, actor_id uuid, actor_kind text not null, action text not null, resource_kind text, resource_id uuid, before jsonb, after jsonb, diff jsonb, ip inet, user_agent text, correlation_id uuid not null, occurred_at timestamptz not null, primary key (id, occurred_at)) partition by range (occurred_at)` with partitions for the current and next three months.

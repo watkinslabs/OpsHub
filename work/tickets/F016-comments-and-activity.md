@@ -92,6 +92,167 @@ Excluded: notification delivery for mentions (F037 consumes `mention.created.v1`
 - Validation: `body` 1–10,000 chars, ≤ 50 mention tokens, `limit` bounds per route, `target_kind` enum; idempotency via `idempotency_keys` for 24 hours; `If-Match` compared inside the update transaction.
 - Error mapping: `CommentError::BodyTooLong → 400 invalid`, `CommentError::ThreadTargetMismatch → 400 invalid`, `CommentError::EditWindowClosed → 403 denied`, `CommentError::AlreadyInState → 409 conflict`, `CommentError::StaleVersion → 409 conflict`, `CommentError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, and `version` increments by one per
+write. Unlisted fields are rejected with `400 invalid`. `Page<T>` and the opaque cursor are F028's
+`{ items, next_cursor, has_more, total? }`; the error codes are the shared six. Every mutation
+requires `Idempotency-Key`, and `PATCH`, `DELETE` and `resolve` require `If-Match`.
+
+**`TargetRef`** `{ kind: "sheet" | "row" | "cell" | "file" | "report" | "dashboard", id: uuid }` —
+the pair addressed by the two path segments of the list routes and carried in every response. Access
+is the target's own ACL: a target the actor cannot read is `404 not_found` on every route, so a
+comment count never confirms that a record exists.
+
+**`CreateCommentRequest`** — `POST /api/v1/comments`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target_kind` | TargetKind | yes | one of the six; any other member → `400 invalid` |
+| `target_id` | uuid | yes | a live record of that kind the actor may read, with `resource-commenter` or higher, else `403 denied` when readable and `404 not_found` when not |
+| `body` | string | yes | Markdown, 1–10,000 UTF-8 characters; longer → `400 invalid` with `field_errors.body = "too_long"`; at most 50 mention tokens, more → `field_errors.body = "too_many_mentions"` |
+| `thread_id` | uuid? | no | omitted creates a `comment_threads` row in the same transaction; a thread whose target differs from the request → `400 invalid` with `field_errors.thread_id = "target_mismatch"` |
+| `parent_comment_id` | uuid? | no | a live comment of `thread_id`; a comment of another thread → `400 invalid` with `field_errors.parent_comment_id = "thread_mismatch"` |
+
+**`UpdateCommentRequest`** — `PATCH /api/v1/comments/{id}`: `{ body }` only, under the same body
+constraints. The author may edit within 24 hours of `created_at`, a `resource-admin` at any time;
+outside that window a non-admin gets `403 denied` with code `denied`. The edit sets `edited_at` and
+re-parses mentions, publishing `mention.created.v1` only for tokens the previous body did not carry.
+
+**`ResolveRequest`** — `POST /api/v1/comments/{id}/resolve`: `{ resolved: bool }`, required. It sets
+or clears `resolved_at` and `resolved_by` on the comment's **thread**, not on the comment, so two
+comments of one thread can never disagree. Requesting the state the thread already holds is
+`409 conflict`.
+
+#### Mentions
+
+A mention lives in the body as the literal token `@[user:<uuid>]` or `@[group:<uuid>]`; the body is
+stored exactly as submitted and the tokens are never rewritten, so an edit round-trips. Each token is
+resolved once at write time against the tenant and the target ACL.
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `"user" \| "group"` | from the token |
+| `id` | uuid | the mentioned principal |
+| `display_name` | string | resolved at read time for rendering the chip |
+
+`CommentResponse.mentions` holds the tokens that resolved: an active user or group of this tenant
+with read access to the target. Each is one `mentions` row and one `mention.created.v1`.
+`CommentResponse.unresolved_mentions` holds the rest as `{ kind, id }` with **no** `display_name`,
+because naming a principal the actor cannot see would leak it; those tokens stay plain text in the
+body, write no row and publish no event (FR-F016-04).
+
+**`CommentResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `thread_id` | uuid | |
+| `parent_comment_id` | uuid? | `null` at the top of a thread |
+| `author` | PrincipalSummary? | `{ id, display_name }`; `null` on a deleted comment |
+| `body` | string? | the submitted Markdown, sanitized at render time, never at rest; `null` on a deleted comment |
+| `mentions` | Mention[] | `[]` on a deleted comment |
+| `unresolved_mentions` | `{ kind, id }[]` | present on create and update responses and on reads by the author |
+| `deleted` | bool | `true` for a soft-deleted comment that is still returned |
+| `edited_at` | timestamp? | present only after an edit |
+| `created_at` | timestamp | |
+| `version` | integer | pass as `If-Match` on the next write |
+
+**A deleted comment.** Soft delete keeps the row. When the comment has at least one live reply it is
+still returned in thread order with `deleted: true`, `body: null`, `author: null` and
+`mentions: []`, keeping `id`, `thread_id`, `parent_comment_id` and `created_at` so its replies keep
+their parent and their position; the client renders the removed-comment placeholder from the
+`deleted` flag rather than from server-sent text. When it has no live replies it is omitted from the
+thread entirely and `GET` by its id is `404 not_found` (FR-F016-07). Deleting a comment never
+deletes its replies.
+
+**`ThreadResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `target` | TargetRef | |
+| `resolved_at` | timestamp? | `null` while open |
+| `resolved_by` | PrincipalSummary? | present exactly when `resolved_at` is |
+| `comments` | CommentResponse[] | ascending by `created_at`, replies following their parent |
+| `version` | integer | |
+
+`GET /api/v1/{target_kind}/{target_id}/comments` returns `Page<ThreadResponse>` sorted by the
+thread's `created_at` ascending. Query parameters: `cursor` (opaque), `limit` (1–100 threads, default
+25), `resolved` (bool; omitted returns both).
+
+**`ActivityEntryResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `target` | TargetRef | |
+| `actor_id` | uuid? | `null` for a system actor with no principal |
+| `actor_kind` | `"user" \| "automation" \| "integration"` | |
+| `action` | string | the source event name, `row.updated` or `comment.created` |
+| `changed_fields` | string[] | assembled from the entry's `activity_entry_changed_fields` rows, each field named at most once; `[]` when the action changed no field |
+| `summary` | string | a rendered one-line description |
+| `source_event_id` | uuid | the event this entry was projected from; unique per tenant, which is what makes a redelivery a no-op |
+| `correlation_id` | uuid | |
+| `occurred_at` | timestamp | |
+
+`GET /api/v1/{target_kind}/{target_id}/activity` returns `Page<ActivityEntryResponse>` sorted by
+`occurred_at` descending. Query parameters: `cursor`, `limit` (1–200, default 50), `actor_kind`
+(enum), `action` (string, matched as a prefix, ≤ 64 chars), `since` and `until` (timestamps, `until`
+not before `since`), `changed_field` (string matched against `activity_entry_changed_fields`).
+Activity is append-only: there is no route that writes it, and the entries of a soft-deleted target
+stay readable so the delete and the restore are both visible (FR-F016-14).
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | comment list, activity list, `PATCH`, resolve |
+| `201` | comment created |
+| `204` | comment deleted |
+| `400 invalid` | `too_long`, `too_many_mentions`, `target_mismatch`, `thread_mismatch`, an unknown `target_kind`, a `limit` outside its route bounds, `until` before `since`, an unlisted field |
+| `403 denied` | a viewer creating, editing or resolving; an author editing after the 24-hour window; a non-admin editing or deleting another principal's comment |
+| `404 not_found` | a target, thread or comment the actor cannot read, one that is soft-deleted with no live replies, and every foreign-tenant id — never `denied`, so ids do not leak |
+| `409 conflict` | resolving to the state the thread already holds, stale `If-Match` (body carries the current `version`), `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant write quota on comment creation |
+| `502 unavailable` | outbox publish failed; the mutation is rolled back |
+
+### Use case signatures
+
+In `crates/domain/src/comments/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` to write or a repository to read, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn create_comment(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateComment) -> Result<Comment, DomainError>;
+fn update_comment(ctx: &Ctx, uow: &mut UnitOfWork, id: CommentId, expected: Version, body: Markdown) -> Result<Comment, DomainError>;
+fn delete_comment(ctx: &Ctx, uow: &mut UnitOfWork, id: CommentId, expected: Version) -> Result<(), DomainError>;
+fn set_thread_resolution(ctx: &Ctx, uow: &mut UnitOfWork, id: CommentId, expected: Version, resolved: bool) -> Result<CommentThread, DomainError>;
+fn list_threads(ctx: &Ctx, repo: &dyn CommentThreadRepository, target: TargetRef, filter: ThreadFilter, page: Cursor) -> Result<Page<CommentThread>, DomainError>;
+fn parse_mentions(body: &Markdown) -> Vec<MentionToken>;
+fn resolve_mentions(ctx: &Ctx, repo: &dyn PrincipalReader, target: TargetRef, tokens: &[MentionToken]) -> Result<ResolvedMentions, DomainError>;
+fn project_activity(ctx: &Ctx, uow: &mut UnitOfWork, event: &DomainEvent) -> Result<Projected, DomainError>;
+fn list_activity(ctx: &Ctx, repo: &dyn ActivityEntryRepository, target: TargetRef, filter: ActivityFilter, page: Cursor) -> Result<Page<ActivityEntry>, DomainError>;
+```
+
+`parse_mentions` is pure, so the same tokenizer runs in the create path, the edit diff and the tests.
+`resolve_mentions` batches every token into one `authz::check_many` call capped at 50.
+
+**Transaction boundaries.** One `UnitOfWork` per mutation. `create_comment` writes the
+`comment_threads` row when the thread is new, the `comments` row, every resolved `mentions` row, the
+`audit_events` row and both outbox enqueues in one boundary — a comment can never exist without its
+thread, and a `mention.created.v1` can never reach F037 for a comment that was rolled back.
+`update_comment` writes the new body, the added `mentions` rows and the removed ones inside the
+version check, so the stored mention set always matches the stored body. `set_thread_resolution`
+compares `If-Match` against the thread inside its own transaction, which is what makes the
+already-in-state case a `409` rather than a silent second write. `project_activity` writes one
+`activity_entries` row and all of its `activity_entry_changed_fields` rows in the single insert
+transaction of `insert_activity_if_absent`, keyed on `(tenant_id, source_event_id)`; the unique index
+is the idempotency, so a redelivered event adds neither a duplicate entry nor an orphan changed-field
+row. The cascade from a target's soft delete runs in the consumer's own `UnitOfWork` through
+`CommentThreadRepository::soft_delete`, never inside the target feature's transaction.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_comments_*.sql` creates `comment_threads(id uuid pk, tenant_id uuid not null, target_kind text not null, target_id uuid not null, resolved_at timestamptz, resolved_by uuid, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `comments(id uuid pk, tenant_id, thread_id uuid not null references comment_threads(id) on delete restrict, parent_comment_id uuid null references comments(id), author_id uuid not null, body text not null, edited_at timestamptz, version, audit fields, deleted_at)`, `mentions(id uuid pk, tenant_id, comment_id uuid not null references comments(id) on delete cascade, mentioned_kind text not null check (mentioned_kind in ('user','group')), mentioned_id uuid not null, created_at)`, `activity_entries(id uuid pk, tenant_id, target_kind, target_id, actor_id uuid, actor_kind text not null check (actor_kind in ('user','automation','integration')), action text not null, summary text not null, source_event_id uuid not null, correlation_id uuid not null, occurred_at timestamptz not null)`, and `activity_entry_changed_fields(entry_id uuid not null references activity_entries(id) on delete cascade, tenant_id uuid not null, field_name text not null, created_at timestamptz not null default now(), primary key (entry_id, field_name))` holding one row per changed field instead of an array column. No `jsonb` column exists in this feature: diffs live in the F003 `audit_events` payload, and every value this feature filters, sorts, or constrains on is a typed column or a child-table row.

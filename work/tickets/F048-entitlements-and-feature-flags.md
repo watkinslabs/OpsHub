@@ -96,6 +96,207 @@ Canonical contract: `docs/capability-contracts.md` row F048 (aggregate `entitlem
 - Validation: `limits` values are non-negative integers ≤ 1,000,000 and every key must have a `module_limit_keys` row for the module; `reason` 1–500 chars; `rollout_percent` 0–100; `expires_at` must be in the future and at most 365 days out; `keys` ≤ 50, `modules` ≤ 20.
 - Error mapping: `EntitlementError::UnknownModule → 404 not_found`, `EntitlementError::LimitKeyUnknown → 400 invalid`, `FlagError::InvalidTransition → 409 conflict`, `FlagError::StaleVersion → 409 conflict`, `FlagError::PlatformFieldDenied → 403 denied`, `AuthzError::Denied → 403 denied`, module guard → `403 denied` with `field_errors.module`.
 
+### Interface
+
+Conventions are F028's: the error body with its six codes, `Idempotency-Key`, and `If-Match`. These
+routes return whole configuration sets rather than pages, so `Page<T>` and the cursor do not appear.
+`T?` is nullable; an absent optional field and an explicit `null` are the same thing, except on
+`PatchFlagRequest.override` where `null` is the instruction to clear. Timestamps are RFC 3339 UTC,
+`version` increments by one per write, and unlisted request fields are rejected with `400 invalid`.
+`tenant_id` is never accepted in a body: it comes from the gateway context, and a body naming one is
+`400 invalid` (FR-F048-15).
+
+**`ModuleSlug`** — the ten seeded `modules` rows: `dynamic-views`, `workapps`, `data-shuttle`,
+`datamesh`, `bridge`, `calendar-app`, `pivots`, `assets`, `ai-assist`, `ai-insights`. A slug outside
+the catalog is `404 not_found` on `PUT /api/v1/entitlements/{module}` and `400 invalid` inside an
+`evaluate` query.
+
+**`Limits`** — the `limits` object of every shape below: a JSON map from `limit_key` to a
+non-negative integer. Each key must have a `module_limit_keys(module, limit_key)` row for that
+module, and each value must be 0–1,000,000; a violation is `400 invalid` with
+`field_errors.limits.<key>`. `{}` is legal and means the module declares no limits or none are set.
+The map is stored as one `entitlement_limits` row per entry and reassembled on read; it is never a
+`jsonb` column.
+
+**`EntitlementResponse`** — items of `GET /api/v1/entitlements` and the body of `PUT /api/v1/entitlements/{module}` (FR-F048-01)
+
+| Field | Type | Notes |
+|---|---|---|
+| `module` | `ModuleSlug` | one entry per catalog row, always all ten, whether or not an `entitlements` row exists |
+| `state` | `"none" \| "trial" \| "active" \| "suspended"` | |
+| `limits` | `Limits` | `{}` when unset |
+| `trial_ends_at` | timestamp? | present only when `state` is `trial` |
+| `source` | `"manual" \| "plan"` | how the record was set |
+| `version` | integer | `0` for a module with no stored row; pass as `If-Match` on the next `PUT` |
+| `created_at` / `created_by` / `updated_at` / `updated_by` | | absent on a `version: 0` synthetic record |
+
+`GET /api/v1/entitlements` returns `{ items: EntitlementResponse[] }` — a fixed ten-element set, not
+a page. Any authenticated member of the tenant may read it, because module navigation depends on it.
+
+**`UpsertEntitlementRequest`** — `PUT /api/v1/entitlements/{module}` (FR-F048-02)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `state` | `"none" \| "trial" \| "active" \| "suspended"` | yes | caller is `tenant-admin`, else `403 denied` |
+| `limits` | `Limits` | yes | replaces the record's limit rows with exactly these keys, deleting omitted ones; `{}` clears them all |
+| `trial_ends_at` | timestamp? | when `state` is `trial` | must be in the future; missing → `400 invalid` with `field_errors.trial_ends_at` |
+
+**`FeatureFlagResponse`** — items of `GET /api/v1/feature-flags` (FR-F048-03)
+
+| Field | Type | Notes |
+|---|---|---|
+| `key` | string | matches `^F[0-9]{3}_FEATURE$` or `^[A-Z][A-Z0-9_]{2,63}$` |
+| `description` | string | |
+| `owner` | string | the team or person accountable for the flag |
+| `rollout_state` | `"draft" \| "internal" \| "percentage" \| "tenant_list" \| "general" \| "retired"` | |
+| `rollout_percent` | integer | 0–100; meaningful only in `percentage` |
+| `default_enabled` | bool | |
+| `disable_procedure` | string | how to turn it off safely; at least 20 chars once `retired` |
+| `cleanup_ticket` | string? | a work-item id matching `^[FST][0-9]{3}$`; required once `retired` |
+| `override` | `OverrideResponse?` | the **calling tenant's** override only; another tenant's is never visible |
+| `version` | integer | pass as `If-Match` on the next `PATCH` |
+
+**`OverrideResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | bool | |
+| `reason` | string | why the override exists |
+| `expires_at` | timestamp? | |
+| `expired` | bool | `true` when `expires_at` is in the past; such an override is ignored by evaluation and pruned nightly (FR-F048-13) |
+| `suspended` | bool | `true` when a kill switch suspended it |
+
+**`PatchFlagRequest`** — `PATCH /api/v1/feature-flags/{key}`, every field optional, at least one present (FR-F048-04)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `override` | `OverridePatch?` | no | tenant field; `null` clears the calling tenant's override. Writable by `tenant-admin` |
+| `owner` | string | no | platform field, 1–120 chars |
+| `rollout_state` | enum | no | platform field; the pair `(current, new)` must be a `flag_rollout_transitions` row, else `409 conflict` with `field_errors.rollout_state = "invalid_transition"` |
+| `rollout_percent` | integer | no | platform field, 0–100 |
+| `default_enabled` | bool | no | platform field |
+| `disable_procedure` | string | no | platform field; ≥ 20 chars when moving to `retired` |
+| `cleanup_ticket` | string? | no | platform field; `^[FST][0-9]{3}$`, required when moving to `retired` |
+| `kill` | bool | no | platform field; `true` applies FR-F048-06 and requires `reason` |
+| `reason` | string | with `kill` | 1–500 chars |
+
+Any platform field present in a request from a caller who is not `platform-operator` is
+`403 denied` and nothing is written — the request is rejected whole, never partly applied. A
+`tenant-admin` may send `override` alone.
+
+**`OverridePatch`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `enabled` | bool | yes | |
+| `reason` | string | yes | 1–500 chars |
+| `expires_at` | timestamp? | no | must be in the future and at most 365 days out, else `400 invalid` with `field_errors.override.expires_at` |
+
+**`EvaluateQuery`** — the query string of `GET /api/v1/feature-flags/evaluate` (FR-F048-07)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `keys` | string | no | comma-separated flag keys, at most 50; more → `400 invalid` with `field_errors.keys`; an unregistered key is returned with `enabled: false` and `reason: "default"` rather than failing the call |
+| `modules` | string | no | comma-separated `ModuleSlug` values, at most 20; more → `400 invalid` with `field_errors.modules`; an unknown slug → `400 invalid` |
+
+**`EvaluateResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `flags` | map<string, `FlagDecision`> | keyed by flag key, one entry per requested key |
+| `entitlements` | map<`ModuleSlug`, `ModuleDecision`> | one entry per requested module |
+
+**`FlagDecision`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | bool | the outcome of the FR-F048-08 order |
+| `reason` | enum | exactly one of `override`, `suspended_override`, `killed`, `retired`, `percentage`, `tenant_list`, `default` — the rule that decided it, so a support question is answerable without re-deriving the evaluation |
+
+**`ModuleDecision`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `allowed` | bool | `true` only when the state qualifies *and* the module's gate flag evaluates true (FR-F048-09) |
+| `state` | `"none" \| "trial" \| "active" \| "suspended"` | the stored state, independent of the gate flag |
+| `limits` | `Limits` | the module's current limits, so a caller enforces them without a second request |
+| `reason` | enum | exactly one of `active`, `trial`, `trial_expired`, `suspended`, `not_entitled` |
+
+**`RequireModule`** — the guard every gated module mounts (FR-F048-10). It runs before any handler
+code, so a denied request never reaches the module's own routes.
+
+```rust
+pub struct RequireModule(pub ModuleSlug);
+
+impl<S: Send + Sync> FromRequestParts<S> for RequireModule
+where Arc<Evaluator>: FromRef<S> {
+    type Rejection = ApiError;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection>;
+}
+
+pub struct EntitlementLayer(pub ModuleSlug);   // the router-level form of the same check
+
+impl Evaluator {
+    pub fn module(&self, tenant: TenantId, slug: ModuleSlug) -> Result<ModuleDecision, DomainError>;
+    pub fn flag(&self, tenant: TenantId, key: &FlagKey) -> Result<FlagDecision, DomainError>;
+}
+```
+
+A module router mounts `EntitlementLayer(ModuleSlug::Bridge)` once rather than repeating the check
+per handler; a handler that needs the limits takes `RequireModule` as an extractor and reads the
+`ModuleDecision` it carries. On `allowed: false` both produce `403 denied` with the body
+`{ code: "denied", message, field_errors: { module: "<reason>" }, correlation_id }`, where `<reason>`
+is the `ModuleDecision.reason` value — so `not_entitled`, `trial_expired`, and `suspended` are
+distinguishable by the client, and a killed gate flag surfaces as `not_entitled`. With
+`F048_FEATURE` disabled the guard fails closed with `not_entitled`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | a limit key the module does not declare, a limit value out of range, `trial` without `trial_ends_at`, `expires_at` past or beyond 365 days, over 50 keys or 20 modules, a body naming a `tenant_id` |
+| `403` | `denied` | a non-admin upserting an entitlement or setting an override; a `tenant-admin` sending any platform field or `kill`; the `RequireModule` guard on a module that is not allowed |
+| `404` | `not_found` | a `{module}` slug with no `modules` row, or a `{key}` with no `feature_flags` row |
+| `409` | `conflict` | a `rollout_state` pair with no `flag_rollout_transitions` row, a stale `If-Match`, or an `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the shared F028 limiter; this feature adds none of its own |
+| `503` | `unavailable` | the database is unreachable on a cache miss; the guard fails closed rather than allowing the module |
+
+### Use case signatures
+
+In `crates/domain/src/entitlements/`, with the guard and evaluator in
+`crates/auth/src/entitlements/`. `ctx` carries tenant, actor, and correlation id; a use case takes a
+`UnitOfWork` or repository traits, never a pool or connection, and returns the shared `DomainError`
+mapped above.
+
+```rust
+fn list_entitlements(ctx: &Ctx, catalog: &dyn ModuleCatalogRepository, repo: &dyn EntitlementRepository) -> Result<Vec<Entitlement>, DomainError>;
+fn upsert_entitlement(ctx: &Ctx, uow: &mut UnitOfWork, module: ModuleSlug, expected: Version, req: UpsertEntitlement) -> Result<Entitlement, DomainError>;
+fn list_flags(ctx: &Ctx, flags: &dyn FeatureFlagRepository, overrides: &dyn FlagOverrideRepository) -> Result<Vec<FeatureFlagView>, DomainError>;
+fn patch_flag(ctx: &Ctx, uow: &mut UnitOfWork, key: FlagKey, expected: Version, req: PatchFlag) -> Result<FeatureFlagView, DomainError>;
+fn set_override(ctx: &Ctx, uow: &mut UnitOfWork, key: FlagKey, req: OverridePatch) -> Result<FlagOverride, DomainError>;
+fn clear_override(ctx: &Ctx, uow: &mut UnitOfWork, key: FlagKey) -> Result<(), DomainError>;
+fn kill_flag(ctx: &Ctx, uow: &mut UnitOfWork, key: FlagKey, reason: String) -> Result<FeatureFlag, DomainError>;
+fn evaluate_flags(ctx: &Ctx, evaluator: &Evaluator, keys: &FlagKeySet) -> Result<BTreeMap<FlagKey, FlagDecision>, DomainError>;
+fn evaluate_modules(ctx: &Ctx, evaluator: &Evaluator, modules: &ModuleSet) -> Result<BTreeMap<ModuleSlug, ModuleDecision>, DomainError>;
+fn prune_expired_overrides(ctx: &Ctx, uow: &mut UnitOfWork, now: DateTime<Utc>, limit: u32) -> Result<u64, DomainError>;
+
+fn decide_flag(flag: &FeatureFlag, over: Option<&FlagOverride>, tenant: &TenantFacts, now: DateTime<Utc>) -> FlagDecision;
+```
+
+`decide_flag` is pure — no `ctx`, no repository, no clock of its own — which is what makes the
+FR-F048-08 order exhaustively unit testable and the percentage bucket reproducible across restarts.
+`TenantFacts { tenant_id, is_internal }` is everything evaluation may know about a tenant.
+
+Transaction boundaries. `upsert_entitlement` writes the `entitlements` row, the full replacement of
+its `entitlement_limits` rows, the audit row, and `entitlement.updated.v1` in one `UnitOfWork`, so a
+guard never reads a record whose limits are half-replaced. `patch_flag`, `set_override`, and
+`clear_override` each write their row plus audit plus `feature-flag.updated.v1` in one `UnitOfWork`
+under the expected version. `kill_flag` is the boundary that matters most: the `feature_flags`
+lifecycle change and the suspension of *every* tenant's override commit together, so there is no
+window in which the flag is killed for one tenant and live for another (FR-F048-06). Cache
+invalidation happens after commit, driven by the outbox consumer, which is why the worst case is the
+30-second TTL of FR-F048-12 and never a stale allow inside a transaction.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_entitlements_*.sql` creates, parents first, `feature_flags(key text primary key, description text not null, owner text not null, rollout_state text not null check (rollout_state in ('draft','internal','percentage','tenant_list','general','retired')), rollout_percent smallint not null default 0 check (rollout_percent between 0 and 100), default_enabled bool not null default false, disable_procedure text not null default '', cleanup_ticket text check (cleanup_ticket ~ '^[FST][0-9]{3}$'), version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null, updated_by uuid not null references users(id) on delete restrict, updated_at timestamptz not null)`, `modules(slug text primary key, display_name text not null, gate_flag_key text not null unique references feature_flags(key) on delete restrict)`, `module_limit_keys(module text not null references modules(slug) on delete cascade, limit_key text not null, max_allowed bigint not null default 1000000 check (max_allowed between 0 and 1000000), primary key (module, limit_key))`, `flag_rollout_transitions(from_state text not null check (from_state in ('draft','internal','percentage','tenant_list','general','retired')), to_state text not null check (to_state in ('draft','internal','percentage','tenant_list','general','retired')), primary key (from_state, to_state))`, `entitlements(id uuid primary key, tenant_id uuid not null references tenants(id) on delete cascade, module text not null references modules(slug) on delete restrict, state text not null check (state in ('none','trial','active','suspended')), trial_ends_at timestamptz, source text not null default 'manual' check (source in ('manual','plan')), version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null, updated_by uuid not null references users(id) on delete restrict, updated_at timestamptz not null, unique (tenant_id, module), unique (id, module))`, `entitlement_limits(tenant_id uuid not null references tenants(id) on delete cascade, entitlement_id uuid not null, module text not null, limit_key text not null, limit_value bigint not null check (limit_value between 0 and 1000000), primary key (entitlement_id, limit_key), foreign key (entitlement_id, module) references entitlements(id, module) on delete cascade, foreign key (module, limit_key) references module_limit_keys(module, limit_key) on delete restrict)`, and `flag_overrides(id uuid primary key, tenant_id uuid not null references tenants(id) on delete cascade, flag_key text not null references feature_flags(key) on delete cascade, enabled bool not null, reason text not null check (length(reason) between 1 and 500), expires_at timestamptz, suspended bool not null default false, version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null, updated_by uuid not null references users(id) on delete restrict, updated_at timestamptz not null)`.

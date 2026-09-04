@@ -98,6 +98,171 @@ Excluded: dependencies, critical path, and multi-row shift propagation (F012), c
 - Validation: timezone parsed by `chrono_tz::Tz::from_str`; intervals sorted and non-overlapping; `hours_per_day` 0.5–24; exceptions ≤ 400; duration ≤ 3,650 days; `limit` 1–500. Idempotency via the shared `idempotency_keys` table for 24 hours.
 - Error mapping: `ScheduleError::NameTaken → 409 conflict`, `StaleVersion → 409 conflict`, `TypeMismatch → 400 invalid`, `EndBeforeStart → 400 invalid`, `MilestoneDuration → 400 invalid`, `ParentRollup → 400 invalid`, `NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings and `version` increments by one per write. Unlisted fields are rejected
+with `400 invalid`. `CellValue`, `RawValue` and the column types are F007's; `Page<T>` and the opaque
+cursor are F028's `{ items, next_cursor, has_more, total? }`; the error codes are the shared six.
+Every mutation requires `Idempotency-Key` and `If-Match`.
+
+#### Date, datetime and duration on the wire
+
+Three shapes, deliberately distinguishable without reading the column (FR-F011-01):
+
+| Kind | JSON | Meaning |
+|---|---|---|
+| date | string `YYYY-MM-DD`, exactly 10 characters, never an offset and never a `T` | a **civil date**, not an instant. It is interpreted in the resolved timezone of its sheet, is never converted to UTC, and does not shift when the reader's timezone differs. A trailing `T00:00:00Z` on a date field is `400 invalid` with `field_errors.<field> = "type_mismatch"` |
+| datetime | string RFC 3339; accepted with any offset, always **returned** in UTC with microsecond precision and a `Z` suffix | an instant. Its rendering for humans is `display`, computed in `display_timezone`; the same instant read by two users is one value with two renderings |
+| duration | object `{ "value": "3", "unit": "days" \| "hours" }`, `value` a decimal string ≥ 0 | working time, not elapsed time. `1 day` is `hours_per_day` of the calendar in force, so `days` and `hours` convert through the calendar and not through 24. F007 normalizes it to the ISO 8601 form (`P3D`, `PT12H`) |
+
+Timezone resolution is sheet timezone, then the actor's user timezone when F049 is present, then the
+tenant timezone, then UTC (FR-F011-12); every response that renders a datetime carries the
+`display_timezone` it used, so a client never guesses. Working-day arithmetic runs on civil dates in
+the resolved zone and converts to instants only at the boundaries, which is why a DST day does not
+change a duration.
+
+**`Interval`** `{ "start": "09:00", "end": "17:00" }` — `HH:MM` in 24-hour clock, `end` strictly after
+`start`, both in the calendar's own timezone. Overlapping intervals within one weekday are
+`400 invalid` with `field_errors.week = "overlap"`.
+
+**`WorkingWeek`** — an array of exactly 7 `Interval[]`, index 0 Monday through index 6 Sunday,
+matching `working_calendar_intervals.weekday`. Each day holds 0–4 intervals; a 5th is `400 invalid`
+with `field_errors.week = "too_many_intervals"`; an empty array is a non-working day.
+
+**`CalendarException`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `date` | date | yes | unique per calendar; a repeat is `400 invalid` with `field_errors.exceptions = "duplicate_date"` |
+| `kind` | `"holiday" \| "working"` | yes | |
+| `hours` | Interval[] | with `working` | 1–4 intervals replacing that day's week intervals; present with `holiday` → `400 invalid`, absent with `working` → `400 invalid` |
+| `label` | string? | no | ≤ 120 chars |
+
+**`CreateCalendarRequest`** — `POST /api/v1/working-calendars`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per tenant case-insensitively among non-deleted calendars, else `409 conflict` |
+| `timezone` | string | yes | IANA name parsed against the bundled tz database, else `400 invalid`; never used to build a path |
+| `week` | WorkingWeek | yes | as above |
+| `hours_per_day` | decimal string | yes | 0.5–24, two decimal places |
+| `is_default` | bool | no | default `false`; `true` clears the current default in the same transaction |
+| `exceptions` | CalendarException[] | no | ≤ 400 per calendar, else `400 invalid` with `field_errors.exceptions = "too_many"` |
+
+**`UpdateCalendarRequest`** — `PATCH /api/v1/working-calendars/{id}`: the same fields, all optional,
+at least one present. `week` replaces the calendar's interval rows wholesale and `exceptions`
+replaces the exception set wholesale — neither is merged. Clearing `is_default` on the only default
+calendar is `400 invalid` with `field_errors.is_default = "tenant_needs_default"`.
+
+**`CalendarResponse`** `{ id, name, timezone, week, hours_per_day, is_default, exceptions,
+version, created_at, created_by, updated_at, updated_by, deleted_at? }`. `week` and
+`exceptions[].hours` are assembled from the interval rows, so the wire shape does not expose the row
+split. `GET /api/v1/working-calendars` returns `Page<CalendarResponse>` sorted by `updated_at`
+descending, `cursor` and `limit` 1–200 default 50; a tenant with no calendar receives its
+materialised `Standard` calendar (Mon–Fri 09:00–17:00, 8 hours, tenant timezone) on first read.
+
+**`PutScheduleSettingsRequest`** — `PUT /api/v1/sheets/{sheet_id}/schedule-settings`, the whole
+object replaces the row
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `start_column_id` | uuid | yes | a live column of this sheet of type `date` or `datetime`, else `400 invalid` with `field_errors.start_column_id = "type_mismatch"` |
+| `end_column_id` | uuid | yes | same sheet, **same type as** `start_column_id`, else `type_mismatch`; may not equal `start_column_id` |
+| `duration_column_id` | uuid? | no | type `duration` |
+| `milestone_column_id` | uuid? | no | type `boolean` |
+| `percent_complete_column_id` | uuid? | no | type `number` |
+| `calendar_id` | uuid | yes | a live calendar of this tenant, else `404 not_found` |
+| `timezone` | string | yes | IANA name; the sheet timezone that wins the resolution order |
+
+**`ScheduleSettingsResponse`** is the request plus `sheet_id`, `version` and audit fields.
+
+**`RowSchedule`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | |
+| `start` / `end` | date or datetime, matching `start_column_id`'s type | `null` when the cell is empty |
+| `duration_days` | decimal string? | working days, `null` when start or end is missing |
+| `is_milestone` | bool | `false` when no milestone column is configured or the cell is empty |
+| `percent_complete` | decimal string? | 0–100, `null` when unset |
+| `status` | `"scheduled" \| "unscheduled"` | `unscheduled` exactly when `start` is `null` (FR-F011-06) |
+| `version` | integer | the row version, for the next reschedule |
+
+**`ScheduleResponse`** — `GET /api/v1/sheets/{sheet_id}/schedule?cursor=&limit=`, `limit` 1–500
+default 100 — `{ settings: ScheduleSettingsResponse, calendar: CalendarResponse,
+display_timezone: string, rows: Page<RowSchedule> }` ordered by row `position`.
+
+**`RescheduleRequest`** — `POST /api/v1/rows/{id}/reschedule`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `start` | date or datetime? | no | matches the start column's type; a non-working day snaps forward to the next working day |
+| `end` | date or datetime? | no | same type; snaps backward to the previous working day; earlier than `start` → `400 invalid` with `field_errors.end = "before_start"` |
+| `duration` | duration? | no | ≤ 3,650 days after unit conversion, else `400 invalid` with `field_errors.duration = "too_long"`; non-zero on a milestone row → `400 invalid` with `field_errors.duration = "milestone"` |
+
+Exactly two of the three must be present, or one when the row already carries the others; the third
+is computed. Fewer is `400 invalid` with `field_errors.request = "insufficient_inputs"`, all three is
+`400 invalid` with `field_errors.request = "over_specified"`. A row whose sheet has a roll-up rule on
+the start or end column is `400 invalid` with `field_errors.row_id = "parent_rollup"`
+(FR-F011-10).
+
+**`RescheduleResponse`** is F006's `RowResponse` plus `schedule: RowSchedule`, `snap_applied` (bool),
+and `snap_reason` (string?, present only when `snap_applied`, naming the skipped weekend or the
+exception `label`).
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | calendar list and patch, settings put, schedule read, reschedule |
+| `201` | calendar created |
+| `400 invalid` | name or label length, unparsable IANA timezone, overlapping or over-long interval sets, more than 4 intervals in a day, more than 400 exceptions, duplicate exception date, `hours_per_day` outside 0.5–24, a column of the wrong type, `before_start`, `milestone`, `too_long`, `insufficient_inputs`, `over_specified`, `parent_rollup`, `limit` outside its bounds, an unlisted field |
+| `403 denied` | a `sheet-viewer` on settings put or reschedule; a non-admin, non-editor on calendar writes |
+| `404 not_found` | unknown or soft-deleted calendar, sheet or row, and every id belonging to another tenant |
+| `409 conflict` | duplicate calendar name, stale `If-Match` (body carries the current `version`), soft-deleting a calendar still referenced by `sheet_schedule_settings`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant write quota |
+| `502 unavailable` | outbox publish failed; the mutation is rolled back |
+
+### Use case signatures
+
+In `crates/domain/src/schedules/`. Each takes `ctx` carrying tenant, actor and correlation id, takes
+a `UnitOfWork` to write or a repository to read, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn create_calendar(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateCalendar) -> Result<WorkingCalendar, DomainError>;
+fn update_calendar(ctx: &Ctx, uow: &mut UnitOfWork, id: CalendarId, expected: Version, req: UpdateCalendar) -> Result<WorkingCalendar, DomainError>;
+fn list_calendars(ctx: &Ctx, repo: &dyn WorkingCalendarRepository, page: Cursor) -> Result<Page<WorkingCalendar>, DomainError>;
+fn ensure_default_calendar(ctx: &Ctx, uow: &mut UnitOfWork) -> Result<WorkingCalendar, DomainError>;
+fn put_schedule_settings(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, expected: Option<Version>, req: PutScheduleSettings) -> Result<SheetScheduleSettings, DomainError>;
+fn read_schedule(ctx: &Ctx, repo: &dyn SheetScheduleSettingsRepository, sheet: SheetId, page: Cursor) -> Result<Schedule, DomainError>;
+fn reschedule_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId, expected: Version, req: Reschedule) -> Result<RescheduleOutcome, DomainError>;
+fn add_working_days(cal: &ResolvedCalendar, from: WorkDate, days: Decimal) -> WorkDate;
+fn working_days_between(cal: &ResolvedCalendar, from: WorkDate, to: WorkDate) -> Decimal;
+fn next_working_day(cal: &ResolvedCalendar, from: WorkDate) -> WorkDate;
+fn previous_working_day(cal: &ResolvedCalendar, from: WorkDate) -> WorkDate;
+fn snap_start(cal: &ResolvedCalendar, at: WorkDate) -> (WorkDate, bool);
+fn snap_end(cal: &ResolvedCalendar, at: WorkDate) -> (WorkDate, bool);
+fn resolve_timezone(sheet: Option<Tz>, user: Option<Tz>, tenant: Option<Tz>) -> Tz;
+```
+
+The six arithmetic functions and `resolve_timezone` are pure and take an already-loaded
+`ResolvedCalendar`, so F012, F013 and F033 reuse them without a transaction and the micro-benchmark
+in section 5 measures them directly.
+
+**Transaction boundaries.** One `UnitOfWork` per mutation. `create_calendar` and `update_calendar`
+write `working_calendars`, replace `working_calendar_intervals`, replace `calendar_exceptions` with
+their `calendar_exception_intervals`, and — when `is_default` becomes true — clear the previous
+default, all in one boundary; that is the invariant behind the partial unique index, since two
+committed defaults would make `find_default` ambiguous, and a half-replaced week would let arithmetic
+run against a calendar that never existed. `put_schedule_settings` writes
+`sheet_schedule_settings` under the sheet's version in one boundary with its audit row and outbox
+enqueue. `reschedule_row` computes the third value, then writes the start, end and duration cells
+through the F006 `CellRepository` under one row version bump inside a single boundary, so a reader
+can never see a start that moved with an end that did not.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_schedules_*.sql` creates `working_calendars(id uuid pk, tenant_id uuid not null, name text not null, timezone text not null, hours_per_day numeric(4,2) not null, is_default bool not null default false, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `working_calendar_intervals(id uuid pk, tenant_id uuid not null, calendar_id uuid not null references working_calendars(id) on delete cascade, weekday smallint not null check (weekday between 0 and 6), position smallint not null check (position between 1 and 4), start_time time not null, end_time time not null check (end_time > start_time), created_by, created_at)`, `calendar_exceptions(id uuid pk, tenant_id uuid not null, calendar_id uuid not null references working_calendars(id) on delete cascade, date date not null, kind text not null check (kind in ('holiday','working')), label text, created_by, created_at)`, `calendar_exception_intervals(id uuid pk, tenant_id uuid not null, exception_id uuid not null references calendar_exceptions(id) on delete cascade, position smallint not null check (position between 1 and 4), start_time time not null, end_time time not null check (end_time > start_time), created_at)`, `sheet_schedule_settings(sheet_id uuid pk references sheets(id) on delete restrict, tenant_id uuid not null, start_column_id uuid not null, end_column_id uuid not null, duration_column_id uuid, milestone_column_id uuid, percent_complete_column_id uuid, calendar_id uuid not null references working_calendars(id) on delete restrict, timezone text not null, version bigint not null default 1, audit fields)`.

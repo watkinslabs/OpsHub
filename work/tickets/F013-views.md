@@ -97,6 +97,237 @@ Excluded: share links, guest invitations, and every unauthenticated token route 
 - Validation: name 1–120, ≤ 100 views per sheet, ≤ 50 filter leaves, ≤ 5 sorts, ≤ 8 card fields, range ≤ 366 days, `limit` 1–500. Idempotency keys stored 24 hours. `If-Match` compared inside the update transaction.
 - Error mapping: `ViewError::Limit → 400 invalid`, `ViewError::BadFilter → 400 invalid` with `field_errors.settings.filter`, `ViewError::DefaultDelete → 400 invalid`, `ViewError::StaleVersion → 409 conflict`, `ViewError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, expired or revoked share → `404 not_found`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable, and a missing optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per write.
+Unlisted fields are rejected with `400 invalid`. `Page<T>` and its opaque cursor are F028's; the
+error envelope `{ code, message, field_errors, correlation_id }` and the six codes are the shared
+ones; `CellValue` is F007's.
+
+**`FilterNode`** — the filter AST. F013 owns it; F021 reports, F025 exports, F050 dynamic views and
+F060 formatting reuse this definition rather than restating one. A node is one of three shapes,
+discriminated by `type`. Any other `type` value is `400 invalid` with `field_errors.settings.filter`.
+
+Branch node — `type` is `"and"` or `"or"`:
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | `"and" \| "or"` | yes | no other discriminator is accepted |
+| `children` | FilterNode[] | yes | 1–20 entries; an empty array is invalid, and a one-child branch is legal and evaluates as its child |
+
+Leaf node — `type` is `"leaf"`:
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | `"leaf"` | yes | |
+| `column_id` | uuid | yes | a live, non-deleted column of the view's `sheet_id`; unknown or foreign column → `invalid` with `field_errors.settings.filter` |
+| `op` | FilterOp | yes | must appear in the operator row for that column's `columns.type`; otherwise `invalid` |
+| `value` | FilterValue | conditional | required for every operator except `is_empty` and `is_me`, which reject a present `value` |
+
+Tree constraints, all checked before any evaluation and all returning `400 invalid` with
+`field_errors.settings.filter`: the root is depth 1, maximum nesting depth is 8, and the whole tree
+holds at most 50 leaf nodes (FR-F013-02). A `filter` that is absent or `null` means no filter; it is
+not the same as an empty branch, which is invalid. Every `column_id` appearing anywhere in the tree
+is projected into `view_filter_columns` in the same transaction as the view write.
+
+**`FilterOp`** — the closed operator set, and which column types accept each. `columns.type` is
+F007's; a `formula` column takes the operator row of its `result_type`.
+
+| Column type | Operators accepted |
+|---|---|
+| `text` | `eq`, `neq`, `contains`, `in`, `is_empty` |
+| `number`, `currency`, `duration` | `eq`, `neq`, `gt`, `lt`, `between`, `is_empty` |
+| `date`, `datetime` | `eq`, `neq`, `gt`, `lt`, `between`, `before`, `after`, `is_empty` |
+| `boolean` | `eq`, `neq`, `is_empty` |
+| `select` | `eq`, `neq`, `in`, `is_empty` |
+| `person` | `eq`, `neq`, `in`, `is_me`, `is_empty` |
+| `link`, `file` | `is_empty` |
+| `formula` | the row for its `result_type` |
+
+**`FilterValue`** — the shape `value` takes, decided by `op` and typed by the column, never tagged in
+the payload (the convention F007's `CellValue` uses). Comparison runs against the cell's normalized
+value, never its display string, so a `currency` leaf compares decimals and a `date` leaf compares
+instants.
+
+| `op` | `value` |
+|---|---|
+| `eq`, `neq`, `gt`, `lt`, `before`, `after` | one scalar of the column's type: string, number, boolean, RFC 3339 timestamp, or uuid for `select`/`person` |
+| `in` | array of 1–100 scalars of the column's type, distinct |
+| `between` | `{ from, to }`, both scalars of the column's type, `from <= to`, both required |
+| `contains` | string, 1–256 chars, case-insensitive substring |
+| `is_empty`, `is_me` | must be absent; `is_me` resolves to the calling actor's user id at query time, never at save time |
+
+A scalar whose JSON type does not match the column's type is `400 invalid` with
+`field_errors.settings.filter`, the same code as a mismatched operator.
+
+**`ViewSettings`** — one wire shape for create, update and read. The repository decomposes it into
+`views` columns and the four projection tables on write and composes it back on read (FR-F013-01).
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `filter` | FilterNode? | no | null means no filter |
+| `sorts` | SortSpec[] | no | 0–5 entries, precedence is array order, `column_id` distinct; a 6th entry → `invalid` with `field_errors.settings.sorts` |
+| `group_by` | uuid? | no | one live column of the sheet |
+| `columns` | uuid[] | no | ordered visible columns, distinct, all live columns of the sheet; empty or absent means every column the actor may read |
+| `card` | CardSettings? | conditional | required when `kind` is `card`, rejected for any other kind |
+| `calendar` | CalendarSettings? | conditional | required when `kind` is `calendar`, rejected otherwise |
+| `timeline` | TimelineSettings? | conditional | required when `kind` is `timeline`, rejected otherwise |
+| `gantt` | object? | no | opaque F012-owned payload stored and returned verbatim; F013 never reads inside it |
+
+**`SortSpec`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid | yes | live column of the sheet, not repeated within `sorts` |
+| `direction` | `"asc" \| "desc"` | no | defaults to `"asc"` |
+
+**`CardSettings`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `lane_column_id` | uuid | yes | column type must be `select`, else `invalid` with `field_errors.settings.card.lane_column_id` |
+| `swimlane_column_id` | uuid? | no | column type `select`; must differ from `lane_column_id` |
+| `fields` | uuid[] | no | 0–8 ordered card fields, distinct; a 9th → `invalid` with `field_errors.settings.card.fields` |
+
+**`CalendarSettings`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `date_column_id` | uuid? | conditional | column type `date` or `datetime`; present exactly when `start_column_id`/`end_column_id` are absent |
+| `start_column_id` | uuid? | conditional | `date`/`datetime`; present with `end_column_id` and only when `date_column_id` is absent |
+| `end_column_id` | uuid? | conditional | `date`/`datetime`; must differ from `start_column_id` |
+| `mode` | `"month" \| "week" \| "day"` | yes | any other member → `invalid` with `field_errors.settings.calendar` |
+
+Supplying both `date_column_id` and the pair, or neither, is `400 invalid` with
+`field_errors.settings.calendar`.
+
+**`TimelineSettings`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `start_column_id` | uuid | yes | column type `date` or `datetime` |
+| `end_column_id` | uuid | yes | `date`/`datetime`, distinct from `start_column_id` |
+| `zoom` | `"day" \| "week" \| "month" \| "quarter"` | yes | else `invalid` with `field_errors.settings.timeline` |
+| `color_by_column_id` | uuid? | no | column type `select` |
+
+**`CreateViewRequest`** — `POST /api/v1/views`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `sheet-viewer` on it, else `404 not_found`; a sheet already holding 100 live views → `invalid` with `field_errors.sheet_id = "view_limit"` |
+| `name` | string | yes | 1–120 chars after trim, unique per `(sheet_id, owner_id)` among live views, else `409 conflict` |
+| `kind` | `"grid" \| "card" \| "calendar" \| "timeline"` | yes | closed set |
+| `visibility` | `"private" \| "sheet"` | yes | closed set |
+| `is_default` | bool | no | defaults `false`; `true` clears the sheet's previous default in the same transaction |
+| `settings` | ViewSettings | yes | per-kind sub-object must match `kind` |
+
+**`UpdateViewRequest`** — `PATCH /api/v1/views/{id}`, `If-Match: <version>` required, all fields
+optional, at least one present, unlisted fields rejected.
+
+| Field | Type | Constraint |
+|---|---|---|
+| `name` | string | as above |
+| `visibility` | `"private" \| "sheet"` | owner only; a `sheet` view may also be updated by a `sheet-editor` |
+| `is_default` | bool | `true` clears the previous default in the same transaction; a `private` view cannot be the sheet default |
+| `settings` | ViewSettings | full replace of the typed columns, `filter` and all four projection tables — never a merge; `kind` is immutable, so the per-kind sub-object must match the stored `kind` |
+
+**`ShareViewRequest`** — `POST /api/v1/views/{id}/share`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `principal_kind` | `"user" \| "group"` | yes | closed set |
+| `principal_id` | uuid | yes | a live user or group of this tenant; unknown → `invalid`; a second live share for the same `(view_id, principal_kind, principal_id)` → `409 conflict` |
+| `role` | `"viewer" \| "editor"` | yes | closed set |
+| `expires_at` | timestamp? | no | must be in the future |
+
+**`ViewResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `sheet_id` | uuid | |
+| `owner_id` | uuid | actor who created it |
+| `name` | string | |
+| `kind` | ViewKind | |
+| `visibility` | `"private" \| "sheet"` | |
+| `is_default` | bool | at most one `true` per sheet |
+| `settings` | ViewSettings | composed from the typed columns and projection rows; defaults materialised |
+| `can_update` / `can_share` | bool | this actor's rights, so the client hides affordances instead of guessing |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `deleted_at` | timestamp? | never present on a normal read; a soft-deleted view is `404 not_found` |
+
+**`ViewShareResponse`**: `{ id, view_id, principal_kind, principal_id, role, expires_at?, revoked_at?, created_at, created_by }`.
+
+**`ViewRowResponse`** — one row as this view presents it.
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | F006's row id, unchanged by the view |
+| `group_key` | string? | present only when `settings.group_by` is set: the normalized value of the grouping column, `null` for the empty group |
+| `position` | string | F006's fractional index as a string |
+| `cells` | map<uuid, CellValue> | only the `settings.columns` visible columns the actor may read, plus the sheet's primary column |
+| `occurrence_start` / `occurrence_end` | timestamp? | present only for `calendar` and `timeline` kinds; a recurring row yields one read-only entry per occurrence in range (FR-F013-06) |
+| `version` | integer | the row's version, for the `If-Match` a card or bar drag sends to F008 or F011 |
+
+**List routes.** `GET /api/v1/sheets/{sheet_id}/views` returns `Page<ViewResponse>` with query
+`{ kind?: ViewKind, sort?: "name" \| "updated_at" (default "updated_at" descending), cursor?: string, limit?: 1–100 (default 25) }`; the page holds only views the actor may see per FR-F013-11.
+`GET /api/v1/views/{id}/rows` returns `Page<ViewRowResponse>` sorted by `group_key` then the
+`view_sorts` order then `position`, with query `{ cursor?: string, limit?: 1–500 (default 100), range_start?: timestamp, range_end?: timestamp }`; `range_start`/`range_end` are required together
+for `calendar` and `timeline`, rejected for `grid` and `card`, and a span over 366 days is
+`400 invalid` with `field_errors.range_end`. Permission filtering runs inside the query that pages,
+so a page is never short because hidden rows were dropped after paging.
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | reads and `PATCH`; `201` on create and share |
+| `400 invalid` | any constraint above: filter depth, leaf count, operator/column-type mismatch, value shape, sort or card-field limit, per-kind settings, range over 366 days, deleting the default view (`field_errors.is_default`), view limit |
+| `403 denied` | a visible view the actor may read but not update or share — non-owner on a `private` view, non-editor on a `sheet` view, non-owner on `share` |
+| `404 not_found` | unknown, soft-deleted, foreign-tenant, or invisible view or sheet; an expired or revoked share; never `denied` for something the actor cannot see |
+| `409 conflict` | stale `If-Match`, duplicate view name for that owner, duplicate live share for a principal |
+| `429 rate_limited` | the shared per-actor request limit |
+| `502` | never returned by this feature; it calls no external service |
+
+### Use case signatures
+
+In `crates/domain/src/views/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` for writes or a repository for reads — never a pool or a connection — and returns the
+shared `DomainError` mapped by the table above. None returns a database row type.
+
+```rust
+fn create_view(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateView) -> Result<View, DomainError>;
+fn update_view(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version, req: UpdateView) -> Result<View, DomainError>;
+fn delete_view(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, expected: Version) -> Result<(), DomainError>;
+fn get_view(ctx: &Ctx, repo: &ViewRepository, id: ViewId) -> Result<View, DomainError>;
+fn list_views(ctx: &Ctx, repo: &ViewRepository, sheet: SheetId, filter: ViewFilter, page: Cursor) -> Result<Page<View>, DomainError>;
+fn list_view_rows(ctx: &Ctx, views: &ViewRepository, rows: &RowReader, id: ViewId, range: Option<DateRange>, page: Cursor) -> Result<Page<ViewRow>, DomainError>;
+fn share_view(ctx: &Ctx, uow: &mut UnitOfWork, id: ViewId, req: ShareView) -> Result<ViewShare, DomainError>;
+fn revoke_share(ctx: &Ctx, uow: &mut UnitOfWork, share: ViewShareId) -> Result<(), DomainError>;
+fn compile_filter(ctx: &Ctx, columns: &ColumnTypeMap, filter: &FilterNode) -> Result<RowPredicate, DomainError>;
+fn validate_settings(ctx: &Ctx, columns: &ColumnTypeMap, kind: ViewKind, settings: &ViewSettings) -> Result<(), DomainError>;
+fn project_filter_columns(filter: &FilterNode) -> BTreeSet<ColumnId>;
+```
+
+`compile_filter` returns a `RowPredicate` that the F008 row query ANDs *inside* its own
+permission-filtered query; it never produces SQL and never sees a connection.
+`project_filter_columns` is pure and total — it walks the AST and cannot fail, because
+`validate_settings` has already rejected an unknown column.
+
+**Transaction boundaries.** `create_view` and `update_view` each run in one `UnitOfWork` covering the
+`views` row, the `filter` value, and a full replace of `view_sorts`, `view_columns`,
+`view_card_fields` and `view_filter_columns`, plus `clear_default` when `is_default` is set. That
+single boundary protects three invariants that concurrent writes would otherwise break: at most one
+default view per sheet, a projection set that always matches the stored `filter` (so
+`list_views_using_column` can never miss a reference and let F007 drop a column a live view uses),
+and the version bump landing with the rows it describes. `delete_view` soft-deletes the view and
+revokes its shares in one `UnitOfWork` so no share outlives its view. `share_view` writes one
+`view_shares` row plus its audit and outbox entries in the base contract's boundary.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_views_*.sql` creates `views(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete restrict, owner_id uuid not null, name text not null, kind text not null check (kind in ('grid','card','calendar','timeline')), visibility text not null check (visibility in ('private','sheet')), is_default bool not null default false, filter jsonb not null default '{}', group_by_column_id uuid null references columns(id) on delete restrict, lane_column_id uuid null references columns(id) on delete restrict, swimlane_column_id uuid null references columns(id) on delete restrict, date_column_id uuid null references columns(id) on delete restrict, start_column_id uuid null references columns(id) on delete restrict, end_column_id uuid null references columns(id) on delete restrict, color_by_column_id uuid null references columns(id) on delete restrict, calendar_mode text null check (calendar_mode in ('month','week','day')), timeline_zoom text null check (timeline_zoom in ('day','week','month','quarter')), gantt_settings jsonb null, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)` and `view_shares(id uuid pk, tenant_id uuid not null, view_id uuid not null references views(id) on delete restrict, principal_kind text not null check (principal_kind in ('user','group')), principal_id uuid not null, role text not null check (role in ('viewer','editor')), expires_at timestamptz null, revoked_at timestamptz null, version bigint not null default 1, audit fields)`.

@@ -93,6 +93,266 @@ Excluded: producers' content decisions (F016, F017, F020, F036, F061 own their e
 - Validation: `title` ≤ 200, `body` ≤ 2,000, `link` relative path ≤ 1,000 chars, `endpoint` https URL ≤ 2,000 chars, `timezone` IANA name, `send_at_local` and quiet hours `HH:MM`, `limit` bounds; idempotency for 24 hours; `If-Match` on preferences.
 - Error mapping: `NotificationError::InvalidCategory → 400 invalid`, `NotificationError::ProtectedChannel → 400 invalid`, `NotificationError::StaleVersion → 409 conflict`, `NotificationError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `AdapterError::Unavailable → retry` (never surfaced to HTTP).
 
+### Interface
+
+Two interfaces live here. The first is in-process and is the one a dozen features call:
+`NotificationService::create`. The second is the HTTP surface the recipient uses. Conventions —
+`Page<T>`, the signed cursor, the error body, the six codes, `Idempotency-Key` and `If-Match` — are
+F028's and are not restated. `T?` is nullable, an absent optional field and an explicit `null` are
+the same thing, timestamps are RFC 3339 UTC, ids are UUIDv7 strings. Unlisted request fields are
+rejected with `400 invalid`.
+
+**`NotificationRequest`** — the argument of `NotificationService::create`, the in-process entry point
+every producer uses (FR-F037-01). It is a Rust struct, not a JSON body; there is no route that
+creates a notification.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `tenant_id` | `TenantId` | yes | must equal the calling context's tenant; a mismatch is `NotificationError::NotFound`, never a cross-tenant write |
+| `recipient_id` | `UserId` | yes | a user or guest of that tenant; the recipient is never a group — a producer that wants a group fans out and calls `create` once per member |
+| `category` | `Category` | yes | one of the eight members below; anything else is `NotificationError::InvalidCategory` |
+| `title` | `String` | yes | 1–200 chars after trim, already permission-filtered by the producer (NFR-F037-02) |
+| `body` | `String` | yes | 1–2,000 chars, already permission-filtered; the service stores exactly what it receives and filters nothing |
+| `link` | `String` | yes | in-product relative path, ≤ 1,000 chars, starting `/`; it is what the bell item, the email button, and the push click all open |
+| `source` | `SourceRef` | yes | what the notification is about; see below |
+| `dedupe_key` | `String?` | no | see the dedupe rule below |
+| `actor_id` | `UserId?` | no | the person who caused it, for "Ana mentioned you"; `None` for system-generated notifications |
+| `source_event_id` | `EventId?` | no | set only by the JetStream consumer, which passes the consumed event's id so a redelivery is idempotent (FR-F037-12); `None` on a direct in-process call |
+
+**`SourceRef`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `SourceKind` | yes | the aggregate the notification points at: `row`, `comment`, `approval`, `share`, `file`, `document`, `update_request`, `workflow_run` |
+| `id` | `Uuid` | yes | the aggregate's id; stored as `source_kind`/`source_id` and used by the drawer to group items |
+
+**`Category`** — the closed enum of FR-F037-02, matching the `notifications.category` check
+constraint and the columns of the preference matrix
+
+| Field | Type | Notes |
+|---|---|---|
+| `mention` | variant | someone named the recipient; produced by F016 and by `mention.created.v1` |
+| `assignment` | variant | work was assigned to the recipient; produced by F019 `assign` |
+| `approval` | variant | a decision is waited on; `in_app` cannot be disabled and quiet hours and digests never hold it |
+| `share` | variant | access was granted or a guest invited; F036 events |
+| `review` | variant | a proof decision; `proof.decided.v1` |
+| `update_request` | variant | an update was requested or reminded; F061 events |
+| `workflow` | variant | a workflow run failed or a workflow `send` action fired |
+| `system` | variant | platform-generated; ignores quiet hours, never digested, `in_app` cannot be disabled |
+
+**Dedupe key rule.** `dedupe_key` is opaque to the service and chosen by the producer so that two
+writers of the same fact collide — the convention is `<source_kind>:<source_id>:<category>`, extended
+with whatever else makes the fact unique. When `dedupe_key` is `Some`, `create` is a lookup-then-
+insert under `NotificationRepository::create_if_absent`: if a row exists for the same
+`(tenant_id, recipient_id, dedupe_key)` created within the last 24 hours, that row is returned
+unchanged, no second `notifications` row is written, no `notification_deliveries` rows are created,
+and no `notification.created.v1` is published. Outside the 24-hour window the same key produces a
+new notification. When `dedupe_key` is `None` every call creates a row, and the only idempotency is
+`source_event_id` for the consumer path.
+
+**Transaction expectation.** `create` is called *inside the producer's transaction*: it takes the
+producer's `&mut UnitOfWork` and enlists in it, and it never opens, commits, or rolls back a
+transaction of its own. For the caller this means (a) the `notifications` row, its per-channel
+`notification_deliveries` rows, its audit row, and the `notification.created.v1` outbox entry commit
+with the producer's own writes and vanish with the producer's rollback, so there is no notification
+about a comment that was never stored; (b) the call performs no network I/O and no SMTP or push
+send — delivery rows are queued and the worker picks them up after commit, which is what keeps the
+in-transaction cost inside NFR-F037-01's 50 ms; (c) a producer must not call `create` after
+committing and must not spawn it, or the dedupe and rollback guarantees are lost; and (d) the
+returned `Notification` is valid only until the producer's transaction resolves.
+
+**Channel registration.** External transports are registered into F037 rather than added to it;
+F029 (Slack, Teams, Google Chat) and F063 (Microsoft Graph mail) implement this trait and register
+at worker start-up. A transport declares which stored `channel` its deliveries are recorded under,
+so `graph` records under `email` beside `smtp` and F063's fallback is a second attempt on the same
+delivery row. This ticket's `notification_deliveries.channel` check admits `in_app`, `email`, and
+`push` only, and the preference matrix has exactly those three columns, so a transport whose
+deliveries are not one of the three has nowhere to record them; extending the enum and the matrix
+belongs to the ticket that needs it, not to this section.
+
+```rust
+pub trait DeliveryTransport: Send + Sync {
+    fn key(&self) -> TransportKey;                     // "smtp", "web-push", "graph", "slack", ...
+    fn channel(&self) -> Channel;                      // which notification_deliveries.channel it writes
+    fn available_for(&self, tenant: TenantId) -> bool; // false when the tenant has no connection
+    fn render(&self, notification: &Notification) -> Result<RenderedMessage, TransportError>;
+    fn deliver(&self, ctx: &Ctx, message: &RenderedMessage, target: &ChannelTarget)
+        -> Result<TransportReceipt, TransportError>;
+}
+
+pub trait ChannelRegistry: Send + Sync {
+    fn register(&self, transport: Arc<dyn DeliveryTransport>);
+    fn transports_for(&self, tenant: TenantId, channel: Channel) -> Vec<Arc<dyn DeliveryTransport>>;
+}
+```
+
+`TransportReceipt { provider_message_id: Option<String>, sent_at: DateTime<Utc> }`;
+`TransportError { class: Transient | Permanent, code: String, detail: String }` — `Transient`
+re-queues on the retry schedule of FR-F037-06, `Permanent` fails the delivery immediately.
+`ChannelTarget` is the transport's own address (an email address, a push endpoint, a Slack channel
+id) resolved by the transport, never stored by this feature.
+
+**`NotificationResponse`** — items of the inbox
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `category` | `Category` | |
+| `title` / `body` | string / string | as stored |
+| `link` | string | relative path |
+| `source` | `{ kind, id }` | |
+| `actor` | `{ id, display_name }`? | absent for system notifications |
+| `read_at` | timestamp? | `null` while unread |
+| `created_at` | timestamp | |
+
+**`InboxPage`** — the body of `GET /api/v1/notifications` (FR-F037-04). It is F028's `Page<T>` with
+one added field; `items`, `next_cursor`, and `has_more` carry F028's meaning.
+
+| Field | Type | Notes |
+|---|---|---|
+| `items` | `NotificationResponse` array | newest first by `created_at`, `id` as tiebreak |
+| `next_cursor` | string? | F028 signed cursor |
+| `has_more` | bool | |
+| `unread_count` | integer | the recipient's total unread count, not the count on this page |
+
+Query parameters: `cursor`, `limit` 1–100 (default 50; over 100 → `400 invalid` with
+`field_errors.limit`), `unread` (`true`/`false`), `category` (a `Category` member; anything else →
+`400 invalid`). There is no `filter`, `sort`, or `fields` on this route — the order is fixed.
+
+**`ReadAllRequest`** / **`ReadAllResponse`** — `POST /api/v1/notifications/read-all`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `before` | timestamp? | no | marks unread notifications created at or before it; absent means all unread. A future value is accepted and means the same as absent |
+
+`ReadAllResponse` is `{ updated_count: integer }`. `POST /api/v1/notifications/{id}/read` takes no
+body and returns the `NotificationResponse` with `read_at` set; a repeat returns `200` with the
+original `read_at` unchanged.
+
+**`PreferencesResponse`** — `GET /api/v1/notification-preferences`, and the body accepted by
+`PUT /api/v1/notification-preferences` as `PutPreferencesRequest` (FR-F037-08). The wire shape is
+nested JSON; the storage is `notification_preferences` plus its `notification_channel_preferences`
+rows, composed by the repository.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `scope` | `"user" \| "tenant"` | no | request only, default `user`; `tenant` requires `tenant-admin`, else `403 denied` |
+| `channels` | map<`Category`, `ChannelSet`> | yes on `PUT` | every one of the eight categories present; a missing or unknown category → `400 invalid` with `field_errors.channels` |
+| `digest` | `DigestSetting` | yes on `PUT` | |
+| `quiet_hours` | `QuietHours` | yes on `PUT` | |
+| `version` | integer | response only | pass as `If-Match` on the `PUT`; stale → `409 conflict` with the current version |
+
+**`ChannelSet`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `in_app` | bool | yes | must be `true` for `approval` and `system`; `false` → `400 invalid` with `field_errors.channels` (FR-F037-08) |
+| `email` | bool | yes | |
+| `push` | bool | yes | |
+
+**`DigestSetting`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `cadence` | `"none" \| "hourly" \| "daily"` | yes | |
+| `send_at_local` | string? | when cadence is not `none` | `HH:MM` 24-hour; missing → `400 invalid` with `field_errors.digest.send_at_local` |
+| `timezone` | string? | when cadence is not `none` | IANA name; unknown → `400 invalid` with `field_errors.digest.timezone` |
+
+**`QuietHours`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `enabled` | bool | yes | |
+| `start_local` / `end_local` | string? / string? | when `enabled` | `HH:MM`; `start` may be later than `end`, which means the window crosses midnight |
+| `timezone` | string? | when `enabled` | IANA name |
+
+**`PushSubscriptionRequest`** — `POST /api/v1/push-subscriptions` (FR-F037-07)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `endpoint` | string | yes | https URL ≤ 2,000 chars, unique across the deployment; re-posting the same endpoint returns the existing subscription rather than a duplicate |
+| `keys.p256dh` | string | yes | base64url public key from the browser subscription |
+| `keys.auth` | string | yes | base64url auth secret |
+| `user_agent` | string? | no | ≤ 500 chars, shown as the device label |
+
+`PushSubscriptionResponse` is `{ id, endpoint, user_agent?, created_at, last_used_at? }` and never
+returns the keys. `DELETE /api/v1/push-subscriptions/{id}` returns `204`, or `404 not_found` when
+the subscription belongs to another user.
+
+**`DeliveryResponse`** — `GET /api/v1/notification-deliveries/{id}` (FR-F037-11)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `notification_id` | uuid / uuid | |
+| `channel` | `"in_app" \| "email" \| "push"` | |
+| `status` | `"queued" \| "sent" \| "failed" \| "suppressed" \| "digested"` | |
+| `attempts` | integer | |
+| `next_attempt_at` | timestamp? | set while queued for retry, for a quiet-hours release, or for a digest run |
+| `sent_at` | timestamp? | |
+| `provider_message_id` | string? | present on `sent` when the transport returned one |
+| `error` | string? | present on `failed` |
+| `reason` | string? | `preference` on a suppressed row, `subscription_gone` on a push `404`/`410` |
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above: unknown category, `limit` over 100, `in_app` off for `approval` or `system`, malformed `HH:MM` or timezone, bad push endpoint |
+| `403` | `denied` | `PUT` with `scope: tenant` without `tenant-admin` |
+| `404` | `not_found` | another user's notification, delivery, or push subscription; any id from another tenant. Reading another user's inbox is not `denied`, so a tenant-admin cannot probe for it |
+| `409` | `conflict` | stale `If-Match` on the preferences `PUT`, or an `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the shared F028 limiter; this feature adds no limit of its own |
+| `503` | `unavailable` | the database or outbox is unreachable. Transport failures never reach HTTP — they are recorded on the delivery row and retried |
+
+### Use case signatures
+
+In `crates/domain/src/notifications/`. `ctx` carries tenant, actor, and correlation id; a use case
+takes a `UnitOfWork` or repository traits, never a pool or connection, and returns the shared
+`DomainError` mapped by the table above. `NotificationService` is the struct producers hold; its
+`create` is the signature every calling feature codes against.
+
+```rust
+impl NotificationService {
+    pub fn create(&self, ctx: &Ctx, uow: &mut UnitOfWork, req: NotificationRequest)
+        -> Result<Notification, NotificationError>;
+}
+
+fn create_notification(ctx: &Ctx, uow: &mut UnitOfWork, req: NotificationRequest) -> Result<Notification, DomainError>;
+fn route_deliveries(ctx: &Ctx, uow: &mut UnitOfWork, notification: &Notification, prefs: &Preferences, now: DateTime<Utc>) -> Result<Vec<Delivery>, DomainError>;
+fn resolve_preferences(ctx: &Ctx, repo: &dyn NotificationPreferenceRepository, user: UserId) -> Result<Preferences, DomainError>;
+fn list_inbox(ctx: &Ctx, repo: &dyn NotificationRepository, filter: InboxFilter, cursor: Option<Cursor>, limit: u16) -> Result<InboxPage, DomainError>;
+fn mark_read(ctx: &Ctx, uow: &mut UnitOfWork, id: NotificationId) -> Result<Notification, DomainError>;
+fn mark_all_read(ctx: &Ctx, uow: &mut UnitOfWork, before: Option<DateTime<Utc>>) -> Result<u64, DomainError>;
+fn get_preferences(ctx: &Ctx, repo: &dyn NotificationPreferenceRepository, scope: PreferenceScope) -> Result<Preferences, DomainError>;
+fn put_preferences(ctx: &Ctx, uow: &mut UnitOfWork, scope: PreferenceScope, expected: Version, req: PutPreferences) -> Result<Preferences, DomainError>;
+fn add_push_subscription(ctx: &Ctx, uow: &mut UnitOfWork, req: NewPushSubscription) -> Result<PushSubscription, DomainError>;
+fn remove_push_subscription(ctx: &Ctx, uow: &mut UnitOfWork, id: SubscriptionId) -> Result<(), DomainError>;
+fn get_delivery(ctx: &Ctx, repo: &dyn NotificationDeliveryRepository, id: DeliveryId) -> Result<Delivery, DomainError>;
+```
+
+Worker entry points in `services/worker/src/notifications/`, each taking the same `ctx` and the
+repository traits:
+
+```rust
+fn event_consumer(ctx: &Ctx, uow: &mut UnitOfWork, event: &EventEnvelope) -> Result<Option<Notification>, DomainError>;
+fn deliver_email(ctx: &Ctx, uow: &mut UnitOfWork, delivery: DeliveryId, registry: &dyn ChannelRegistry) -> Result<DeliveryStatus, DomainError>;
+fn deliver_push(ctx: &Ctx, uow: &mut UnitOfWork, delivery: DeliveryId, registry: &dyn ChannelRegistry) -> Result<DeliveryStatus, DomainError>;
+fn send_digest(ctx: &Ctx, uow: &mut UnitOfWork, schedule: ScheduleId, now: DateTime<Utc>) -> Result<DigestSummary, DomainError>;
+fn quiet_hours_release(ctx: &Ctx, uow: &mut UnitOfWork, now: DateTime<Utc>) -> Result<u64, DomainError>;
+```
+
+Transaction boundaries. `create_notification` and `route_deliveries` share the caller's one
+`UnitOfWork` — the `notifications` row, every `notification_deliveries` row, the audit row, and the
+outbox entry commit together, so a recipient never has a delivery row for a notification that does
+not exist, or a notification with no delivery decision. `put_preferences` writes the
+`notification_preferences` row, the full replacement of its `notification_channel_preferences` rows,
+and the audit row in one `UnitOfWork` under the expected version, so the router never reads a
+half-written matrix. `send_digest` holds one `UnitOfWork` per schedule covering the claim of the
+schedule row, the status change of every included delivery, `advance_digest`, and the
+`digest.sent.v1` entry, which together with `claim_due_digests`' `for update skip locked` is what
+stops two workers sending the same digest. `deliver_email` and `deliver_push` make their transport
+call outside the transaction and open one afterwards to record the attempt.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_notifications_*.sql` creates `notifications(id uuid pk, tenant_id uuid not null, recipient_id uuid not null, category text not null, title text not null, body text not null, link text, source_kind text, source_id uuid, actor_id uuid, dedupe_key text, source_event_id uuid, read_at timestamptz, created_at timestamptz not null)`, `notification_deliveries(id uuid pk, tenant_id, notification_id uuid not null references notifications(id) on delete cascade, channel text not null, status text not null default 'queued', attempts int not null default 0, next_attempt_at timestamptz, sent_at timestamptz, provider_message_id text, error text, reason text, updated_at)`, `notification_preferences(id uuid pk, tenant_id, user_id uuid null, digest_cadence text not null default 'none', digest_send_at_local time null, digest_timezone text null, quiet_hours_enabled boolean not null default false, quiet_hours_start time null, quiet_hours_end time null, quiet_hours_timezone text null, version bigint not null default 1, audit fields)`, `notification_channel_preferences(id uuid pk, tenant_id uuid not null, preference_id uuid not null references notification_preferences(id) on delete cascade, category text not null, channel text not null, enabled boolean not null default true, created_at timestamptz not null, updated_at timestamptz not null)`, `push_subscriptions(id uuid pk, tenant_id, user_id uuid not null, endpoint text not null, p256dh text not null, auth text not null, user_agent text, created_at, last_used_at)`, `digest_schedules(id uuid pk, tenant_id, user_id uuid not null, cadence text not null, send_at_local time not null, timezone text not null, next_run_at timestamptz not null, last_run_at timestamptz)`.

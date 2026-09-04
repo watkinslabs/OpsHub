@@ -96,6 +96,249 @@ Excluded: session login and API token issuance (F038); role and ACL evaluation (
 - Validation: `name` 1–120; scopes must exist in F038 catalog; `rate_limit_per_minute` 60–6,000; `url` https with public IP; `events` 1–50 valid patterns; `limit` bounds per route; filter grammar depth ≤ 10 terms.
 - Error mapping: `PublicApiError::InvalidCursor → 400 invalid`, `::InvalidFilter → 400 invalid`, `::PrivateUrl → 400 invalid`, `::StaleVersion → 409 conflict`, `::WebhookDisabled → 409 conflict`, `::ReplayExpired → 409 conflict`, `::NotFound → 404 not_found`, `RateLimit → 429 rate_limited`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+This is the canonical definition of the conventions every `/api/v1` route in the product follows.
+Other tickets reference `ListQuery`, `Page<T>`, the signed cursor, the error body, the standard
+headers, and the rate-limit headers by name and do not restate them. Field tables give the JSON
+name, the type, whether the field is required, and the constraint whose violation produces the
+stated error. `T?` is nullable; an absent optional field and an explicit `null` mean the same thing.
+Timestamps are RFC 3339 UTC, ids are UUIDv7 strings, and `version` is an integer that increments by
+one per write. Unlisted request fields are rejected with `400 invalid` carrying the offending field
+in `field_errors`.
+
+**Standard request headers** — every route
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `X-Correlation-Id` | uuid | no | echoed on the response and in the error body; a generated UUIDv7 when absent, `400 invalid` when present and not a UUID (FR-F028-06) |
+| `Idempotency-Key` | string | on every mutation | 1–255 chars; replay with the same body returns the original response, a different body returns `409 conflict` |
+| `If-Match` | integer | on every update of a versioned aggregate | the `version` last read; a mismatch is `409 conflict` carrying the current version |
+| `Authorization` | string | on token-authenticated calls | `Bearer <F038 API token>`; the token's application supplies the scopes, rate limit, and allowed-IP set |
+
+**`ListQuery`** — the query string every list route accepts (FR-F028-04)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `cursor` | string? | no | opaque signed cursor from a previous `next_cursor`; malformed, re-signed, expired, or issued for a different filter/sort/limit → `400 invalid` with `field_errors.cursor` |
+| `limit` | integer | no | 1–200, default 50, unless the route documents a higher cap (F006 rows cap at 500); out of range → `400 invalid` with `field_errors.limit` |
+| `filter` | string? | no | `field op value` terms joined by `and`, at most 10 terms; `op` is `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, `is_null`; unknown field or unparsable term → `400 invalid` with `field_errors.filter` |
+| `sort` | string? | no | `field` or `-field`, at most 3 keys, each a sortable field of the route; otherwise `400 invalid` with `field_errors.sort` |
+| `fields` | string? | no | comma-separated projection; unknown name → `400 invalid` with `field_errors.fields`; `id` and `version` are always returned regardless (FR-F028-05) |
+| `include_total` | bool | no | default `false`; `true` on a route that does not allow it → `400 invalid` |
+
+**`Page<T>`** — the envelope of every list response (FR-F028-05)
+
+| Field | Type | Notes |
+|---|---|---|
+| `items` | T array | at most `limit` entries, in the requested sort order, projected by `fields` |
+| `next_cursor` | string? | signed cursor for the next page; `null` on the last page |
+| `has_more` | bool | `true` when `next_cursor` is non-null; stated separately so a client need not inspect the cursor |
+| `total` | integer? | present only when `include_total=true` was accepted, because counting costs a second query |
+
+**Signed cursor payload** — the plaintext that `SignedCursor` HMACs, base64url of the JSON below
+concatenated with the tag; a client treats the whole string as opaque and never constructs one
+
+| Field | Type | Notes |
+|---|---|---|
+| `k` | string array | the sort-key values of the last item of the previous page, in `sort` order |
+| `i` | uuid | the last item's `id`, the tiebreak that makes the key total |
+| `q` | string | hash of the route, `filter`, `sort`, and `limit` the cursor was issued for; a mismatch is an invalid cursor, so a cursor cannot be replayed against a different query |
+| `e` | integer | expiry as epoch seconds, issue time plus 24 hours |
+| `t` | uuid | issuing `tenant_id`; a cursor never crosses a tenant |
+
+**Error body** — every non-2xx response (FR-F028-06)
+
+| Field | Type | Notes |
+|---|---|---|
+| `code` | enum | exactly one of `invalid`, `denied`, `not_found`, `conflict`, `rate_limited`, `unavailable`; clients branch on this, never on `message` |
+| `message` | string | human-readable, not stable, never parsed |
+| `field_errors` | map<string, string> | request field path (dotted, e.g. `filters.workspace_id`) to a stable reason key; `{}` when the failure is not field-specific |
+| `correlation_id` | uuid | the request's `X-Correlation-Id` or the generated one; the same value the response header carries |
+
+**Status codes** — the whole product uses these and no others
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint in a field table above, an unlisted field, a malformed cursor or filter, a private or non-https webhook URL, a scope outside the F038 catalog |
+| `403` | `denied` | the caller is authenticated and may see the resource exists but lacks the permission — non-admin on any application or webhook route |
+| `404` | `not_found` | the id does not exist, belongs to another tenant, or the caller may not see it; an invisible resource is never `denied`, so ids do not leak existence |
+| `409` | `conflict` | stale `If-Match`, name or `client_id` uniqueness, `Idempotency-Key` replayed with a different body, replay of a delivery on a disabled webhook or older than 30 days |
+| `429` | `rate_limited` | the application's token bucket is exhausted; carries `Retry-After` |
+| `503` | `unavailable` | a dependency the request cannot complete without is down; safe to retry after `Retry-After` |
+
+`401` is the one status outside the six-code body's own mapping: an application token whose
+application is `suspended` or deleted is rejected at authentication with `401` and a body whose
+`code` is `denied` (FR-F028-03). Authentication failure is not authorization failure, which is why
+the status differs from the `denied → 403` row above.
+
+**Rate-limit headers** — on every response to a token-authenticated request (FR-F028-07)
+
+| Field | Type | Notes |
+|---|---|---|
+| `X-RateLimit-Limit` | integer | the application's `rate_limit_per_minute` |
+| `X-RateLimit-Remaining` | integer | tokens left in the bucket, floor 0 |
+| `X-RateLimit-Reset` | integer | epoch seconds at which the bucket is full again |
+| `Retry-After` | integer | seconds; present only on `429` |
+
+**`CreateApplicationRequest`** — `POST /api/v1/applications`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | 1–120 chars after trim, unique per tenant among live applications, else `409 conflict` with `field_errors.name` |
+| `description` | string? | no | ≤ 2,000 chars |
+| `scopes` | string array | yes | 1–50 entries, each in the F038 scope catalog and matching `<resource>:read` or `<resource>:write`, no duplicates; otherwise `400 invalid` with `field_errors.scopes`. One `api_application_scopes` row per entry |
+| `rate_limit_per_minute` | integer | no | 60–6,000, default 600 |
+| `allowed_ips` | string array | no | 0–20 CIDRs, no duplicates; empty means no source restriction. One `api_application_allowed_ips` row per entry |
+
+**`UpdateApplicationRequest`** — `PATCH /api/v1/applications/{id}`, every field optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | no | as above |
+| `description` | string? | no | ≤ 2,000 chars; explicit null clears it |
+| `scopes` | string array | no | replaces the scope set whole; the rows are rewritten in the same transaction as the version bump (FR-F028-03) |
+| `rate_limit_per_minute` | integer | no | 60–6,000 |
+| `allowed_ips` | string array | no | replaces the CIDR set whole |
+| `status` | `"active" \| "suspended"` | no | suspending rejects the application's tokens within 5 s |
+
+**`ApplicationResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `client_id` | uuid / string | `client_id` is stable and safe to log |
+| `name` / `description` | string / string? | |
+| `scopes` | string array | reassembled from `api_application_scopes`, sorted |
+| `rate_limit_per_minute` | integer | |
+| `allowed_ips` | string array | reassembled from `api_application_allowed_ips`, sorted |
+| `status` | `"active" \| "suspended"` | |
+| `version` | integer | pass as `If-Match` on the next write |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+| `token` | string? | the issued F038 API token, present only in the `201` body of the create call and never again |
+
+**`CreateWebhookRequest`** — `POST /api/v1/webhooks` (FR-F028-08)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `url` | string | yes | https, ≤ 2,048 chars, resolving to a public address; private, loopback, link-local, or metadata ranges → `400 invalid` with `field_errors.url` |
+| `events` | string array | yes | 1–50 catalog event names or the `row.*` wildcard form, no duplicates; one `webhook_events` row per entry |
+| `filters` | `WebhookFilters?` | no | see below; an unsupported key → `400 invalid` with `field_errors.filters` |
+| `application_id` | uuid? | no | binds the webhook to an application so delivery payloads are filtered to that application's scopes (FR-F028-14) |
+
+**`WebhookFilters`** — the only supported keys, one `webhook_filters` row each
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `workspace_id` | uuid? | no | delivery only when the envelope's workspace matches |
+| `sheet_id` | uuid? | no | delivery only when the envelope's sheet matches |
+
+**`UpdateWebhookRequest`** — `PATCH /api/v1/webhooks/{id}`, every field optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `url` | string | no | as above |
+| `events` | string array | no | replaces the pattern set whole |
+| `filters` | `WebhookFilters?` | no | replaces the filter set whole; `null` clears every filter |
+| `status` | `"active" \| "disabled"` | no | setting `active` on a webhook disabled by failures clears `disabled_reason` and resets `consecutive_failures` |
+| `rotate_secret` | bool | no | `true` returns a new secret once and keeps the old one valid for 24 hours (FR-F028-13) |
+
+**`WebhookResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `application_id` | uuid / uuid? | |
+| `url` | string | |
+| `events` | string array | reassembled from `webhook_events`, sorted |
+| `filters` | `WebhookFilters` | reassembled from `webhook_filters`; `{}` when none |
+| `status` | `"active" \| "disabled"` | |
+| `disabled_reason` | `"consecutive_failures" \| "admin"`? | present only when `status` is `disabled` |
+| `consecutive_failures` | integer | resets to 0 on any successful delivery |
+| `secret` | string? | present only in the `201` create body and in the `200` body of a `rotate_secret` patch |
+| `previous_secret_expires_at` | timestamp? | present during the 24-hour rotation grace |
+| `version`, `created_at`, `created_by`, `updated_at`, `updated_by` | | as `ApplicationResponse` |
+
+**`DeliveryResponse`** — items of `GET /api/v1/webhooks/{id}/deliveries` (FR-F028-12)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the `X-OpsHub-Delivery-Id` the receiver saw |
+| `webhook_id` / `event_id` / `event` | uuid / uuid / string | `event` is the event name; `event_id` is the outbox event |
+| `status` | `"pending" \| "succeeded" \| "failed" \| "exhausted" \| "cancelled"` | |
+| `attempts` | `DeliveryAttempt` array | the `webhook_delivery_attempts` rows in `attempt_no` order |
+| `next_attempt_at` | timestamp? | present while `status` is `failed` and attempts remain |
+| `replay_of` | uuid? | the original delivery when this row is a replay |
+| `payload_preview` | string | the envelope truncated to the first 4 KB for the drawer |
+| `created_at` / `completed_at` | timestamp / timestamp? | |
+
+**`DeliveryAttempt`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `attempt_no` | integer | 1–5 |
+| `status_code` | integer? | null when the attempt never got a response |
+| `duration_ms` | integer? | |
+| `error` | `{ code, detail }`? | `code` is `timeout`, `connect`, `tls`, `dns`, `private_address`, or `http_status` |
+| `attempted_at` | timestamp | |
+
+List route: `GET /api/v1/webhooks/{id}/deliveries` returns `Page<DeliveryResponse>` sorted by
+`-created_at` with `id` as tiebreak, filtering on `status` and `event`. `POST /api/v1/webhook-deliveries/{id}/replay` takes no body
+and returns `202` with the new `DeliveryResponse`.
+
+**Webhook delivery envelope** — the POST body the receiver gets (FR-F028-09)
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the delivery id, unique per attempt series; the receiver deduplicates on it |
+| `event` | string | `<aggregate>.<verb>.v1` |
+| `occurred_at` | timestamp | when the aggregate changed, not when the POST was sent |
+| `tenant_id` | uuid | |
+| `data` | object | the outbox payload, field-filtered to the bound application's current scopes |
+| `correlation_id` | uuid | the correlation id of the request that caused the change |
+
+Delivery headers: `X-OpsHub-Delivery-Id` (the envelope `id`), `X-OpsHub-Event`, `X-OpsHub-Timestamp`
+(epoch seconds), and `X-OpsHub-Signature`. The signature value is `v1=<hex>` where `<hex>` is
+HMAC-SHA256 of the exact string `<timestamp>.<raw body>` under the webhook secret, and during a
+rotation grace both are sent as `v1=<new>,v1=<old>`. A receiver recomputes over the raw body before
+parsing and compares in constant time; a timestamp more than 5 minutes from now is a replay.
+
+### Use case signatures
+
+In `crates/domain/src/public-api/`. `ctx` carries tenant, actor, scopes, and correlation id; every
+use case returns the shared `DomainError` whose mapping to the six codes is the status table above.
+A use case takes a `UnitOfWork` or a repository trait, never a pool or a connection, and never
+returns a database row type.
+
+```rust
+fn create_application(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateApplication) -> Result<ApiApplication, DomainError>;
+fn update_application(ctx: &Ctx, uow: &mut UnitOfWork, id: ApplicationId, expected: Version, req: UpdateApplication) -> Result<ApiApplication, DomainError>;
+fn delete_application(ctx: &Ctx, uow: &mut UnitOfWork, id: ApplicationId, expected: Version) -> Result<(), DomainError>;
+fn list_applications(ctx: &Ctx, repo: &dyn ApiApplicationRepository, query: ListQuery) -> Result<Page<ApiApplication>, DomainError>;
+fn create_webhook(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateWebhook) -> Result<(Webhook, WebhookSecret), DomainError>;
+fn update_webhook(ctx: &Ctx, uow: &mut UnitOfWork, id: WebhookId, expected: Version, req: UpdateWebhook) -> Result<(Webhook, Option<WebhookSecret>), DomainError>;
+fn delete_webhook(ctx: &Ctx, uow: &mut UnitOfWork, id: WebhookId, expected: Version) -> Result<(), DomainError>;
+fn list_webhooks(ctx: &Ctx, repo: &dyn WebhookRepository, query: ListQuery) -> Result<Page<Webhook>, DomainError>;
+fn list_deliveries(ctx: &Ctx, repo: &dyn WebhookDeliveryRepository, webhook: WebhookId, filter: DeliveryFilter, query: ListQuery) -> Result<Page<WebhookDelivery>, DomainError>;
+fn replay_delivery(ctx: &Ctx, uow: &mut UnitOfWork, id: DeliveryId, now: DateTime<Utc>) -> Result<WebhookDelivery, DomainError>;
+fn match_event(envelope: &EventEnvelope, subscriptions: &WebhookSubscriptions) -> Vec<WebhookId>;
+fn sign_payload(secret: &WebhookSecret, timestamp: i64, body: &str) -> SignatureHeader;
+fn dispatch_delivery(ctx: &Ctx, uow: &mut UnitOfWork, id: DeliveryId, http: &dyn DeliveryTransport) -> Result<DeliveryOutcome, DomainError>;
+fn schedule_retry(ctx: &Ctx, uow: &mut UnitOfWork, id: DeliveryId, outcome: DeliveryOutcome, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, DomainError>;
+fn disable_after_failures(ctx: &Ctx, uow: &mut UnitOfWork, webhook: WebhookId) -> Result<WebhookStatus, DomainError>;
+```
+
+Transaction boundaries. `create_application` and `update_application` write the parent row, the full
+replacement of its `api_application_scopes` and `api_application_allowed_ips` rows, the audit row,
+and the outbox entry in one `UnitOfWork`, which is what makes a token's effective scopes the current
+rows and never a half-applied set. `create_webhook` and `update_webhook` do the same across
+`webhooks`, `webhook_events`, and `webhook_filters`, so the dispatcher never matches a webhook
+against a pattern set that is mid-rewrite. `dispatch_delivery` and `schedule_retry` share one
+`UnitOfWork` per attempt covering the `webhook_delivery_attempts` insert, the `webhook_deliveries`
+status and `next_attempt_at` update, and the webhook's `consecutive_failures` change, so the
+attempt cap and the disable-after-10 counter can never disagree with the attempt rows; the HTTP call
+itself happens before that transaction opens, never inside it. `match_event` and `sign_payload` are
+pure and take no `ctx`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_public-api_*.sql` creates `api_applications(id uuid pk, tenant_id uuid not null, name text not null, description text, client_id text not null, rate_limit_per_minute int not null default 600 check (rate_limit_per_minute between 60 and 6000), status text not null default 'active' check (status in ('active','suspended')), version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `webhooks(id uuid pk, tenant_id uuid not null, application_id uuid null references api_applications(id) on delete restrict, url text not null check (url like 'https://%' and length(url) <= 2048), secret_ciphertext bytea not null, secret_key_id text not null, previous_secret_ciphertext bytea null, previous_secret_expires_at timestamptz null, status text not null default 'active' check (status in ('active','disabled')), disabled_reason text null check (disabled_reason is null or disabled_reason in ('consecutive_failures','admin')), consecutive_failures int not null default 0 check (consecutive_failures >= 0), version bigint not null default 1, audit fields, deleted_at)`, `webhook_deliveries(id uuid pk, tenant_id uuid not null, webhook_id uuid not null references webhooks(id) on delete cascade, event_id uuid not null, event_name text not null, payload jsonb not null, status text not null check (status in ('pending','succeeded','failed','exhausted','cancelled')), attempt_count int not null default 0 check (attempt_count between 0 and 5), next_attempt_at timestamptz null, replay_of uuid null references webhook_deliveries(id) on delete restrict, created_at, completed_at)`.

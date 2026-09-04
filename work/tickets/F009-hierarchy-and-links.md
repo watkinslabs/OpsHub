@@ -101,6 +101,166 @@ Canonical contract: `docs/capability-contracts.md` row F009.
 - Validation: depth ≤ 20; `limit` 1–500; `link_type` and `sync_direction` enums; roll-up function/type matrix (`sum|avg|min|max` on number, currency, duration; `min|max` also on date and datetime; `count` on any; `any|all|first|last` on select and boolean; `weighted_percent` on number with a number or duration weight); the filter row references a column of the same sheet and exactly one value column matching that column's type; priority rows reference options of the source column and carry distinct positions.
 - Error mapping: `HierarchyError::NoPreviousSibling | AlreadyRoot | DepthExceeded | Cycle → 400 invalid`, `LinkError::IncompatibleType | NotLinkColumn → 400 invalid`, `RollupError::IncompatibleFunction → 400 invalid`, `StaleVersion → 409 conflict`, `ParentDeleted → 409 conflict`, `NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, type, whether it is required, and the constraint that
+makes it invalid — the depth limit, the cycle rule and the type-compatibility rules are constraints
+in these tables, not prose kept elsewhere. `T?` is nullable; an absent optional field and an explicit
+`null` mean the same thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC. Unlisted fields are
+rejected with `400 invalid`. `CellValue` and column types are F007's, `RowResponse` is F006's,
+`Page<T>` and the opaque cursor are F028's `{ items, next_cursor, has_more, total? }`, and the error
+codes are the shared six. Every mutation requires `Idempotency-Key` and `If-Match`.
+
+**Indent and outdent** — `POST /api/v1/rows/{id}/indent`, `POST /api/v1/rows/{id}/outdent`. The body
+is the empty object `{}`; the operation carries no parameters because the target parent is derived,
+which is what makes it replay-safe. The constraints below are evaluated against the resolved parent.
+
+| Input | Type | Required | Constraint |
+|---|---|---|---|
+| `id` (path) | uuid | yes | a live row the actor may edit; unknown, soft-deleted or foreign-tenant → `404 not_found` |
+| `If-Match` (header) | integer | yes | the row `version`; stale → `409 conflict` carrying the current version |
+| resolved parent (indent) | row | derived | the previous visible sibling in the same group; none → `400 invalid`, `field_errors.row_id = "no_previous_sibling"` |
+| resolved parent (indent) | row | derived | may not be the row itself or any row whose `path` contains the row's id → `400 invalid`, `field_errors.row_id = "cycle"` |
+| resulting depth | integer | derived | `parent.depth + 1` plus the height of the moved subtree ≤ 20 for every moved row → otherwise `400 invalid`, `field_errors.row_id = "depth_exceeded"` |
+| resolved parent (outdent) | row | derived | the row's current parent must exist; a root row → `400 invalid`, `field_errors.row_id = "already_root"` |
+
+**`ReparentResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` | uuid | never changes; indent and outdent move a row, they do not recreate it |
+| `parent_row_id` | uuid? | `null` at the root |
+| `depth` | integer | 0–20 |
+| `path` | string | dot-joined ancestor ids ending in `row_id`, unique per sheet |
+| `child_position` | string | fractional index as a string, ordered by collation `C` |
+| `moved_descendants` | integer | rows whose `path` and `depth` were rewritten with this one |
+| `version` | integer | the row's new version, for the next `If-Match` |
+
+**`GET /api/v1/rows/{id}/children`** → `Page<ChildRowResponse>`
+
+| Parameter | Type | Required | Constraint |
+|---|---|---|---|
+| `cursor` | string | no | F028's opaque cursor |
+| `limit` | integer | no | 1–500, default 100 |
+| `depth` | `"direct" \| "all"` | no | default `direct`, ordered by `child_position`; `all` returns the whole subtree in depth-first `path` order (FR-F009-04) |
+
+**`ChildRowResponse`** is F006's `RowResponse` plus `parent_row_id`, `depth`, `path`,
+`child_position`, and `has_children` (bool, true when at least one non-deleted child exists).
+Soft-deleted rows never appear.
+
+**`CreateLinkRequest`** — `POST /api/v1/links`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source_row_id` | uuid | yes | a live row on a sheet where the actor holds `sheet-editor`, else `403 denied` |
+| `source_column_id` | uuid | yes | a live column of the source row's sheet of type `link`, else `400 invalid` with `field_errors.source_column_id = "not_link_column"`; a second active link on the same `(source_row_id, source_column_id)` is `409 conflict` |
+| `target_sheet_id` | uuid | yes | a sheet the actor may read; another tenant's, a soft-deleted one, or one the actor cannot read → `404 not_found`, never `denied` |
+| `target_row_id` | uuid | yes | a live row of `target_sheet_id`; a row of a different sheet → `400 invalid` with `field_errors.target_row_id = "sheet_mismatch"` |
+| `target_column_id` | uuid | yes | a live column of `target_sheet_id` whose type is one of the source link column's accepted target types (FR-F009-09), else `400 invalid` with `field_errors.target_column_id = "incompatible_type"` |
+| `link_type` | `"inbound" \| "outbound" \| "bidirectional"` | yes | any other member → `400 invalid` |
+| `sync_direction` | `"pull" \| "push" \| "both"` | yes | `push` or `both` additionally requires `sheet-editor` on the target sheet, else `403 denied` and nothing is written (FR-F009-13) |
+
+**`UpdateLinkRequest`** — `PATCH /api/v1/links/{id}`: `target_row_id`, `target_column_id`,
+`link_type`, `sync_direction`, all optional, at least one present, each under the same constraints as
+create, with the target access and type checks re-run. `DELETE /api/v1/links/{id}` takes no body,
+soft-deletes the link, and clears the source cell `display`.
+
+**`LinkResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `source_row_id` / `source_column_id` | uuid | |
+| `target_sheet_id` / `target_row_id` / `target_column_id` | uuid | |
+| `link_type` / `sync_direction` | enum | as above |
+| `status` | `"active" \| "broken"` | `broken` once the target row, sheet or column is gone or its type became incompatible (FR-F009-12) |
+| `target_sheet_name` | string? | omitted when `target_redacted` |
+| `target_primary_value` | CellValue? | the target row's primary cell; omitted when `target_redacted` |
+| `target_redacted` | bool | `true` when the actor may read the link but not its target; every target field is then absent (FR-F009-10) |
+| `version` | integer | |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | timestamp / uuid | |
+| `deleted_at` | timestamp? | present only when reading a soft-deleted link |
+
+`GET /api/v1/links` returns `Page<LinkResponse>` sorted by `created_at` descending, filtered by any
+of `source_row_id`, `source_column_id`, `target_sheet_id`, `target_row_id` (uuid) and `status`
+(enum), with `cursor` and `limit` 1–500 default 100.
+
+**`SetRollupRequest`** — `PUT /api/v1/columns/{id}/rollup`, replaces the rule and its child rows
+atomically
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `function` | RollupFunction? | yes | `sum \| min \| max \| avg \| count \| any \| all \| first \| last \| weighted_percent`; explicit `null` removes the rule; a `formula` column target → `400 invalid` with `field_errors.column_id = "formula_column"` |
+| `source_column_id` | uuid | with a function | a live column of the same sheet; the function/type matrix — `sum, avg, min, max` on number, currency, duration; `min, max` also on date and datetime; `count` on any type; `any, all, first, last` on select and boolean; `weighted_percent` on number — otherwise `400 invalid` with `field_errors.function = "incompatible_function"` |
+| `weight_column_id` | uuid? | with `weighted_percent` | a `number` or `duration` column of the same sheet; present on any other function → `400 invalid` |
+| `status_priority` | uuid[]? | with `any`/`all` on select | option ids of `source_column_id`, distinct, stored one per `rollup_rule_status_priorities` row in list order; an unknown or duplicate id → `400 invalid` |
+| `filter` | RollupFilter? | no | at most one, stored as the rule's single `rollup_rule_filters` row; absent means no row and no filtering |
+
+**`RollupFilter`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid | yes | a live column of the same sheet |
+| `operator` | `"eq" \| "ne" \| "lt" \| "lte" \| "gt" \| "gte" \| "contains" \| "is_empty" \| "is_not_empty"` | yes | |
+| `value` | RawValue? | unless `is_empty`/`is_not_empty` | exactly one typed value matching `column_id`'s type, stored in the matching `value_text`, `value_number`, `value_datetime` or `value_option_id` column; a mismatch → `400 invalid` with `field_errors.filter = "type_mismatch"` |
+
+**`RollupRuleResponse`** `{ column_id, function, source_column_id, weight_column_id?,
+status_priority: uuid[], filter?, version, updated_at, updated_by }`; clearing a rule returns
+`{ column_id, function: null, version }` and emits `rollup.recomputed.v1` with `cell_count` 0.
+Parent cells under a rule are read-only through F008: a cell edit on one returns the per-cell
+`invalid` outcome with code `rolled_up`, and while a recompute is in flight the cell keeps its prior
+value with `validation.state = "pending"` (FR-F009-08).
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | children, links list, link patch, rollup put, indent and outdent |
+| `201` | link created |
+| `204` | link deleted |
+| `400 invalid` | `no_previous_sibling`, `already_root`, `depth_exceeded`, `cycle`, `not_link_column`, `sheet_mismatch`, `incompatible_type`, `incompatible_function`, filter `type_mismatch`, a `limit` outside 1–500, an unlisted field |
+| `403 denied` | a viewer or commenter on indent, outdent, link create, patch, delete or rollup put; `push` sync without `sheet-editor` on the target |
+| `404 not_found` | unknown or soft-deleted row, link or column, and every target sheet or row of another tenant or that the actor cannot read |
+| `409 conflict` | stale `If-Match`, a second active link on one source cell, restoring a child whose parent is still deleted (`field_errors.parent_row_id = "deleted"`), `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant write quota on link creation |
+| `502 unavailable` | outbox publish failed; the mutation is rolled back |
+
+### Use case signatures
+
+In `crates/domain/src/links/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` to write or a repository to read, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn indent_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId, expected: Version) -> Result<Reparent, DomainError>;
+fn outdent_row(ctx: &Ctx, uow: &mut UnitOfWork, id: RowId, expected: Version) -> Result<Reparent, DomainError>;
+fn list_children(ctx: &Ctx, repo: &dyn RowHierarchyRepository, id: RowId, depth: ChildDepth, page: Cursor) -> Result<Page<ChildRow>, DomainError>;
+fn cascade_delete_subtree(ctx: &Ctx, uow: &mut UnitOfWork, root: RowId) -> Result<u32, DomainError>;
+fn cascade_restore_subtree(ctx: &Ctx, uow: &mut UnitOfWork, root: RowId) -> Result<u32, DomainError>;
+fn create_link(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateLink) -> Result<CellLink, DomainError>;
+fn update_link(ctx: &Ctx, uow: &mut UnitOfWork, id: LinkId, expected: Version, req: UpdateLink) -> Result<CellLink, DomainError>;
+fn delete_link(ctx: &Ctx, uow: &mut UnitOfWork, id: LinkId, expected: Version) -> Result<(), DomainError>;
+fn list_links(ctx: &Ctx, repo: &dyn CellLinkRepository, filter: LinkFilter, page: Cursor) -> Result<Page<CellLink>, DomainError>;
+fn set_rollup_rule(ctx: &Ctx, uow: &mut UnitOfWork, column: ColumnId, req: SetRollup) -> Result<Option<RollupRule>, DomainError>;
+fn recompute_rollups(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, rows: &[RowId], columns: &[ColumnId]) -> Result<RecomputeReport, DomainError>;
+fn handle_change_event(ctx: &Ctx, uow: &mut UnitOfWork, event: &ChangeEvent) -> Result<(), DomainError>;
+```
+
+**Transaction boundaries.** One `UnitOfWork` per mutation. `indent_row` and `outdent_row` rewrite the
+row's `row_hierarchy` row and every descendant's `depth` and `path` in the same boundary as the row
+version bump, the `audit_events` row and the outbox enqueue — that is the invariant that keeps `path`
+consistent with `parent_row_id`, since a half-rewritten subtree would make `subtree_by_path` return
+rows under the wrong parent; large subtrees are chunked at 5,000 rows per statement inside that one
+transaction, never across transactions. `cascade_delete_subtree` and `cascade_restore_subtree` join
+the F006 row delete and restore in its `UnitOfWork` rather than opening their own, so a parent can
+never be deleted with its children still live. `set_rollup_rule` writes `rollup_rules` with its
+`rollup_rule_status_priorities` and `rollup_rule_filters` rows together, so a rule never evaluates
+against half a priority list. `recompute_rollups` uses one boundary per `(sheet_id, column_id)`
+coalesced batch, writing every recomputed cell through the F006 `CellRepository` and its state
+through the F007 `CellValidationStateRepository`, so a parent cell and its validation row can never
+disagree; the consumer is idempotent per `(aggregate_id, version)` so a redelivered event recomputes
+to the same values.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_links_*.sql` creates `row_hierarchy(tenant_id uuid not null, row_id uuid primary key references rows(id) on delete restrict, sheet_id uuid not null, parent_row_id uuid null references rows(id), depth smallint not null default 0 check (depth between 0 and 20), path text not null, child_position text not null, version bigint not null default 1, updated_by, updated_at)`, `cell_links(id uuid pk, tenant_id uuid not null, source_row_id uuid not null, source_column_id uuid not null, target_sheet_id uuid not null, target_row_id uuid not null, target_column_id uuid not null, link_type text not null check (link_type in ('inbound','outbound','bidirectional')), sync_direction text not null check (sync_direction in ('pull','push','both')), status text not null default 'active' check (status in ('active','broken')), version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `rollup_rules(id uuid pk, tenant_id uuid not null, column_id uuid not null unique, function text not null check (function in ('sum','min','max','avg','count','any','all','first','last','weighted_percent')), source_column_id uuid not null, weight_column_id uuid null, version bigint not null default 1, created_by, created_at, updated_by, updated_at)`, `rollup_rule_status_priorities(tenant_id uuid not null, rollup_rule_id uuid not null references rollup_rules(id) on delete cascade, option_id uuid not null references column_options(id) on delete restrict, position smallint not null, primary key (rollup_rule_id, option_id), unique (rollup_rule_id, position))`, `rollup_rule_filters(rollup_rule_id uuid primary key references rollup_rules(id) on delete cascade, tenant_id uuid not null, column_id uuid not null references columns(id) on delete restrict, operator text not null check (operator in ('eq','ne','lt','lte','gt','gte','contains','is_empty','is_not_empty')), value_text text, value_number numeric, value_datetime timestamptz, value_option_id uuid references column_options(id) on delete restrict)`.

@@ -160,6 +160,13 @@ Scenario: [failure or permission path]
 - Risks and mitigations: [list]
 - Open questions and owner/date: [list]
 
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first. Empty until then.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+
 ## 7.1 Agent handoff
 
 ### Implemented

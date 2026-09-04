@@ -157,7 +157,7 @@ one per write. Unlisted fields are rejected with `400 invalid`.
 
 **`CellValue`** is F007's typed union, discriminated by the column's type rather than by a field in the payload; F007 owns its definition and this feature does not restate it.
 
-**`Page<T>`** — every list route: `{ items: T[], next_cursor: string?, total: integer? }`. `total` is present only when the caller passed `count=true`, because counting costs a second query.
+**`Page<T>`** is F028's, not this feature's: `{ items: T[], next_cursor: string?, has_more: bool, total: integer? }` with `total` present only when the caller passes `include_total=true`. F006 restates nothing about it and must not diverge from the owner.
 
 ### Use case signatures
 
@@ -264,6 +264,14 @@ Scenario: Board move
 - External dependencies: none
 - Risks and mitigations: fractional position keys can grow unbounded under repeated inserts at the same spot, so the move service rebalances a group when any key exceeds 64 chars; large-sheet list performance depends on the `(sheet_id, position)` partial index, verified by the load test.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F007 and F002 interface work | `Page<T>` corrected to F028's envelope, adding `has_more` and `include_total` | Two independent authors found this ticket had invented a different envelope from the one F028 owns |
 
 ## 7.1 Agent handoff
 

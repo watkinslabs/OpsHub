@@ -93,6 +93,221 @@ Excluded: role definitions and ACL storage for roles (F003), workspace membershi
 - Error mapping: `ShareError::AlreadyShared → 409 conflict`, `ShareError::LastOwner → 409 conflict`, `ShareError::GuestRoleNotAllowed → 400 invalid`, `ShareError::LinkExpiryTooLong → 400 invalid`, `ShareError::LinkExhausted → 404 not_found`, `ShareError::TokenInvalid → 404 not_found`, `ShareError::StaleVersion → 409 conflict`, `ShareError::NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `RateLimit::Exceeded → 429 rate_limited`.
 - Persistence (`crates/persistence/src/sharing/`): `ShareRepository` owns `shares`; `ShareLinkRepository` owns `share_links`; `GuestInvitationRepository` owns `guest_invitations`; `GuestUserRepository` owns `guest_users`. Each implements the shared `Repository` contract (`get`, `list` with cursor pagination, `insert`, `update` under an expected version, `soft_delete`, `restore`, `purge`) and adds named queries `list_for_target(target_kind, target_id)`, `list_for_principal(principal_kind, principal_id)`, `find_grant(target, principal)`, `lock_owner_grants(target_kind, target_id)`, `count_owners(target_kind, target_id)`, `revoke(share_id)`, `find_link_by_token_hash(hash)`, `increment_use_count(link_id)`, `list_active_links(target_kind, target_id)`, `find_invitation_by_token_hash(hash)`, `accept_invitation(invitation_id, user_id)`, `find_guest_by_email(tenant_id, email)`, `claim_expired(cutoff, limit)`; the tenant predicate, soft-delete filter, version check, audit row, and outbox enqueue come from the base contract. `lock_owner_grants` is the former `select ... for update` on the target's owner grants: the same row lock in the same transaction still serializes concurrent revokes and downgrades, only the SQL moved into `crates/persistence`. Multi-table writes — granting and updating a share (grant plus audit plus outbox), revoking under the last-owner lock, link resolution with its `use_count` increment and resolve audit, and guest acceptance (invitation `accepted_at`, `guest_users` row, `shares` grant, session) — each run in one `UnitOfWork` that owns the transaction. Token hashes are compared inside `find_link_by_token_hash` and `find_invitation_by_token_hash` and are never logged or returned. The F003 policy engine reads effective grants through `ShareRepository::list_for_principal` and `list_for_target`, never through its own SQL. Per decision 2.1 the use cases above depend on these repository traits and contain no SQL: no SQL string, `sqlx::query*` call, or connection exists in `crates/domain/src/sharing` or `services/api/src/sharing`, and the permission-negative tests drive the repository traits rather than raw queries.
 
+### Interface
+
+Conventions are F028's: `Page<T>`, the signed cursor, the error body with its six codes,
+`Idempotency-Key`, and `If-Match`. `T?` is nullable; an absent optional field and an explicit `null`
+are the same thing; timestamps are RFC 3339 UTC; ids are UUIDv7 strings; `version` increments by one
+per write. Unlisted request fields are rejected with `400 invalid`. The two `/public/**` routes take
+no session and no `Idempotency-Key`.
+
+**`TargetRef`** — the addressed resource, used by every shape below
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target_kind` | enum | yes | `workspace`, `folder`, `sheet`, `view`, `report`, `dashboard`, or `document`; anything else → `400 invalid` with `field_errors.target_kind` |
+| `target_id` | uuid | yes | must resolve in the caller's tenant; absent or foreign → `404 not_found`, never `denied` |
+
+**`PrincipalRef`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"user" \| "group" \| "guest"` | yes | |
+| `id` | uuid | yes | a `users` row for `user` and `guest`, a `groups` row for `group`, in the same tenant; otherwise `404 not_found` |
+
+**`ShareRole`** — `owner`, `admin`, `editor`, `commenter`, `viewer`, `form_submitter`. These are the
+authorization model's base roles; `form_submitter` is its `form-submitter`. Guests may hold only
+`editor`, `commenter`, `viewer`, or `form_submitter` (`400 invalid` with
+`field_errors.role = "guest_role_not_allowed"`); links may carry only `viewer`, `commenter`, or
+`form_submitter`.
+
+**`CreateShareRequest`** — `POST /api/v1/shares` (FR-F036-01)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target_kind` / `target_id` | `TargetRef` | yes | caller holds `share` on the target through `owner` or `admin`, else `403 denied` |
+| `principal` | `PrincipalRef` | yes | one grant per `(target, principal)`; a second → `409 conflict` with `field_errors.principal = "already_shared"` |
+| `role` | `ShareRole` | yes | guest restriction above |
+| `effect` | `"allow" \| "deny"` | no | default `allow`; `deny` requires `admin` or `owner` on the target |
+| `expires_at` | timestamp? | no | must be in the future; a past value → `400 invalid` with `field_errors.expires_at` |
+
+**`UpdateShareRequest`** — `PATCH /api/v1/shares/{id}`, every field optional, at least one present
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `role` | `ShareRole` | no | downgrading the last `owner` grant → `409 conflict` with `field_errors.role = "last_owner"` |
+| `effect` | `"allow" \| "deny"` | no | |
+| `expires_at` | timestamp? | no | explicit null clears the expiry |
+
+**`ShareResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `target` | `TargetRef` | the target the grant is stored against, which for an inherited entry is the ancestor |
+| `principal` | `{ kind, id, display_name }` | `display_name` is the user, group, or guest label; a guest's email is not returned |
+| `role` | `ShareRole` | |
+| `effect` | `"allow" \| "deny"` | |
+| `expires_at` | timestamp? | |
+| `inherited_from` | `{ target_kind, target_id }`? | present only on an entry inherited from an ancestor; absent on a direct grant (FR-F036-05) |
+| `version` | integer | |
+| `created_at` / `created_by` / `updated_at` / `updated_by` | | direct grants only |
+
+`GET /api/v1/{target_kind}/{target_id}/shares` returns `Page<ShareResponse>` sorted by
+`principal.display_name` with `id` as tiebreak, `limit` 1–200 (default 50), filters
+`principal_kind` (`user`, `group`, `guest`) and `effect` (`allow`, `deny`). Direct grants come before
+inherited ones. `DELETE /api/v1/shares/{id}` takes `If-Match` and returns `204`.
+
+**`CreateShareLinkRequest`** — `POST /api/v1/share-links` (FR-F036-09)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target_kind` / `target_id` | `TargetRef` | yes | caller holds `owner` or `admin`, else `403 denied` |
+| `role` | `"viewer" \| "commenter" \| "form_submitter"` | yes | any other member → `400 invalid` with `field_errors.role` |
+| `expires_at` | timestamp | no | default now + 7 days; beyond now + 30 days → `400 invalid` with `field_errors.expires_at = "max_30_days"`; in the past → `400 invalid` |
+| `max_uses` | integer? | no | 1–10,000; `null` means unlimited within the expiry |
+| `label` | string? | no | ≤ 120 chars, shown in the admin sharing tab |
+
+**`ShareLinkResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `target` | `TargetRef` | |
+| `role` | `"viewer" \| "commenter" \| "form_submitter"` | |
+| `url` | string? | the full URL with the 43-character token; present **only** in the `201` create body and never again — the token is stored as a SHA-256 hash |
+| `label` | string? | |
+| `expires_at` | timestamp | |
+| `max_uses` | integer? | |
+| `use_count` | integer | |
+| `revoked_at` | timestamp? | set by `DELETE /api/v1/share-links/{id}`, which returns `204` |
+| `version` | integer | |
+
+**`ResolveLinkResponse`** — `GET /public/share/{token}`, no session (FR-F036-11)
+
+| Field | Type | Notes |
+|---|---|---|
+| `target_kind` / `target_id` | enum / uuid | what the landing page renders |
+| `role` | `"viewer" \| "commenter" \| "form_submitter"` | |
+| `expires_at` | timestamp | drives the `Expires in N days` banner |
+| `scoped_token` | string | the bearer described below; valid 15 minutes and not refreshable |
+
+An expired, revoked, unknown, or use-exhausted token returns `404 not_found` — the four cases are
+indistinguishable to the caller, so a token cannot be probed. The route is limited to 60 requests
+per minute per IP and 600 per hour per token; over either is `429 rate_limited`.
+
+**`ScopedContext`** — the gateway context a `scoped_token` resolves to, and the type that must never
+widen. It is the same struct shape the authenticated gateway hands every service
+(`{ tenant_id, actor_id, roles, scopes, correlation_id }`), with these values and no others.
+
+| Field | Type | Notes |
+|---|---|---|
+| `tenant_id` | uuid | the link's tenant, taken from the link row and never from the request |
+| `actor_id` | uuid | the link principal — the link's own id, not the creator's user id; the creator is never impersonated |
+| `roles` | string array | **always empty.** A scoped actor holds no role and no role binding is consulted, so nothing a role grants can reach it |
+| `scopes` | string array | **exactly one entry**, `share-link:<target_kind>:<target_id>:<role>` |
+| `correlation_id` | uuid | per request, as everywhere else |
+| `expires_at` | timestamp | mint time plus 15 minutes; there is no refresh and no renewal route |
+| `link_id` | uuid | so a revoked link invalidates a live token: every request re-checks the link is unrevoked, unexpired, and within `max_uses` |
+
+What the single scope permits, and nothing beyond it (FR-F036-12): read of that one target and of
+the rows, views, comments, and files reachable *below* it under the named role. It grants nothing on
+an ancestor, nothing on a sibling, and no listing route — `GET /api/v1/workspaces`, search, and any
+other collection return `403 denied`. Every write returns `403 denied` with two exceptions, both
+scoped to the same target: a `form_submitter` submission to a published form (F014) and an edit
+inside an explicitly scoped view (F013, F050). A scoped context never resolves a second scope, never
+gains one from a role, and never inherits a grant, so the guarantee "a scoped actor's authority is
+the intersection of the minting user's permissions and the token's stored scope" cannot be widened
+by any later feature: widening it means minting a different token, not adding to this one. The
+target's owner is never revealed beyond display name.
+
+**`InviteGuestRequest`** — `POST /api/v1/guests/invite` (FR-F036-06)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `email` | string | yes | RFC 5322, ≤ 254 chars, case-insensitive; matched against `guest_users(tenant_id, email)` on acceptance |
+| `target_kind` / `target_id` | `TargetRef` | yes | caller holds `owner` or `admin` |
+| `role` | `"editor" \| "commenter" \| "viewer" \| "form_submitter"` | yes | `owner` or `admin` → `400 invalid` with `field_errors.role = "guest_role_not_allowed"` |
+| `message` | string? | no | ≤ 1,000 chars, carried into the invitation email |
+| `expires_in_days` | integer | no | 1–14, default 7 |
+
+**`InviteGuestResponse`** — returned to the inviter only
+
+| Field | Type | Notes |
+|---|---|---|
+| `invitation_id` | uuid | |
+| `accept_url` | string | contains the raw token, returned once here and once in `guest.invited.v1` for F037 to mail; only the SHA-256 hash is stored |
+| `expires_at` | timestamp | |
+
+**`AcceptInvitationRequest`** / **`AcceptInvitationResponse`** — `POST /public/guests/accept/{token}`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `display_name` | string | yes | 1–120 chars after trim; the name shown on the guest's grants and comments |
+
+`AcceptInvitationResponse` is `{ redirect_to: string }`, a relative path to the granted target, and
+the response sets the F038 session cookie. An expired, already-accepted, or unknown token returns
+`404 not_found`.
+
+**Status codes**
+
+| Status | `code` | Produced by |
+|---|---|---|
+| `400` | `invalid` | any constraint above: unknown `target_kind`, guest or link role restriction, link expiry beyond 30 days, past `expires_at`, malformed email, `display_name` bounds |
+| `403` | `denied` | the caller can see the target but lacks `share` on it — an `editor` calling any share, link, or invite route; a scoped actor calling anything outside its one scope |
+| `404` | `not_found` | a share, link, invitation, or target id that does not exist or belongs to another tenant; an expired, revoked, exhausted, or unknown public token; a target the caller cannot see, which is why an unauthorized read is never `denied` |
+| `409` | `conflict` | a second grant for the same `(target, principal)`; revoking or downgrading the last `owner`; a stale `If-Match`; an `Idempotency-Key` replayed with a different body |
+| `429` | `rate_limited` | the per-IP and per-token limits on `GET /public/share/{token}` and the same limits on `POST /public/guests/accept/{token}` |
+| `503` | `unavailable` | the database or outbox is unreachable; grant evaluation itself never returns this — it fails closed as `denied` (NFR-F036-04) |
+
+### Use case signatures
+
+In `crates/domain/src/sharing/`, with the token and context types in `crates/auth/src/sharing/`.
+`ctx` carries tenant, actor, and correlation id; a use case takes a `UnitOfWork` or repository
+traits, never a pool or connection, and returns the shared `DomainError` mapped above.
+
+```rust
+fn grant_share(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateShare) -> Result<Share, DomainError>;
+fn update_share(ctx: &Ctx, uow: &mut UnitOfWork, id: ShareId, expected: Version, req: UpdateShare) -> Result<Share, DomainError>;
+fn revoke_share(ctx: &Ctx, uow: &mut UnitOfWork, id: ShareId, expected: Version) -> Result<(), DomainError>;
+fn list_shares(ctx: &Ctx, repo: &dyn ShareRepository, target: TargetRef, filter: ShareFilter, cursor: Option<Cursor>, limit: u16) -> Result<Page<Share>, DomainError>;
+fn evaluate_access(ctx: &Ctx, repo: &dyn ShareRepository, actor: &ActorRef, target: TargetRef, ancestors: &AncestorChain) -> Result<EffectiveAccess, DomainError>;
+fn invite_guest(ctx: &Ctx, uow: &mut UnitOfWork, req: InviteGuest) -> Result<(GuestInvitation, RawToken), DomainError>;
+fn accept_invitation(ctx: &Ctx, uow: &mut UnitOfWork, token: &RawToken, display_name: String) -> Result<AcceptedInvitation, DomainError>;
+fn create_link(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateShareLink) -> Result<(ShareLink, RawToken), DomainError>;
+fn revoke_link(ctx: &Ctx, uow: &mut UnitOfWork, id: ShareLinkId, expected: Version) -> Result<(), DomainError>;
+fn resolve_link(ctx: &Ctx, uow: &mut UnitOfWork, token: &RawToken, now: DateTime<Utc>) -> Result<ResolvedLink, DomainError>;
+fn sweep_expired(ctx: &Ctx, uow: &mut UnitOfWork, cutoff: DateTime<Utc>, limit: u32) -> Result<SweepSummary, DomainError>;
+```
+
+In `crates/auth/src/sharing/`. `ShareGrantSource` is this feature's implementation of the F003
+`GrantSource` trait — F003 owns that trait and calls it during evaluation; F036 supplies the grants:
+
+```rust
+impl GrantSource for ShareGrantSource {
+    fn grants_for(&self, ctx: &Ctx, actor: &ActorRef, chain: &AncestorChain) -> Result<Vec<Grant>, DomainError>;
+}
+
+fn mint_scoped_token(ctx: &Ctx, link: &ShareLink, now: DateTime<Utc>) -> Result<ScopedToken, DomainError>;
+fn verify_scoped_token(token: &str, repo: &dyn ShareLinkRepository, now: DateTime<Utc>) -> Result<ScopedContext, DomainError>;
+```
+
+`mint_scoped_token` is the only constructor of a `ScopedContext`; its `roles` is empty and its
+`scopes` holds exactly the one entry above by construction, so no caller can assemble a wider one.
+`verify_scoped_token` re-reads the link row on every request and returns `DomainError::NotFound`
+when it is revoked, expired, or exhausted.
+
+Transaction boundaries. `grant_share`, `update_share`, and `revoke_share` each write the `shares`
+row, the audit row, and the outbox entry in one `UnitOfWork`; `revoke_share` and a downgrade also
+take `lock_owner_grants` and `count_owners` inside that same transaction, which is what makes the
+last-owner rule hold under two concurrent revokes rather than letting both see one remaining owner.
+`accept_invitation` runs the invitation's `accepted_at`, the `guest_users` row, the `shares` grant,
+the audit row, and `guest.accepted.v1` in one `UnitOfWork`, so a guest identity never exists without
+its grant and a consumed token never leaves an unusable half-state. `resolve_link` holds one
+`UnitOfWork` over the `use_count` increment, the `max_uses` check, and the resolve audit row, so the
+use limit cannot be exceeded by concurrent resolutions; the token is minted after that transaction
+commits. `sweep_expired` batches per `claim_expired` page, one `UnitOfWork` per batch.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_sharing_*.sql` creates `shares(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, target_kind text not null, target_id uuid not null, principal_kind text not null, principal_id uuid not null, role text not null, effect text not null default 'allow', expires_at timestamptz, version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null default now(), updated_by uuid references users(id) on delete restrict, updated_at timestamptz)`, `share_links(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, target_kind text not null, target_id uuid not null, role text not null, token_hash bytea not null, label text, expires_at timestamptz not null, max_uses int, use_count int not null default 0, revoked_at timestamptz, version bigint not null default 1, created_by uuid not null references users(id) on delete restrict, created_at timestamptz not null default now(), updated_by uuid references users(id) on delete restrict, updated_at timestamptz)`, `guest_invitations(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, email citext not null, target_kind text not null, target_id uuid not null, role text not null, message text, token_hash bytea not null, expires_at timestamptz not null, accepted_at timestamptz, invited_by uuid not null references users(id) on delete restrict, created_at timestamptz not null default now())`, `guest_users(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, user_id uuid not null references users(id) on delete restrict, email citext not null, display_name text not null, invited_by uuid references users(id) on delete restrict, created_at timestamptz not null default now(), deactivated_at timestamptz)`.

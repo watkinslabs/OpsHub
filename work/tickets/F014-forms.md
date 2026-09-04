@@ -101,6 +101,258 @@ Excluded: routing and approval after submission (F018, F019, F020), update reque
 - Rate limiting: `rate_limit_buckets` from F038 keyed `form:{token}:{ip_hash}` (60/hour) and `form:{token}` (1,000/day); checked before CAPTCHA, CAPTCHA before validation, validation before any write.
 - Error mapping: `FormError::UnknownColumn → 400 invalid`, `FormError::VersionFrozen → 409 conflict`, `FormError::StaleVersion → 409 conflict`, `FormError::TokenRevoked → 404 not_found`, `FormError::Closed → 400 invalid (reason form_closed)`, `FormError::RateLimited → 429 rate_limited`, `FormError::CaptchaFailed | Honeypot → 400 invalid`, `AuthzError::Denied → 403 denied`, cross-tenant → `404 not_found`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable; a missing optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per write.
+Unlisted fields are rejected with `400 invalid` — on the public submission route too, where an extra
+member is a probe, not a convenience. `Page<T>` and its opaque cursor are F028's; the error envelope
+and the six codes are the shared ones; `CellValue` is F007's.
+
+**`Branding`** — nested on the wire, stored as the four `form_versions` typed columns.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `logo_file_id` | uuid? | no | a live F017 file in this tenant readable by the caller |
+| `accent_color` | string? | no | `#rrggbb`, six hex digits; the same `check` the column carries |
+| `title` | string? | no | ≤ 200 chars; falls back to the form `title` when null |
+| `description` | string? | no | ≤ 4,000 chars |
+
+**`FieldValidation`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `regex` | string? | no | RE2 syntax, ≤ 512 chars; text-typed columns only |
+| `min` / `max` | number? | no | numeric, currency, duration, date and datetime columns only; `min <= max` |
+| `options_subset` | string[]? | no | `select` columns only; each entry an option key of that column, distinct, order preserved as `form_field_options.position` |
+
+**`FormFieldSpec`** — one authored field.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `key` | string | yes | matches `[a-z0-9_]{1,64}`, unique within the version |
+| `column_id` | uuid | yes | a live column of the form's sheet; a foreign column → `400 invalid` with `field_errors.fields[n].column_id` |
+| `label` | string | yes | 1–200 chars |
+| `help` | string? | no | ≤ 1,000 chars |
+| `required` | bool | no | defaults `false`; ignored for a field hidden by `show_if` |
+| `default` | CellValue? | no | must be valid for the column's type |
+| `validation` | FieldValidation? | no | each member legal for the column's type |
+| `show_if` | ConditionNode? | no | see below |
+
+**`ConditionNode`** — the `show_if` AST (FR-F014-03). One of two shapes, discriminated by `type`;
+the identical evaluator runs in the browser and on the server against the same fixture set.
+
+Branch — `type` is `"and"` or `"or"`: `{ type, children: ConditionNode[] }`, 1–10 children.
+Comparison — `type` is `"cmp"`:
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `type` | `"cmp"` | yes | |
+| `field` | string | yes | the `key` of another field in the same version; a self-reference or an unknown key → `400 invalid` with `field_errors.fields[n].show_if` |
+| `op` | `"eq" \| "ne" \| "gt" \| "lt" \| "contains" \| "is_empty"` | yes | closed set; `gt`/`lt` only for numeric and date columns, `contains` only for text |
+| `value` | scalar | conditional | required for every op but `is_empty`, typed by the referenced field's column |
+
+Maximum nesting depth is 4 counting the root, and the graph of `field` references must be acyclic;
+either violation is `400 invalid` with `field_errors.fields[n].show_if`. A field hidden at submission
+time is never treated as required and its submitted value is discarded before validation.
+
+**`SpamPolicy`**: `{ captcha: bool, honeypot: bool }`, both defaulting `false`, stored as
+`captcha_enabled` and `honeypot_enabled`.
+
+**`UploadPolicy`**: `{ max_files: 0–10 (default 10), max_bytes: 1–26214400 (default 26214400), mime_allowlist: string[] }` — the allowlist is 1–50 distinct MIME strings stored one per
+`form_version_upload_mime_types` row; a value outside either bound is `400 invalid` with
+`field_errors.uploads`.
+
+**`OpenWindow`**: `{ opens_at: timestamp?, closes_at: timestamp? }`; `closes_at` must be after
+`opens_at` when both are present, else `400 invalid` with `field_errors.schedule`.
+
+**`ConfirmationTemplate`**: `{ message: string (≤ 4,000 chars), send_email: bool, email_subject: string? (≤ 200), email_body: string? (≤ 20,000) }`. `send_email: true` requires both email fields.
+`message` and `email_body` may carry `{{field.<key>}}` and `{{submission.id}}` placeholders; an
+unknown placeholder is `400 invalid` with `field_errors.confirmation`.
+
+**`CreateFormRequest`** — `POST /api/v1/forms`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `form-admin` on it, else `404 not_found` |
+| `title` | string | yes | 1–200 chars after trim |
+| `description` | string? | no | ≤ 4,000 chars |
+| `branding` | Branding? | no | defaults applied when absent |
+
+The response is a `FormResponse` with `status: "draft"`, `version` 1, draft version number 1, and an
+empty `fields` list.
+
+**`UpdateFormRequest`** — `PATCH /api/v1/forms/{id}`, `If-Match: <version>` required, every field
+optional, at least one present. When the form's current version is published, applying any of
+`fields`, `branding`, `identity_mode`, `spam`, `uploads`, `schedule`, `confirmation` or
+`frame_ancestors` creates draft version `n+1` rather than mutating `n` (FR-F014-04).
+
+| Field | Type | Constraint |
+|---|---|---|
+| `title` / `description` | string / string? | as create |
+| `fields` | FormFieldSpec[] | full replace of the draft's field set in array order, 0–200 entries, `key` distinct |
+| `branding` | Branding | full replace |
+| `identity_mode` | `"anonymous" \| "email" \| "authenticated"` | closed set |
+| `spam` | SpamPolicy | full replace |
+| `uploads` | UploadPolicy | full replace |
+| `schedule` | OpenWindow | full replace |
+| `confirmation` | ConfirmationTemplate | full replace |
+| `frame_ancestors` | string[] | 0–20 distinct absolute origins (`scheme://host[:port]`, no path); a malformed or duplicate origin → `400 invalid` with `field_errors.frame_ancestors` |
+| `rotate_token` | bool | mints a new submission token; the previous one stops resolving immediately |
+| `revoke_token` | bool | clears the token; mutually exclusive with `rotate_token`, else `400 invalid` |
+
+**`PublishFormRequest`** — `POST /api/v1/forms/{id}/publish`: an empty object. `If-Match` on the form
+version is required. Publishing a draft with zero fields is `400 invalid` with `field_errors.fields`.
+
+**`FormResponse`** — administrative view.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `sheet_id` / `workspace_id` | uuid | |
+| `title` / `description` | string / string? | |
+| `status` | `"draft" \| "published" \| "closed"` | |
+| `current_version` | FormVersionResponse? | absent until the first publish |
+| `draft_version` | FormVersionResponse? | present only while an unpublished draft exists |
+| `submission_url` | string? | present only when a live token exists and the caller is `form-admin` |
+| `embed_snippet` | string? | same condition; the `<iframe>` markup for the current token |
+| `version` | integer | `If-Match` for the next write |
+| `created_at` / `updated_at` / `created_by` / `updated_by` | | |
+| `deleted_at` | timestamp? | never present on a normal read |
+
+**`FormVersionResponse`**: `{ id, version_number, published_at?, fields: FormFieldSpec[], branding, identity_mode, spam, uploads, schedule, confirmation, frame_ancestors }`. It carries `column_id` on
+each field because only `form-admin` may read it.
+
+**`PublicFormSchema`** — `GET /public/forms/{token}`, unauthenticated. This is the whole response;
+nothing else is exposed. It deliberately carries no `sheet_id`, no `column_id`, no `tenant_id`, no
+`form_id`, no version id and no user id (FR-F014-06) — fields are addressed only by `key`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `title` / `description` | string / string? | from `branding` when set, otherwise the form's |
+| `logo_url` | string? | short-lived presigned URL, not a file id |
+| `accent_color` | string? | |
+| `state` | `"open" \| "scheduled" \| "closed"` | evaluated per request against `opens_at`/`closes_at` |
+| `opens_at` | timestamp? | present only when `state` is `scheduled` |
+| `closed_message` | string? | present only when `state` is `closed` |
+| `fields` | PublicField[] | empty when `state` is not `open` |
+| `identity_mode` | `"anonymous" \| "email" \| "authenticated"` | tells the client whether to collect an email or require sign-in |
+| `captcha_required` | bool | true iff the version enables CAPTCHA; the honeypot is not advertised |
+| `uploads` | `{ max_files, max_bytes, mime_allowlist }` | |
+| `csrf_free` | — | not a field: the route is stateless and takes no session cookie |
+
+**`PublicField`**: `{ key, label, help?, kind, required, default?, options?: [{ key, label }], validation?: { regex?, min?, max? }, show_if?: ConditionNode }`. `kind` is the presentation type
+derived from the column type (`text`, `number`, `currency`, `date`, `datetime`, `boolean`, `select`,
+`file`); the column id behind it is never sent.
+
+**`SubmitRequest`** — `POST /public/forms/{token}/submissions`, unauthenticated, `Idempotency-Key`
+required, body capped at 1 MB. This table is the complete set an anonymous submitter may send; any
+other member, including anything that looks like an id, a row reference or a tenant hint, is
+`400 invalid`.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `values` | map<string, scalar> | yes | keys are field `key`s of the current published version only; an unknown key → `400 invalid` with `field_errors.values`; each value must satisfy the field's column type and `validation`; values for fields hidden by `show_if` are discarded, not rejected |
+| `files` | string[]? | no | 0–`uploads.max_files` F017 upload ids from this token's own upload flow; each must be `clean` and within `max_bytes` and the MIME allowlist, else reason `upload_rejected` |
+| `email` | string? | conditional | required and RFC 5322 valid when `identity_mode` is `email`; rejected in the other two modes |
+| `captcha_token` | string? | conditional | required when `captcha_required`; ≤ 4,096 chars; verified server-side before any write |
+| `honeypot` | string? | no | must be absent or empty; a filled value is rejected as spam |
+| `draft` | bool? | no | `true` saves a server-side draft, creates no row, and returns a `draft_token` |
+| `draft_token` | string? | no | resumes a draft saved within 7 days; unknown or expired → `404 not_found` |
+
+The caller's tenant, form, version, submitter identity in `authenticated` mode, IP hash and user
+agent are taken from the token and the request context, never from the body.
+
+**`SubmitResponse`** — what an anonymous caller is allowed to learn.
+
+| Field | Type | Notes |
+|---|---|---|
+| `submission_id` | uuid | the intake event id; safe to echo, resolves to nothing without `form-admin` |
+| `status` | `"accepted" \| "draft"` | |
+| `confirmation_html` | string? | rendered template, present only when `status` is `accepted` |
+| `draft_token` | string? | present only when `status` is `draft` |
+| `draft_expires_at` | timestamp? | with `draft_token` |
+
+`row_id` is **not** in the public response. It is an internal id of a sheet the submitter cannot
+read, so the public route omits it and only `SubmissionResponse` on the admin route carries it; a
+rejection likewise returns the shared error envelope with `field_errors` keyed by field `key` and
+nothing else — no sheet name, no column id, no tenant name, and no indication of which spam control
+fired (FR-F014-08).
+
+**`SubmissionResponse`** — `GET /api/v1/forms/{id}/submissions`, `form-admin` only.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `version_number` | integer | the frozen version that accepted it |
+| `status` | `"received" \| "accepted" \| "rejected" \| "draft"` | |
+| `reason` | string? | present when `status` is `rejected`: `validation`, `rate_limited`, `captcha_failed`, `honeypot`, `form_closed`, `upload_rejected` |
+| `values` | map<string, scalar> | the immutable submitted payload |
+| `submitter` | `{ kind, email?, user_id? }` | `email` only in `email` mode, `user_id` only in `authenticated` mode |
+| `row_id` | uuid? | present when `status` is `accepted` |
+| `received_at` | timestamp | |
+| `error_code` | string? | present when a row create failed and the intake is awaiting retry |
+
+`ip_hash` and `user_agent` are stored but never returned by any route.
+
+**List routes.** `GET /api/v1/sheets/{sheet_id}/forms` returns `Page<FormResponse>` with query
+`{ status?, cursor?, limit?: 1–100 (default 25) }` sorted by `updated_at` descending.
+`GET /api/v1/forms/{id}/submissions` returns `Page<SubmissionResponse>` sorted by `received_at`
+descending, with query `{ status?, received_after?: timestamp, received_before?: timestamp, cursor?, limit?: 1–100 (default 50) }`.
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` / `201` | reads and updates / create and publish |
+| `400 invalid` | any constraint above: unknown column, unknown field key, condition depth or cycle, malformed origin, bad accent colour, upload bounds, schedule window, unknown placeholder, `rotate_token` with `revoke_token`, a submission outside the open window (`reason: form_closed`), a failed CAPTCHA or a filled honeypot (indistinguishable to the caller), and every value that fails field validation |
+| `403 denied` | a `form-submitter` calling an admin route; `identity_mode: authenticated` with no tenant session; a session from another tenant |
+| `404 not_found` | unknown, soft-deleted, foreign-tenant or invisible form, version or submission; an unknown, rotated-away or revoked public token; an expired draft token — the public routes never distinguish these |
+| `409 conflict` | stale `If-Match`; editing a frozen published version through a path that cannot fork it; replaying an `Idempotency-Key` with a different body |
+| `429 rate_limited` | more than 60 submissions per hour for one token and client IP, or 1,000 per day for one token; carries `Retry-After` |
+| `502` | never; the CAPTCHA provider is reached through the adapter and its failure is `503 unavailable` |
+
+### Use case signatures
+
+In `crates/domain/src/forms/`. Each takes `ctx` carrying tenant, actor and correlation id — for the
+public routes a `ctx` whose actor is anonymous and whose tenant was resolved from the token — takes a
+`UnitOfWork` for writes or a repository for reads, never a pool or a connection, and returns the
+shared `DomainError`.
+
+```rust
+fn create_form(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateForm) -> Result<Form, DomainError>;
+fn update_form_draft(ctx: &Ctx, uow: &mut UnitOfWork, id: FormId, expected: Version, req: UpdateForm) -> Result<Form, DomainError>;
+fn publish_form(ctx: &Ctx, uow: &mut UnitOfWork, id: FormId, expected: Version) -> Result<FormVersion, DomainError>;
+fn delete_form(ctx: &Ctx, uow: &mut UnitOfWork, id: FormId, expected: Version) -> Result<(), DomainError>;
+fn list_forms(ctx: &Ctx, repo: &FormRepository, sheet: SheetId, filter: FormFilter, page: Cursor) -> Result<Page<Form>, DomainError>;
+fn rotate_token(ctx: &Ctx, uow: &mut UnitOfWork, id: FormId, expected: Version) -> Result<SubmissionToken, DomainError>;
+fn revoke_token(ctx: &Ctx, uow: &mut UnitOfWork, id: FormId, expected: Version) -> Result<(), DomainError>;
+fn load_public_schema(ctx: &Ctx, repo: &FormVersionRepository, token: &TokenHash, now: Timestamp) -> Result<PublicFormSchema, DomainError>;
+fn evaluate_conditions(fields: &[FormField], values: &SubmittedValues) -> VisibilitySet;
+fn validate_submission(version: &FormVersion, visible: &VisibilitySet, req: &Submit) -> Result<NormalizedValues, DomainError>;
+fn record_intake(ctx: &Ctx, uow: &mut UnitOfWork, version: &FormVersion, req: &Submit) -> Result<SubmissionId, DomainError>;
+fn accept_submission(ctx: &Ctx, uow: &mut UnitOfWork, id: SubmissionId, values: NormalizedValues) -> Result<AcceptedSubmission, DomainError>;
+fn reject_submission(ctx: &Ctx, uow: &mut UnitOfWork, version: &FormVersion, reason: RejectReason, req: &Submit) -> Result<(), DomainError>;
+fn save_draft(ctx: &Ctx, uow: &mut UnitOfWork, version: &FormVersion, req: &Submit) -> Result<SavedDraft, DomainError>;
+fn list_submissions(ctx: &Ctx, repo: &FormSubmissionRepository, id: FormId, filter: SubmissionFilter, page: Cursor) -> Result<Page<FormSubmission>, DomainError>;
+```
+
+`evaluate_conditions` and `validate_submission` are pure: no clock, no I/O, no repository — which is
+what lets the browser and the server share one fixture suite.
+
+**Transaction boundaries.** `publish_form` runs in one `UnitOfWork` that freezes the draft version,
+sets `forms.current_version_id`, and stores the new token hash, so no reader can ever resolve a token
+to a version that is not yet marked current. `record_intake` and `accept_submission` share one
+`UnitOfWork` covering the `form_submissions` insert, the F006/F007 row create through their
+repositories, and the status-and-`row_id` update; that boundary is what makes FR-F014-10 true — a row
+never exists without its intake event, and an intake event that reports `accepted` always names a row
+that exists. A row-create failure rolls back to the intake row alone in `received` with `error_code`,
+which the same `Idempotency-Key` retries. `update_form_draft` writes the version row plus its
+`form_fields`, `form_field_options`, `form_version_upload_mime_types` and
+`form_version_frame_ancestors` children in one `UnitOfWork`, so a published schema is never assembled
+from half a field set. The rate-limit check, the CAPTCHA verification and the honeypot test all run
+before any of these boundaries opens (FR-F014-07, FR-F014-08).
+
 ### PostgreSQL/SQLx
 
 - Migration `*_forms_*.sql` creates `forms(id uuid pk, tenant_id, sheet_id, workspace_id, title text, description text, status text, current_version_id uuid null, version bigint, audit fields, deleted_at)` and `form_versions(id uuid pk, tenant_id, form_id, version_number int, identity_mode text, branding_logo_file_id uuid null references files(id) on delete restrict, branding_accent_color text null check (branding_accent_color ~ '^#[0-9a-fA-F]{6}$'), branding_title text, branding_description text, captcha_enabled bool not null default false, honeypot_enabled bool not null default false, upload_max_files smallint not null default 10 check (upload_max_files between 0 and 10), upload_max_bytes bigint not null check (upload_max_bytes <= 26214400), opens_at timestamptz null, closes_at timestamptz null check (closes_at is null or opens_at is null or closes_at > opens_at), confirmation_message text, confirmation_send_email bool not null default false, confirmation_email_subject text, confirmation_email_body text, submission_token_hash bytea null, published_at timestamptz null, created_by, created_at)`.

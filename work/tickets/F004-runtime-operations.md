@@ -99,6 +99,146 @@ No UI. The operator surface is the compose stack, environment variables, CLI com
 - Authorization: health routes are public; `/metrics` is protected by network placement; `enqueue_job` requires `tenant_id` from `ActorContext` or a system job marker; the worker CLI is operator-only through host access.
 - Error mapping: `ConfigError → exit 78`, `ReadinessError → 503 unavailable`, `OutboxError::InvalidName → 400 invalid` when surfaced through an API, `JobError::MissingTenant → 401 denied`, `ReplayError::AlreadyReplayed → exit 65`.
 
+### Interface
+
+This feature has no product HTTP surface. Its three routes are operational, unauthenticated, exempt
+from the tenant gate and the rate limiter, and carry no tenant data. Everything else it ships is a
+Rust contract that other features implement against, which is where the detail belongs, so the
+signatures section below is the larger half of this specification. Timestamps are RFC 3339 UTC and
+unlisted fields are rejected.
+
+`GET /healthz` takes no parameters and returns `200` with exactly `{ "status": "ok" }` whenever the
+process is serving. It never consults a dependency: a liveness probe that fails when the database is
+slow restarts a healthy process.
+
+**`ReadinessResponse`** — `GET /readyz`
+
+| Field | Type | Notes |
+|---|---|---|
+| `status` | string | `ok` when every component is `ok`; `error` when any component is not, which is also the `503` case |
+| `components` | map<string, ComponentHealth> | exactly four keys, always all four present: `database`, `nats`, `object_storage`, `outbox` |
+
+**`ComponentHealth`** — one entry of that map, so an operator sees which dependency is slow rather
+than only that something is (FR-F004-14)
+
+| Field | Type | Notes |
+|---|---|---|
+| `state` | string | `ok`, `degraded`, or `unreachable`. `degraded` means the probe answered outside its budget but did answer; `unreachable` means it did not answer or errored |
+| `latency_ms` | integer | the probe's own measurement, rounded up. Present even when `state` is `unreachable`, where it is the time spent before giving up |
+| `reason` | string? | present only when `state` is not `ok`: a short machine-stable phrase, never a driver error string and never a connection URL |
+
+The four probes and their budgets: `database` is `PgHealthProbe::ping` within 500 ms; `nats` is the
+client's `connected` flag; `object_storage` is a `HEAD` on the files bucket; `outbox` is
+`OutboxRepository::lag_seconds` under 60. The whole handler is budgeted at 500 ms and a probe that
+exceeds it is reported rather than awaited. A `200` requires all four `ok`; anything else is `503`
+with `status: "error"` and the same body shape, so a client parses one shape either way.
+
+`GET /metrics` serves Prometheus text on the dedicated metrics port only, with no JSON body and no
+authentication — it is protected by network placement. The same path on the API port is
+`404 not_found`, which is a routing fact, not an authorization one, so it leaks nothing.
+
+**Status codes.** No route here uses `field_errors`, because none takes input.
+
+| Status | Code | Produced by |
+|---|---|---|
+| 200 | — | `/healthz` while serving; `/readyz` with four `ok` components; `/metrics` on the metrics port |
+| 404 | `not_found` | `/metrics` requested on the API port or through the web proxy |
+| 503 | `unavailable` | `/readyz` with any component not `ok`; the body names which and why |
+
+Configuration failure is not an HTTP status: a missing or malformed `OPSHUB_` variable exits the
+process with code 78 before a listener exists, logging the variable name and never its value.
+
+### Use case signatures
+
+These are the contracts every worker and every mutating feature in the product implements against.
+They live in `crates/events/src/runtime/` and `crates/persistence/src/runtime/`; none of them takes a
+pool or a connection, and none of them contains SQL.
+
+```rust
+pub struct OutboxEvent {
+    pub id: Uuid,                  // UUIDv7, also the JetStream `Nats-Msg-Id`
+    pub tenant_id: TenantId,
+    pub aggregate: &'static str,   // the catalog aggregate, e.g. "tenant"
+    pub aggregate_id: Uuid,
+    pub event_name: EventName,     // `<aggregate>.<verb>.v1`, const-checked
+    pub version: i64,              // the aggregate version this event describes
+    pub payload: serde_json::Value,
+    pub correlation_id: CorrelationId,
+    pub occurred_at: Timestamp,
+}
+
+impl EventName { pub const fn new(name: &'static str) -> EventName; }        // compile-time shape check
+fn enqueue(uow: &mut UnitOfWork, event: OutboxEvent) -> Result<(), OutboxError>;
+
+pub struct JobContext {
+    pub tenant_id: TenantId,
+    pub job_id: Uuid,
+    pub attempt: u8,               // 1-based; 5 is the last before the dead letter
+    pub idempotency_key: Option<String>,
+    pub correlation_id: CorrelationId,
+    pub deadline: Timestamp,       // the per-kind timeout; the future is cancelled at it
+    pub worker_id: WorkerId,
+}
+
+trait Job {
+    const KIND: &'static str;
+    type Payload: serde::de::DeserializeOwned + serde::Serialize;
+    async fn run(ctx: JobContext, payload: Self::Payload) -> Result<(), JobError>;
+}
+
+fn enqueue_job<J: Job>(uow: &mut UnitOfWork, scope: TenantScope, payload: J::Payload, options: JobOptions) -> Result<JobId, JobError>;
+// JobOptions { max_attempts: u8 /* ≤ 5 */, timeout: Duration, idempotency_key: Option<String> }
+
+trait SecretSource {
+    fn resolve(&self, reference: &SecretRef) -> Result<Secret<String>, ConfigError>;
+}
+// SecretRef parses `secret://<name>`; Secret<T> renders as [redacted] in Debug, Display and tracing.
+
+trait OutboxRepository {
+    fn enqueue(&self, uow: &mut UnitOfWork, event: OutboxEvent) -> Result<(), OutboxError>;
+    fn claim_unpublished_batch(&self, uow: &mut UnitOfWork, limit: u16) -> Result<Vec<OutboxEvent>, OutboxError>;
+    fn mark_published(&self, uow: &mut UnitOfWork, ids: &[Uuid]) -> Result<(), OutboxError>;
+    fn record_attempt_failure(&self, uow: &mut UnitOfWork, id: Uuid, error: &str) -> Result<(), OutboxError>;
+    fn lag_seconds(&self) -> Result<u64, OutboxError>;
+}
+trait JobRunRepository {
+    fn start(&self, uow: &mut UnitOfWork, run: JobRunStart) -> Result<(), JobError>;
+    fn finish(&self, uow: &mut UnitOfWork, id: JobId, attempt: u8, outcome: JobOutcome) -> Result<(), JobError>;
+    fn sweep_stuck_runs(&self, uow: &mut UnitOfWork, older_than: Duration) -> Result<u64, JobError>;
+}
+trait DeadLetterRepository {
+    fn record(&self, uow: &mut UnitOfWork, letter: DeadLetter) -> Result<(), JobError>;
+    fn list_dead_letters(&self, tenant: Option<TenantId>, page: Cursor) -> Result<Page<DeadLetter>, JobError>;
+    fn mark_replayed(&self, uow: &mut UnitOfWork, id: Uuid) -> Result<(), ReplayError>;
+}
+trait IdempotencyKeyRepository {
+    fn lookup(&self, tenant: TenantId, key: &str, request_hash: &[u8]) -> Result<IdempotencyHit, DomainError>;
+    fn store(&self, uow: &mut UnitOfWork, record: IdempotencyRecord) -> Result<(), DomainError>;
+}
+trait PgHealthProbe { fn ping(&self, budget: Duration) -> ComponentHealth; }
+```
+
+`TenantScope` is how `enqueue_job` gets a tenant without depending on F038: the API passes the
+`ActorContext` tenant and the harness passes one directly, and a call with neither returns
+`JobError::MissingTenant` before any `job_runs` row exists (FR-F004-16). `IdempotencyHit` is
+`Fresh | Replay(StoredResponse) | Mismatch`, which is how every feature's `409` with
+`reason = idempotency_mismatch` is produced without any feature implementing idempotency itself.
+
+**Transaction boundaries.** This feature's whole reason for existing is that events and jobs share
+the caller's transaction rather than opening their own:
+
+- `enqueue` and `enqueue_job` take the caller's `UnitOfWork` and never open a transaction. The
+  boundary is the caller's business write, and the invariant it protects is that a committed change
+  always has its event and a rolled-back one never does — no publish happens at write time at all.
+- The relay's claim, publish and acknowledgement are deliberately **not** one transaction:
+  `claim_unpublished_batch` locks rows with `SELECT ... FOR UPDATE SKIP LOCKED` in one unit,
+  publishing happens outside it, and `mark_published` commits in a second unit. A crash between them
+  republishes, which is why `Nats-Msg-Id` deduplication and the `published_at` check both exist —
+  at-least-once delivery with an idempotent consumer, never a lost row.
+- A job's `job_runs` insert shares the enqueuing transaction; its status transitions afterwards are
+  each their own unit, because the worker and the enqueuer are different processes.
+- `mark_replayed` and the re-enqueue share one unit, so a dead letter cannot be replayed twice.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_runtime_*.sql` creates `outbox_events(id uuid pk, tenant_id uuid not null, aggregate text not null, aggregate_id uuid not null, event_name text not null check (event_name ~ '^[a-z-]+\.[a-z-]+\.v[0-9]+$'), version bigint not null, payload jsonb not null, correlation_id uuid not null, occurred_at timestamptz not null, published_at timestamptz, attempts int not null default 0, last_error text)`, `job_runs(id uuid pk, tenant_id uuid not null, kind text not null, job_id uuid not null, attempt int not null default 1, status text not null check (status in ('queued','running','succeeded','failed','dead')), idempotency_key text, started_at timestamptz, finished_at timestamptz, error text, worker_id text, correlation_id uuid not null, created_at timestamptz not null)`, `dead_letters(id uuid pk, tenant_id uuid not null, kind text not null, job_id uuid not null, payload jsonb not null, attempts int not null, last_error text not null, dead_at timestamptz not null, replayed_at timestamptz)`. It also creates `idempotency_keys(tenant_id uuid not null, key text not null, request_hash bytea not null, response jsonb not null, route text not null, created_at timestamptz not null, expires_at timestamptz not null, primary key (tenant_id, key))` — named by F002, F005, F006, F008, F011, F016, F018, F019, F020 and F031 through F034 but owned by no feature until now — with an index on `expires_at` for the nightly sweep. `response` is a stored reply replayed verbatim and never queried by key, which is the payload case decision 2 permits.

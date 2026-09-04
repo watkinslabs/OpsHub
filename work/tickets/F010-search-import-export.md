@@ -101,6 +101,191 @@ Canonical contract: `docs/capability-contracts.md` row F010.
 - Validation: `q` 1–256 chars, `limit` 1–100, file ≤ 50 MB and ≤ 100,000 rows, mapping rows must target column IDs of the sheet or a new column of a named type, one row per source column, `key_column_id` required for `skip|update`, `export_job_columns` a subset of readable columns.
 - Error mapping: `DataIoError::InvalidFile | InvalidMapping | EmptyQuery → 400 invalid`, `JobNotResumable | DownloadNotReady | CancelTerminal → 409 conflict`, `Expired | NotFound → 404 not_found`, `AuthzError::Denied → 403 denied`, `QuotaExceeded → 429 rate_limited`.
 
+### Interface
+
+Exact shapes. Every field lists its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable; a missing optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC, `version` increments by one per write.
+Unlisted fields are rejected with `400 invalid`. `Page<T>` and its opaque cursor are F028's; the
+error envelope and the six codes are the shared ones; `CellValue` is F007's.
+
+**`SearchQuery`** — `GET /api/v1/search`, query string only, no body.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `q` | string | yes | 1–256 chars after trim; empty or whitespace-only → `400 invalid` with `field_errors.q` |
+| `kind` | `"sheet" \| "row" \| "comment" \| "attachment"` | no | repeatable; absent means all four |
+| `workspace_id` | uuid? | no | narrows to one workspace; a foreign-tenant id yields an empty page, never `denied` |
+| `sheet_id` | uuid? | no | narrows to one sheet; same rule for a foreign or unreadable id |
+| `cursor` | string? | no | opaque, from a prior `next_cursor`; a cursor minted for a different `q` or filter set → `400 invalid` |
+| `limit` | integer? | no | 1–100, default 25 |
+
+**`SearchHit`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `"sheet" \| "row" \| "comment" \| "attachment"` | |
+| `entity_id` | uuid | the sheet, row, comment or file id; the client resolves the route from `kind` |
+| `sheet_id` | uuid? | null for a `sheet` hit; the owning sheet otherwise |
+| `workspace_id` | uuid | |
+| `title` | string | the indexed display title: sheet name, primary-cell value, comment author and first line, or file name |
+| `snippet` | string | see below |
+| `score` | number | the `ts_rank_cd` value the ordering used, so a client can group by relevance band |
+| `updated_at` | timestamp | the source's `updated_at`, not `indexed_at` |
+
+`snippet` is produced by PostgreSQL `ts_headline` over the document's indexed `body` against the same
+`tsquery` that matched, with `StartSel=<mark>`, `StopSel=</mark>`, `MaxWords=35`, `MinWords=15` and
+`MaxFragments=1`. It therefore contains exactly those two tags and no other markup, and every other
+character is HTML-escaped before the tags are inserted, so a client may render it as HTML without
+sanitising user text itself. A hit whose `body` produced no fragment (a bare title match) returns the
+first 140 characters of `title` with the matched terms wrapped by the same tags. For `comment` and
+`attachment` kinds the snippet is drawn from metadata only — comment first 200 characters, file name,
+MIME type and size — because no file body is ever indexed (FR-F010-04).
+
+**`SearchResponse`**: `{ hits: SearchHit[], next_cursor: string? }`. It carries no `total`: counting
+matches would require running the permission filter over the whole result set.
+
+**Permission filtering happens before paging, never after.** The ranked query joins
+`search_document_principals` against the actor and its group ids inside the same statement that
+orders and limits, and each surviving hit is then re-checked against the authoritative resource ACL
+before it is added to the page; a hit dropped by that re-check is backfilled from the same statement
+so the page is full at `limit` whenever more visible matches exist. A client therefore never sees a
+short page that secretly means "some results were hidden", and `next_cursor` is null only when no
+further visible match exists. A row on a sheet the actor cannot read is simply absent (FR-F010-02).
+
+**`CreateImportRequest`** — `POST /api/v1/imports`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `sheet-editor`, else `403 denied`; unreadable → `404 not_found` |
+| `file_id` | uuid | yes | a scanned-clean F017 file in this tenant, ≤ 50 MB and ≤ 100,000 data rows; larger, unreadable or an unsupported encoding → `400 invalid` with `field_errors.file_id` |
+| `format` | `"csv" \| "xlsx"` | yes | must match the file's detected format |
+| `has_header` | bool | yes | when true, row 1 supplies `source_header` values |
+
+**`ColumnMapping`** — one entry per source column, the wire form of an `import_column_mappings` row.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source_index` | integer | yes | 0-based position in the file, distinct, one entry per source column |
+| `source_header` | string? | no | echoed from the header row; ignored on write |
+| `target_column_id` | uuid? | conditional | a live column of the sheet; exactly one of this and `new_column_type` must be present |
+| `new_column_type` | `"text" \| "number" \| "currency" \| "date" \| "datetime" \| "boolean" \| "select"` | conditional | creates a column on commit |
+| `coercion` | string? | no | the named coercion rule applied before validation (for example a date input format); unknown name → `400 invalid` |
+| `skip` | bool | no | `true` drops the source column; `target_column_id` and `new_column_type` must then be absent |
+
+**`PreviewImportRequest`** — `POST /api/v1/imports/{id}/preview`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `mapping` | ColumnMapping[]? | no | absent means accept the detected proposal; when present it replaces the mapping whole |
+| `key_column_id` | uuid? | no | a mapped target column; required when `duplicate_strategy` is `skip` or `update`, else `400 invalid` with `field_errors.key_column_id` |
+| `duplicate_strategy` | `"skip" \| "update" \| "append"` | no | defaults `append` |
+
+**`PreviewImportResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `sample_rows` | array of `{ row_number, values: string[] }` | first 50 data rows as parsed, before coercion |
+| `detected_types` | array of `{ source_index, type, confidence }` | `type` from the same seven-member set as `new_column_type` |
+| `proposed_mapping` | ColumnMapping[] | one entry per source column, echoed back so the client edits and re-posts it |
+| `duplicates` | array of `{ row_number, existing_row_id }` | empty when `key_column_id` is absent |
+| `status` | ImportStatus | `"previewed"` on success |
+
+**`CommitImportRequest`**: `{ dry_run: bool }` — required, no other member. `true` validates and
+reports; `false` is acknowledged `202` with `{ job_id, status: "committing" }` in under 2 s.
+
+**`ImportReport`** — the same object on `GET /api/v1/imports/{id}` and in `import.completed.v1`,
+assembled from the count columns and `import_row_errors`, never stored as a blob.
+
+| Field | Type | Notes |
+|---|---|---|
+| `total_rows` / `valid_rows` / `invalid_rows` / `duplicate_rows` / `processed_rows` | integer | typed `import_jobs` columns |
+| `errors` | array of `{ row_number, ordinal, column_id?, code, message }` | the first 100 `import_row_errors` rows in `(row_number, ordinal)` order |
+| `errors_truncated` | bool | true when more than 100 error rows exist |
+
+**`ImportJobResponse`**: `{ id, sheet_id, file_id, format, status, duplicate_strategy, key_column_id?, mapping: ColumnMapping[], report: ImportReport, cursor: { chunk_index, row_number }?, version, created_at, created_by, updated_at, updated_by }`. `cursor` is present only while `status` is
+`"committing"` or `"paused"`, and `status` is one of `created`, `previewed`, `dry_run`, `committing`,
+`paused`, `completed`, `failed`, `cancelled`.
+
+**`ExportFilterClause`** — one `export_job_filters` row. The export filter is a flat conjunction, not
+F013's `FilterNode`: every clause is ANDed in `ordinal` order, and the table carries no branch node.
+An export whose `source_kind` is `view` instead inherits that view's full `FilterNode` from F013
+server-side, and may add these clauses on top of it.
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_id` | uuid | yes | a live column of the source the actor may read; an unreadable column → `400 invalid` |
+| `operator` | `"eq" \| "ne" \| "lt" \| "lte" \| "gt" \| "gte" \| "contains" \| "is_empty" \| "is_not_empty"` | yes | closed set, matching the table's `check`; `contains` is text-only, the four ordering operators are numeric, currency, duration, date and datetime only |
+| `value` | scalar? | conditional | required for every operator but `is_empty` and `is_not_empty`; stored in exactly one of `value_text`, `value_number`, `value_datetime` chosen by the column's type, so a value whose JSON type does not match the column is `400 invalid` |
+
+**`CreateExportRequest`** — `POST /api/v1/exports`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source_kind` | `"sheet" \| "view"` | yes | closed set |
+| `source_id` | uuid | yes | the sheet or view id; caller holds `sheet-viewer` on the sheet, else `404 not_found` |
+| `format` | `"csv" \| "xlsx" \| "pdf"` | yes | closed set |
+| `filter` | ExportFilterClause[]? | no | 0–20 clauses, `ordinal` is array order |
+| `columns` | uuid[]? | no | ordered, distinct, all readable columns of the source; absent means every column the actor may read; naming an unreadable column → `400 invalid` with `field_errors.columns` |
+
+**`ExportJobResponse`**: `{ id, source_kind, source_id, format, status: "queued" \| "running" \| "completed" \| "failed", row_count?, checksum?, error?, requested_by, expires_at?, version, created_at, updated_at }`. `row_count` and `checksum` appear only when `status` is `"completed"`;
+`storage_key` is internal and never returned — the file is reached only through the download route.
+`GET /api/v1/exports/{id}/download` returns no body: `302` with a `Location` header holding a signed
+object-storage URL valid for 15 minutes.
+
+**List routes.** This feature exposes no list of jobs; `GET /api/v1/imports/{id}` and
+`GET /api/v1/exports/{id}` are single reads polled by the client, and `GET /api/v1/search` is the
+only paged route, returning `SearchResponse` rather than a `Page<T>` because it carries no total.
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | reads, preview, dry-run commit; `201` on job creation; `202` on a real commit and on export creation; `302` on a ready download |
+| `400 invalid` | empty or over-long `q`, out-of-range `limit`, a cursor from a different query, oversize or unreadable file, a mapping with neither target nor new type, a duplicate `source_index`, `skip`/`update` without `key_column_id`, an unknown coercion, an operator not legal for the column type, a value whose JSON type does not match the column, an unreadable column in `columns` |
+| `403 denied` | a `sheet-viewer` creating an import; a download requested by neither `requested_by` nor a `tenant-admin` |
+| `404 not_found` | unknown, foreign-tenant or invisible sheet, view, file or job; a download after `expires_at` (the 7-day expiry maps `410` onto `not_found`) |
+| `409 conflict` | download while `queued` or `running`; cancel of a job already in a terminal status; commit of a job not in `previewed` or `dry_run`; a replayed `Idempotency-Key` with a different body |
+| `429 rate_limited` | tenant job quota exceeded (`DataIoError::QuotaExceeded`) |
+| `502` | never returned; object-storage failure surfaces as `503 unavailable` |
+
+### Use case signatures
+
+In `crates/domain/src/dataio/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` for writes or a repository for reads — never a pool or a connection — and returns the
+shared `DomainError`. The worker handlers in `services/worker/src/dataio/` call these same functions.
+
+```rust
+fn search(ctx: &Ctx, repo: &SearchDocumentRepository, acl: &AclReader, q: SearchQuery) -> Result<SearchResponse, DomainError>;
+fn create_import(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateImport) -> Result<ImportJob, DomainError>;
+fn preview_import(ctx: &Ctx, uow: &mut UnitOfWork, id: ImportId, req: PreviewImport) -> Result<ImportPreview, DomainError>;
+fn commit_import(ctx: &Ctx, uow: &mut UnitOfWork, id: ImportId, dry_run: bool) -> Result<ImportJob, DomainError>;
+fn resume_import(ctx: &Ctx, uow: &mut UnitOfWork, id: ImportId) -> Result<ImportJob, DomainError>;
+fn cancel_import(ctx: &Ctx, uow: &mut UnitOfWork, id: ImportId, expected: Version) -> Result<ImportJob, DomainError>;
+fn get_import(ctx: &Ctx, jobs: &ImportJobRepository, rows: &ImportRowRepository, id: ImportId) -> Result<ImportJob, DomainError>;
+fn create_export(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateExport) -> Result<ExportJob, DomainError>;
+fn run_export(ctx: &Ctx, uow: &mut UnitOfWork, store: &dyn ObjectStore, id: ExportId) -> Result<ExportJob, DomainError>;
+fn get_export(ctx: &Ctx, repo: &ExportJobRepository, id: ExportId) -> Result<ExportJob, DomainError>;
+fn sign_download(ctx: &Ctx, repo: &ExportJobRepository, store: &dyn ObjectStore, id: ExportId) -> Result<SignedUrl, DomainError>;
+fn index_event(ctx: &Ctx, uow: &mut UnitOfWork, event: &ChangeEvent) -> Result<(), DomainError>;
+```
+
+**Transaction boundaries.** `index_event` runs one `UnitOfWork` per consumed event covering the
+`search_documents` upsert and the full replace of that document's `search_document_principals` rows,
+so the ACL snapshot the search prefilter joins against can never describe a different version of the
+document than the one it sits beside; the upsert's `where source_version < excluded.source_version`
+guard makes a replayed or out-of-order event a no-op. A soft-delete event removes the document and
+its principal rows in that same boundary (FR-F010-04). `commit_import` with `dry_run: true` writes
+all `import_rows` and `import_row_errors` plus the four count columns in one `UnitOfWork` and touches
+no sheet row. The real commit takes one `UnitOfWork` **per 1,000-row chunk**, not one for the job:
+the chunk's F008 bulk row write, the `import_rows.target_row_id` stamps and the
+`cursor_chunk_index`/`cursor_row_number` advance commit together, which is exactly what makes
+FR-F010-09 hold — a worker killed mid-commit leaves a cursor that already accounts for every row
+written, so the next claimant resumes without duplicating any. `cancel_import` finishes the current
+chunk's boundary before flipping the status, so no partially-written chunk is ever left behind.
+`create_export` writes the `export_jobs` row with its `export_job_columns` and `export_job_filters`
+children in one `UnitOfWork`, so a queued job is never picked up with half its column list.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_dataio_*.sql` creates `search_documents(tenant_id uuid not null, kind text not null check (kind in ('sheet','row','comment','attachment')), entity_id uuid not null, sheet_id uuid, workspace_id uuid, title text not null, body tsvector not null, body_simple tsvector not null, source_version bigint not null, indexed_at timestamptz not null, primary key (tenant_id, kind, entity_id))`, `search_document_principals(tenant_id uuid not null, kind text not null, entity_id uuid not null, principal_kind text not null check (principal_kind in ('user','group')), principal_id uuid not null, effect text not null check (effect in ('allow','deny')), primary key (tenant_id, kind, entity_id, principal_kind, principal_id), foreign key (tenant_id, kind, entity_id) references search_documents(tenant_id, kind, entity_id) on delete cascade)`, `import_jobs(id uuid pk, tenant_id, sheet_id, file_id, format text, status text check (status in ('created','previewed','dry_run','committing','paused','completed','failed','cancelled')), duplicate_strategy text check (duplicate_strategy in ('skip','update','append')), key_column_id uuid, dry_run bool, total_rows int, processed_rows int default 0, error_count int default 0, valid_rows int default 0, invalid_rows int default 0, duplicate_rows int default 0, cursor_chunk_index int, cursor_row_number int, version bigint default 1, audit fields)`, `import_column_mappings(import_id uuid not null references import_jobs(id) on delete cascade, source_index smallint not null, source_header text, target_column_id uuid, new_column_type text check (new_column_type in ('text','number','currency','date','datetime','boolean','select')), coercion text, primary key (import_id, source_index), check (target_column_id is not null or new_column_type is not null))`, `import_rows(import_id uuid, row_number int, raw jsonb, normalized jsonb, status text check (status in ('pending','valid','invalid','skipped','committed')), target_row_id uuid, primary key (import_id, row_number))`, `import_row_errors(import_id uuid not null, row_number int not null, ordinal smallint not null, column_id uuid, code text not null, message text not null, primary key (import_id, row_number, ordinal), foreign key (import_id, row_number) references import_rows(import_id, row_number) on delete cascade)`, `export_jobs(id uuid pk, tenant_id, source_kind text, source_id uuid, format text check (format in ('csv','xlsx','pdf')), status text check (status in ('queued','running','completed','failed')), storage_key text, checksum text, row_count int, requested_by uuid, expires_at timestamptz, error text, version bigint default 1, audit fields)`, `export_job_columns(export_job_id uuid not null references export_jobs(id) on delete cascade, column_id uuid not null, position smallint not null, primary key (export_job_id, column_id), unique (export_job_id, position))`, `export_job_filters(export_job_id uuid not null references export_jobs(id) on delete cascade, ordinal smallint not null, column_id uuid not null, operator text not null check (operator in ('eq','ne','lt','lte','gt','gte','contains','is_empty','is_not_empty')), value_text text, value_number numeric, value_datetime timestamptz, primary key (export_job_id, ordinal))`.

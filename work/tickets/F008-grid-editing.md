@@ -100,6 +100,188 @@ Canonical contract: `docs/capability-contracts.md` row F008; every route and eve
 - Validation: each edit value passes `columns::normalize(column, raw)` from F007 before write; `edits` 0–200 (0 only with `layout`), bulk cells ≤ 5,000, bulk rows ≤ 1,000, `limit` for changes 1–1,000, `frozen_column_count` 0–5, hidden columns cannot include `is_primary`. Idempotency reuses `idempotency_keys(tenant_id, key, request_hash, response)` for 24 hours. Concurrency: `expected_row_version` is compared inside `RowRepository::lock_rows_for_edit`, whose `SELECT ... FOR UPDATE` lives in `crates/persistence`; a whole bulk request uses one transaction and per-row version checks.
 - Error mapping: `GridError::VersionMismatch → per-cell conflict (200 with results)` for `patch_cells`, `GridError::UndoStale → 409 conflict`, `GridError::NothingToUndo → 409 conflict` with `code: conflict` and `reason: "empty_stack"`, `GridError::SelectionTooLarge → 400 invalid`, `ColumnError::Validation → per-cell invalid`, `AuthzError::Denied → 403 denied`, unknown sheet, row, or foreign tenant → `404 not_found`.
 
+### Interface
+
+Exact shapes. Every field gives its JSON name, type, whether it is required, and the constraint that
+makes it invalid. `T?` is nullable; an absent optional field and an explicit `null` mean the same
+thing. Ids are UUIDv7 strings, timestamps are RFC 3339 UTC. Unlisted fields are rejected with
+`400 invalid`. `CellValue` and its `RawValue`, `ValidationCode` and per-type null semantics are
+F007's; `Page<T>` and the opaque cursor are F028's `{ items, next_cursor, has_more, total? }`; the
+error codes are the shared six. Every mutation requires `Idempotency-Key`.
+
+**`PatchCellsRequest`** — `PATCH /api/v1/sheets/{sheet_id}/cells`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `edits` | CellEdit[] | yes | 0–200; 0 only when `layout` is present, 201 is `400 invalid` with `field_errors.edits = "too_many"`; the same `(row_id, column_id)` twice is `400 invalid` with `field_errors.edits = "duplicate_cell"` |
+| `layout` | UserLayout? | no | upserts the actor's layout in the same transaction (FR-F008-10) |
+
+**`CellEdit`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `row_id` | uuid | yes | a live row of `sheet_id`; unknown or foreign-tenant → the edit result is `invalid` with code `not_found` and no row is disclosed |
+| `column_id` | uuid | yes | a live column of `sheet_id`; a `formula` or `link` column is `invalid` with code `read_only` (F007 FR-F007-15), a rolled-up parent cell is `invalid` with code `rolled_up` (F009 FR-F009-08) |
+| `value` | RawValue? | yes | F007's raw form for that column type; `null` clears the cell; the field must be present, so a cleared cell is explicit |
+| `expected_row_version` | integer | yes | compared inside `lock_rows_for_edit`; a mismatch is a per-cell `conflict`, not a request failure |
+
+**`CellEditResult`** — one per submitted edit, in request order
+
+| Field | Type | Notes |
+|---|---|---|
+| `row_id` / `column_id` | uuid | echoes the edit |
+| `outcome` | `"applied" \| "invalid" \| "conflict"` | the discriminator; the fields below are conditional on it |
+| `row_version` | integer | `applied` only: the row's new version, which the client sends as the next `expected_row_version` |
+| `value` | CellValue | `applied` only: the stored cell with its `normalized`, `display` and `validation` |
+| `code` | ValidationCode | `invalid` only: F007's code, or `read_only`, `rolled_up`, `not_found` |
+| `message` | string? | `invalid` only: the rule message when the column defines one |
+| `current_row_version` | integer | `conflict` only: the version the row actually holds, so the client can refetch and retry |
+
+A partial failure is the normal case, not an error: applied cells commit even when others in the same
+request fail (FR-F008-01), so the HTTP status stays `200` and the caller branches on `outcome` per
+cell. An `invalid` or `conflict` cell leaves the stored cell untouched and writes no `cell_history`
+row, so the batch inverse covers exactly the applied cells.
+
+**`PatchCellsResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `batch_id` | uuid? | the `edit_batches` row; `null` when nothing applied, since an empty batch is not pushed onto the undo stack |
+| `results` | CellEditResult[] | one per submitted edit, request order |
+| `summary` | `{ applied: integer, invalid: integer, conflict: integer }` | counts over `results` |
+| `sheet_change_version` | integer | the sheet's `change_version` after the write; pass it as `since` to the change feed |
+| `layout` | UserLayout? | present only when the request carried `layout` |
+
+**`Selection`** — exactly one of the two fields, else `400 invalid` with `field_errors.selection`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `row_ids` | uuid[] | one of | 1–1,000 live rows of the sheet |
+| `filter` | string | one of | F028's filter grammar, resolved by `resolve_selection`; a resolved set over the route cap is `400 invalid` with `field_errors.selection = "too_large"` |
+
+**`BulkCellsRequest`** — `POST /api/v1/sheets/{sheet_id}/cells/bulk`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `mode` | `"set" \| "fill" \| "clear"` | yes | `set` needs `value`, `fill` needs `source_cell`, `clear` takes neither |
+| `selection` | Selection | yes | `row_ids.len() * column_ids.len()` ≤ 5,000 |
+| `column_ids` | uuid[] | yes | 1–500 live, cell-writable columns of the sheet |
+| `value` | RawValue? | with `set` | one raw value normalized per target column; a value invalid for a column marks those cells `invalid` rather than failing the request |
+| `source_cell` | `{ row_id, column_id }`? | with `fill` | the cell the sequence continues from (FR-F008-12); its column must be in `column_ids` |
+
+**`BulkRowsRequest`** — `POST /api/v1/sheets/{sheet_id}/rows/bulk`: `{ mode: "set" | "clear",
+selection, cells: map<uuid, RawValue?> }` where the map is keyed by column id, 1–500 entries, and the
+selection resolves to at most 1,000 rows; every selected row gets the same values in one transaction.
+
+**`BulkResponse`** — both bulk routes
+
+| Field | Type | Notes |
+|---|---|---|
+| `batch_id` | uuid? | `null` when nothing applied |
+| `applied` / `invalid` / `conflict` | integer | counts, not per-cell rows, because a 5,000-cell response would be unusable |
+| `results` | CellEditResult[] | only the cells whose `outcome` is not `applied`, so a client can show what failed |
+| `row_versions` | map<uuid, integer> | new version per touched row |
+| `sheet_change_version` | integer | |
+
+**`UserLayout`** — the actor's `sheet_user_layouts` row plus its `sheet_user_column_layouts` rows,
+assembled in column `position` order; it is per user and never shared (FR-F008-14)
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_widths` | map<uuid, integer> | no | 40–1,000 px per column of this sheet |
+| `column_order` | uuid[] | no | column ids of this sheet, no duplicates; columns absent from the list keep their sheet order after the listed ones |
+| `hidden_columns` | uuid[] | no | may not contain the primary column, else `400 invalid` with `field_errors.layout = "primary_hidden"` |
+| `frozen_column_count` | integer | no | 0–5, default 0 |
+
+**`ChangesResponse`** — `GET /api/v1/sheets/{sheet_id}/changes?since=&limit=`, `since` an integer
+`sheet_change_version` (omitted means from the sheet's oldest retained change), `limit` 1–1,000
+default 200
+
+| Field | Type | Notes |
+|---|---|---|
+| `changes` | ChangeEntry[] | ascending by `row_version` then `occurred_at`; this feed is not `Page<T>` because it is versioned, not cursored |
+| `next_since` | integer | pass as the next `since`; equal to `since` when nothing changed |
+| `layout` | UserLayout | the actor's current layout, so a reconnecting grid needs one call |
+
+**`ChangeEntry`** `{ row_id: uuid, column_id: uuid, row_version: integer, actor_id: uuid,
+occurred_at: timestamp, value: CellValue }`. A row deleted since `since` appears once with
+`column_id` null and `value.raw` null.
+
+**`CellHistoryEntry`** — `GET /api/v1/cells/{row_id}/{column_id}/history`, `Page<CellHistoryEntry>`
+newest first by `occurred_at`, `limit` 1–100 default 50
+
+| Field | Type | Notes |
+|---|---|---|
+| `version` | integer | the row version this change produced |
+| `previous_raw` / `new_raw` | RawValue? | F007 raw forms; `previous_raw` is `null` for the first write |
+| `actor_id` | uuid | |
+| `batch_id` | uuid | groups every cell of one request |
+| `occurred_at` | timestamp | |
+
+**Undo and redo.** `POST /api/v1/sheets/{sheet_id}/undo` and `.../redo` take an empty body `{}`; any
+field is `400 invalid`. There is no batch id parameter: the target is the actor's most recent
+not-undone batch for undo and most recently undone batch for redo, so two clients cannot disagree
+about the stack. `UndoRedoResponse`
+
+| Field | Type | Notes |
+|---|---|---|
+| `batch_id` | uuid | the batch that was inverted |
+| `kind` | `"patch" \| "bulk_cells" \| "bulk_rows"` | the kind of the original batch |
+| `restored` | CellEditResult[] | one per cell of the inverse, all with outcome `applied` |
+| `sheet_change_version` | integer | |
+
+**The inverse.** `edit_batches` stores no payload. A batch's inverse is its `cell_history` rows read
+by `batch_id`: applying `previous_raw` to each `(row_id, column_id)` undoes the batch, applying
+`new_raw` redoes it, and each row's recorded `version` is the version the cell must still hold. Undo
+is all-or-nothing: if any affected cell has moved past its recorded version, the response is
+`409 conflict` with `{ code: "conflict", reason: "stale_cells", cells: [{ row_id, column_id,
+expected_version, current_row_version }] }`, nothing is written, and the batch stays on the stack
+(FR-F008-06). An empty stack is `409 conflict` with `reason: "empty_stack"`. Undo and redo each
+create their own `edit_batches` row of kind `undo` or `redo` and their own `cell_history` rows, so
+the audit trail is append-only and an undo is itself undoable.
+
+**Status codes**
+
+| Code | Produced by |
+|---|---|
+| `200` | every route, including a patch where every cell was `invalid` or `conflict` — per-cell outcomes are results, not statuses |
+| `400 invalid` | over 200 edits, a duplicate cell in one request, a selection over 5,000 cells or 1,000 rows, a malformed filter, `frozen_column_count` outside 0–5, a width outside 40–1,000, hiding the primary column, a bulk request whose `mode` and payload disagree, an unlisted field |
+| `403 denied` | a viewer or commenter on any mutation route |
+| `404 not_found` | unknown or soft-deleted sheet, unknown row or column on the history route, and every foreign-tenant id on every route |
+| `409 conflict` | `stale_cells` on undo or redo, `empty_stack`, `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | tenant write quota on bulk routes |
+| `502 unavailable` | outbox publish failed; the whole transaction is rolled back and no cell is applied |
+
+### Use case signatures
+
+In `crates/domain/src/grid/`. Each takes `ctx` carrying tenant, actor and correlation id, takes a
+`UnitOfWork` to write or a repository to read, never a pool or a connection, and returns the shared
+`DomainError`.
+
+```rust
+fn patch_cells(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: PatchCells) -> Result<PatchCellsOutcome, DomainError>;
+fn bulk_edit_cells(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: BulkCells) -> Result<BulkOutcome, DomainError>;
+fn bulk_edit_rows(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, req: BulkRows) -> Result<BulkOutcome, DomainError>;
+fn undo_batch(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId) -> Result<UndoOutcome, DomainError>;
+fn redo_batch(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId) -> Result<UndoOutcome, DomainError>;
+fn list_changes(ctx: &Ctx, repo: &dyn CellHistoryRepository, sheet: SheetId, since: ChangeVersion, limit: u16) -> Result<Changes, DomainError>;
+fn list_cell_history(ctx: &Ctx, repo: &dyn CellHistoryRepository, row: RowId, column: ColumnId, page: Cursor) -> Result<Page<CellHistoryEntry>, DomainError>;
+fn save_user_layout(ctx: &Ctx, uow: &mut UnitOfWork, sheet: SheetId, layout: UserLayout) -> Result<UserLayout, DomainError>;
+fn resolve_selection(ctx: &Ctx, repo: &dyn RowRepository, sheet: SheetId, sel: Selection, cap: SelectionCap) -> Result<Vec<RowId>, DomainError>;
+```
+
+**Transaction boundaries.** One `UnitOfWork` per request, whatever the cell count. `patch_cells`
+takes `lock_rows_for_edit` over the distinct `row_id` set in ascending id order — a fixed order, so
+two concurrent batches over overlapping rows cannot deadlock — then within that boundary writes
+`cells`, one `cell_history` row and one `sheets.change_version` increment per applied cell, the
+`edit_batches` row, the `audit_events` row, the outbox enqueue, and the layout upsert when `layout`
+was sent. That boundary is what makes the change feed monotonic: a reader polling `since` can never
+observe a cell whose `change_version` increment has not committed. `bulk_edit_cells` and
+`bulk_edit_rows` use the same single boundary for the whole selection, so a bulk edit is never half
+applied even though individual cells may be reported `invalid`. `undo_batch` and `redo_batch` read
+`inverse_for_batch` and re-check every recorded version inside the same transaction that writes the
+reverted cells, which is what stops an undo from overwriting another editor's later change.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_grid_*.sql` creates `cell_history(id uuid pk, tenant_id uuid not null, row_id uuid not null, column_id uuid not null, version bigint not null, previous_raw jsonb, new_raw jsonb, actor_id uuid not null, batch_id uuid not null, occurred_at timestamptz not null)`, `edit_batches(id uuid pk, tenant_id, sheet_id, actor_id, kind text check (kind in ('patch','bulk_cells','bulk_rows','undo','redo')), cell_count int not null, undone_at timestamptz, redone_at timestamptz, version bigint not null default 1, created_at, created_by, updated_at, updated_by)`, `sheet_user_layouts(tenant_id, sheet_id, user_id, frozen_column_count smallint not null default 0 check (frozen_column_count between 0 and 5), version bigint not null default 1, updated_at, primary key (tenant_id, sheet_id, user_id))`, `sheet_user_column_layouts(tenant_id uuid not null, sheet_id uuid not null, user_id uuid not null, column_id uuid not null references columns(id) on delete cascade, width smallint check (width between 40 and 1000), position text collate "C", hidden bool not null default false, primary key (tenant_id, sheet_id, user_id, column_id), foreign key (tenant_id, sheet_id, user_id) references sheet_user_layouts(tenant_id, sheet_id, user_id) on delete cascade)`, and adds `sheets.change_version bigint not null default 0` through an additive `alter table`.
