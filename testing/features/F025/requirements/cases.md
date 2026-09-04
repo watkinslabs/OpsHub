@@ -22,4 +22,6 @@ Feature: Export/drill-through. Flag `F025_FEATURE`. Every case maps to a ticket 
 | `F025-NFR-003` | NFR-F025-03 | accessibility | axe serious and critical = 0 on panel, dialog, and center; focus trapped and returned; progress announced; denied shown as text plus icon; PDF tagged |
 | `F025-NFR-004` | NFR-F025-04 | api | renders idempotent by `(tenant_id, requested_by, idempotency_key)`, re-claim after restart leaves no partial object, metrics `report_export_duration_seconds`, `report_export_failures_total`, `drill_through_denied_total` emitted |
 
+| `F025-REQ-016` | FR-F025-16 | frontend, api | the export centre lists a `queued`, `running`, `completed`, `failed` and `expired` job; the expired row shows its expiry and a `Re-run` action, and its download returns 404 `not_found` rather than a broken link |
+
 Evidence: command, fixture seed, result, and artifact path recorded under `testing/evidence/F025/`.

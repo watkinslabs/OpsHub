@@ -418,7 +418,7 @@ loc_body = f'''<div style="flex:1;display:flex;min-height:0;background:var(--bg-
           {"".join(f'<span style="height:var(--control-md);padding:0 var(--space-3);display:inline-flex;align-items:center;font-size:var(--text-sm);border-radius:var(--radius-md);border:1px solid var(--{"accent-border" if on else "border-default"});background:var(--{"accent-bg" if on else "bg-surface"});color:var(--{"accent-fg" if on else "text-secondary"});font-weight:{600 if on else 400};">{d}</span>' for d,on in [("Monday",True),("Sunday",False),("Saturday",False)])}
         </div></div>
       <div style="display:flex;flex-direction:column;gap:6px;">
-        <span class="th">Working week</span><div style="display:flex;gap:5px;">{days}</div>
+        <span class="th">Working week <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-tertiary);">— set in Working calendars (F011)</span></span><div style="display:flex;gap:5px;">{days}</div>
         <span style="font-size:11px;color:var(--text-tertiary);">Duration maths and date rollovers skip Sat and Sun.</span></div>''')}
     {panel("Your override", chip("overrides the tenant default","warning"),
       f'''<div style="display:flex;gap:var(--space-3);">
