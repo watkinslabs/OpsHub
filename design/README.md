@@ -32,6 +32,9 @@ Every generator writes into `../artboards/`, whatever directory it is run from.
   a reviewer can judge whether the layout is usable rather than whether it is pretty.
 - **Both themes and the brand hue are levers.** Each artboard declares a `theme` and `brand` tweak;
   the brand hue re-derives every accent through `color-mix`.
+- **One wide navigation surface per screen.** The left rail is a 72px icon rail and never widens. A
+  section's own navigation is a single 236px sidebar inside the content region. Two wide sidebars side
+  by side spend a third of the viewport on chrome, which is what FR-F062-12 forbids.
 - **Every file stays under 500 lines**, like the rest of the repository.
 
 ## Relationship to the tickets

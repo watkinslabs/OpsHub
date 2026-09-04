@@ -1,5 +1,5 @@
 from _common import icon, chip, avatar, page, write
-from _shell import topbar, rail, toolbar, tabs
+from _shell import topbar, rail, toolbar, tabs, section_nav
 
 USERS=[("Priya Raman","PR",30,"priya@northfield.co","Admin","SSO · Okta","Active","success","2m ago"),
  ("Ana Duarte","AD",210,"ana@northfield.co","Editor","SSO · Okta","Active","success","18m ago"),
@@ -32,10 +32,8 @@ rows="".join(f'''<div style="display:flex;align-items:center;border-bottom:1px s
 admin = topbar("") + f'''
   <div style="flex:1;display:flex;min-height:0;">
     {rail("Admin")}
-    <div style="width:240px;flex:none;background:var(--bg-canvas);border-right:1px solid var(--border-subtle);
-      padding:var(--space-4) var(--space-3);display:flex;flex-direction:column;gap:2px;">
-      <span class="th" style="padding:0 var(--space-3) var(--space-2);">Administration</span>{side}
-    </div>
+    {section_nav("Administration", [(i, n, n == "Users & groups") for i, n in [("people","Users & groups"),("shield","Roles & permissions"),("user","SSO & SCIM"),("layers","Microsoft Entra"),("layers","Integrations"),("chart","Billing"),("flow","API & webhooks"),("doc","Audit log"),("cog","Entitlements"),("sparkle","MCP access")]])}
+
     <main style="flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg-surface);">
       <div style="padding:var(--space-5) var(--space-5) 0;">
         <div style="display:flex;align-items:center;gap:var(--space-3);">

@@ -1,21 +1,19 @@
 from _common import icon, chip, avatar, page, write
-from _shell import topbar, rail, toolbar, tabs
+from _shell import topbar, rail, toolbar, tabs, section_nav
 from board_timeline import shell, BTN
 import _charts as ch
 
 def adminshell(title, sub, tabnames, tabactive, right, body, active_nav="Admin"):
-    subnav=[("people","Users & groups"),("shield","Roles & permissions"),("user","SSO & SCIM"),
-            ("building","Microsoft Entra"),("layers","Integrations"),("chart","Billing"),
-            ("flow","API & webhooks"),("doc","Audit log"),("cog","Entitlements")]
-    side="".join(f'''<div class="rail-item{' on' if n==title.split(' —')[0] or (title.startswith(n)) else ''}"
-      style="height:var(--control-md);">{icon(i if i!="building" else "layers",17)}
-      <span style="font-size:var(--text-sm);">{n}</span></div>''' for i,n in subnav)
-    return topbar("") + f'''
+    """Admin pages: icon rail plus the section's own navigation. Never two wide sidebars."""
+    pages=[("people","Users & groups"),("shield","Roles & permissions"),("user","SSO & SCIM"),
+           ("layers","Microsoft Entra"),("layers","Integrations"),("chart","Billing"),
+           ("flow","API & webhooks"),("doc","Audit log"),("cog","Entitlements"),("sparkle","MCP access")]
+    head = title.split(" \u2014")[0].strip()
+    items = [(i, n, n.startswith(head) or head.startswith(n)) for i, n in pages]
+    return topbar("") + f"""
   <div style="flex:1;display:flex;min-height:0;">
     {rail(active_nav)}
-    <div style="width:240px;flex:none;background:var(--bg-canvas);border-right:1px solid var(--border-subtle);
-      padding:var(--space-4) var(--space-3);display:flex;flex-direction:column;gap:2px;">
-      <span class="th" style="padding:0 var(--space-3) var(--space-2);">Administration</span>{side}</div>
+    {section_nav("Administration", items)}
     <main style="flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg-surface);">
       <div style="padding:var(--space-5) var(--space-5) 0;">
         <div style="display:flex;align-items:center;gap:var(--space-3);">
@@ -24,7 +22,7 @@ def adminshell(title, sub, tabnames, tabactive, right, body, active_nav="Admin")
       {toolbar(tabs(tabnames,tabactive), right)}
       {body}
     </main>
-  </div>'''
+  </div>"""
 
 def field(label, value, hint="", state="default", w="100%"):
     b={"default":"var(--border-default)","ok":"var(--success-emphasis)","err":"var(--danger-emphasis)"}[state]
