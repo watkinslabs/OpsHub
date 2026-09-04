@@ -86,6 +86,8 @@ Excluded: routing and approval after submission (F018, F019, F020), update reque
 - Keyboard: palette items insert with `Enter`, fields reorder with `Alt+Arrow`, condition editor is a form, not a canvas; public form uses native controls with visible focus rings; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `FormInput`, `Eye`, `Send`, `Link`, `Code2`, `ShieldCheck`; spacing and colour from `apps/web/src/design/tokens.css`; accent colour is validated for 4.5:1 contrast on the button label.
 
+- Design: `design/artboards/Forms.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

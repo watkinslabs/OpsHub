@@ -77,6 +77,8 @@ Excluded: producers' content decisions (F016, F017, F020, F036, F061 own their e
 - Keyboard: `Alt+N` opens the drawer, arrow keys move between items, `Enter` opens, `R` marks read, `Escape` closes and returns focus to the bell; matrix checkboxes are in Tab order with row headers; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Bell`, `BellOff`, `AtSign`, `UserCheck`, `CheckSquare`, `Share2`, `FileCheck`, `Workflow`, `Moon`, `Mail`, `Smartphone`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Notifications.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

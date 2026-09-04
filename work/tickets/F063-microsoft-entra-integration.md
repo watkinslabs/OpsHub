@@ -75,6 +75,8 @@ Excluded: SAML and SCIM, which stay F026 and are the alternative federation path
 - Keyboard: the button and every switch are reachable in order; the disconnect dialog traps focus and returns it; the test result is announced once, not per field.
 - Font/icon/design tokens: from F062; icons `Building2`, `KeyRound`, `Users`, `Mail`, `RefreshCw`, `Unplug` through `apps/web/src/ui/icons.ts`.
 
+- Design: `design/artboards/Entra.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -77,6 +77,8 @@ Excluded: queueing and executing runs, retries, dead letters, inbound webhook to
 - Keyboard: `Tab` between steps, `Enter` expands a step, `Alt+ArrowUp/Down` reorders actions, `Delete` removes a focused action after confirmation, `Escape` closes pickers; focus ring from shared token; `prefers-reduced-motion` disables step transitions.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Zap`, `GitBranch`, `Play`, `Send`, `Pause`, `Trash2`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Workflow.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

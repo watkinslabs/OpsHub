@@ -82,6 +82,8 @@ Excluded: new-row intake and form building (F014 owns forms, tokens, and CAPTCHA
 - Keyboard: the scope picker moves with arrow keys and toggles with `Space`; the recipient form is a native `<form>` with per-row `<fieldset>`/`<legend>`; `Ctrl+Enter` submits; `Escape` closes the dialog and returns focus to the grid action; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `MailQuestion`, `CalendarClock`, `BellRing`, `Ban`, `CheckCheck`, `Link2Off`; spacing, colour, and elevation from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/UpdateRequest.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -77,6 +77,8 @@ Excluded: published forms (F014 owns `/public/forms`), share links to identities
 - Keyboard: publish dialog traps focus, `Escape` closes, token copy button announces `Copied`; public page supports `Tab` across widgets and `Enter` on nothing (no interactive elements except pagination); reduced motion disables refresh spinner.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Globe`, `Link2`, `RotateCw`, `Ban`, `Clock`; tokens from `apps/web/src/design/tokens.css` with a neutral public theme.
 
+- Design: `design/artboards/Publishing.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

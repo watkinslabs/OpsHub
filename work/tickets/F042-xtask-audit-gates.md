@@ -28,6 +28,8 @@ finished_at: null
 - Decision references: `docs/architecture-decisions.md` sections 9, 10; `docs/capability-contracts.md` row F042
 - Module slug: `xtask-policy` (Rust module `automation/xtask/src/policy.rs`; hook scripts `.githooks/pre-commit`, `commit-msg`, `pre-push`)
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

@@ -83,6 +83,8 @@ Excluded: formula functions `CHILDREN`/`PARENT`/`ANCESTORS`/`DESCENDANTS` (F035 
 - Keyboard: `Tab` and `Shift+Tab` on a focused row (not in cell edit) indent and outdent; `ArrowRight`/`ArrowLeft` expand and collapse; `Enter` on a link cell opens the picker; `Escape` closes; focus returns to the originating cell; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `IndentIncrease`, `IndentDecrease`, `ChevronRight`, `Link2`, `Unlink`, `Sigma`; colors and spacing from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Main.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F009.

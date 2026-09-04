@@ -80,6 +80,8 @@ Excluded: metric definitions (F022), dashboard layout and sharing (F023), export
 - Keyboard: `Tab` into the chart, arrows move between points and announce "Dana, 7 risks", `T` toggles the table alternative, `Escape` leaves; focus ring tokens; reduced motion disables bar growth and line draw animations.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `BarChart3`, `LineChart`, `PieChart`, `TrendingDown`, `GanttChart`, `Users`, `Table`; series colors `--chart-1` to `--chart-8` and patterns from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Charts.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

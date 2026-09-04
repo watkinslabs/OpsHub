@@ -81,6 +81,8 @@ Excluded: KPI, metric comparison, chart, burndown, timeline, and workload resolv
 - Keyboard: `Tab` between widgets, `Enter` selects, arrows move by one cell, `Shift+Arrow` resizes, `Escape` deselects, `Delete` removes with confirm; live region announces "Table moved to column 4 row 2"; focus ring tokens; reduced motion respected.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `LayoutDashboard`, `Plus`, `Move`, `Share2`, `RefreshCw`, `Image`, `Type`, `Table`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Dashboard.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

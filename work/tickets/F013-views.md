@@ -82,6 +82,8 @@ Excluded: share links, guest invitations, and every unauthenticated token route 
 - Keyboard: `Tab` reaches switcher, settings, share, then each lane, event, or bar; `Space` picks up, arrows move by lane, day, or zoom unit, `Enter` drops, `Escape` cancels; `FilterBuilder` rows are reachable and deletable by keyboard; focus returns to the trigger after dialogs close.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `LayoutGrid`, `Kanban`, `CalendarDays`, `GanttChart`, `Filter`, `Share2`, `Download`, `Star`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Board.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

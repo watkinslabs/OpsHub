@@ -84,6 +84,8 @@ Excluded: metrics and KPI values (F022), dashboards and widgets (F023), charts a
 - Keyboard: join and filter builders are lists of rows with `Enter` to edit, `Delete` to remove, arrows to move; group headers toggle with `Space`; focus ring from shared tokens; `prefers-reduced-motion` respected.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `FileBarChart`, `GitMerge`, `Filter`, `Layers`, `Sigma`, `RefreshCw`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Report.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

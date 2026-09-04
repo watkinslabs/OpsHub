@@ -77,6 +77,8 @@ Excluded: workload aggregation across resources and persistent conflict records 
 - Keyboard: planner cells are focusable in a grid pattern (arrow keys), `Enter` opens the allocation dialog, `Delete` prompts removal; dialogs trap focus, `Escape` cancels; `prefers-reduced-motion` disables bar transitions.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Users`, `UserPlus`, `CalendarOff`, `Gauge`, `AlertTriangle`, `Coins`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Resources.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

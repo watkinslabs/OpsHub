@@ -78,6 +78,8 @@ Excluded: REST list, filter, error, and rate-limit conventions and the OpenAPI d
 - Keyboard: table rows are focusable and `Enter` opens the drawer; `Escape` closes the drawer and dialog; the countdown never steals focus; reduced motion disables the drawer slide and the countdown pulse.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `PlugZap`, `ShieldCheck`, `FileDiff`, `CheckCheck`, `Clock`, `ScrollText`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Mcp.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -28,6 +28,8 @@ finished_at: null
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 8, 9, 10; `docs/capability-contracts.md` row F044
 - Module slug: `xtask-release` (Rust module `automation/xtask/src/release.rs`; evidence under `testing/evidence/<ID>/**`; inputs `docs/capability-contracts.md`, `openapi/v1.json`)
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

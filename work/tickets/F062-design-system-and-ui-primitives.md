@@ -82,6 +82,8 @@ Excluded: row grouping (F013), tree data (F009), aggregation (F022) and file exp
 - Keyboard: MUI's pattern behavior plus the shell shortcuts; the focus ring is visible on `:focus-visible` only.
 - Font/icon/design tokens: this feature defines them — Plus Jakarta Sans and JetBrains Mono self-hosted from `apps/web/src/design/fonts/`, icons through `apps/web/src/ui/icons.ts`.
 
+- Design: `design/artboards/Components.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

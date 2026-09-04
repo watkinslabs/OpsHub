@@ -77,6 +77,8 @@ Excluded: per-sheet CSV/XLSX export (F010); audit log storage and query (F003); 
 - Keyboard: all tables and dialogs are keyboard operable; `Escape` cancels; focus returns to the trigger; reduced motion disables progress animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Archive`, `Gavel`, `Download`, `Trash2`, `ClipboardCheck`, `AlertOctagon`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Governance.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

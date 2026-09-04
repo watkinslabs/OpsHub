@@ -87,6 +87,8 @@ Excluded: tenant, user, group, and role writes themselves (F002, F003); login, s
 - Responsive: the form is a single column from 320 px, and the Turnstile widget uses its compact variant under 400 px. Keyboard: a linear tab order over visible fields only, `Enter` submits, and after submission focus moves to the success heading.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `UserPlus`, `MailCheck`, `ShieldCheck`, `Clock`, `Sparkles`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Signup.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

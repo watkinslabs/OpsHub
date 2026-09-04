@@ -32,6 +32,8 @@ finished_at: null
 - Architecture: `docs/architecture-decisions.md` section 2 (canonical data model) and section 2.1 (data access), with section 1 for the crate layout and section 3 for the cursor and version conventions
 - Canonical contract: `docs/capability-contracts.md` row F068 (aggregate `repository`, module `persistence`, surface `crates/persistence/**`, `cargo xtask check-persistence`, the `Repository` and `UnitOfWork` contracts; events none; every table in that catalog reached only through its repository class; role maintainer)
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

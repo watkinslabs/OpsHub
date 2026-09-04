@@ -83,6 +83,8 @@ Excluded: report and dashboard exports (F025), tenant-wide compliance exports an
 - Keyboard: `Ctrl+K` opens, arrows move, `Enter` opens, `Escape` closes; wizard steps are reachable with `Tab`, `Enter` advances, `Shift+Enter` goes back; mapping selects are native comboboxes; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Search`, `Upload`, `Download`, `FileSpreadsheet`, `FileText`, `AlertCircle`, `CheckCircle2`; spacing and color from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Search.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F010.

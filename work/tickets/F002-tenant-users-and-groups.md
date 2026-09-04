@@ -82,6 +82,8 @@ Excluded: login and sessions (F038), roles and ACLs (F003), SAML/SCIM provisioni
 - Keyboard: `Tab` order follows table order, `Enter` opens a row, `Space` toggles a member checkbox, `Escape` closes dialogs and returns focus to the trigger; focus ring uses the shared token.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Building2`, `Users`, `UserPlus`, `UserX`, `ShieldAlert`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Admin.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

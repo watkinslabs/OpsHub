@@ -77,6 +77,8 @@ Excluded: health computation and override (F032), portfolio dashboards and chart
 - Keyboard: arrow keys move through cells, `Enter` on a project name opens the drill link, `R` triggers refresh for administrators, sortable headers are buttons; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Briefcase`, `RefreshCw`, `AlertTriangle`, `Lock`, `ExternalLink`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Portfolio.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

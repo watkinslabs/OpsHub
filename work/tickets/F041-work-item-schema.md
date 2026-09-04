@@ -28,6 +28,8 @@ finished_at: null
 - Decision references: `docs/architecture-decisions.md` sections 1, 9, 10; `docs/capability-contracts.md` row F041
 - Module slug: `xtask-schema` (Rust module `automation/xtask/src/backlog.rs`, templates in `content.rs`, shared helpers in `support.rs`, dispatch in `main.rs`)
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

@@ -77,6 +77,8 @@ Excluded: document metadata, revisions, folders, and search (F045); grid editing
 - Keyboard: `Alt+Shift+P` opens the presence list, `Alt+Shift+C` focuses the conflict banner, `Enter` on `Keep mine` / `Take theirs`, `Escape` closes; focus ring from shared token; cursor animation off under `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Users`, `Wifi`, `WifiOff`, `RefreshCw`, `Eye`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Document.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

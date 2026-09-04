@@ -85,6 +85,8 @@ Excluded: entitlement evaluation, feature-flag lifecycle, and the `RequireModule
 - Responsive and keyboard: plan cards stack under 768 px and the invoice table collapses to a definition list; the plan-change dialog traps focus, the preview is announced when it loads, and confirmation requires an explicit button rather than an on-change commit; `prefers-reduced-motion` disables the usage bar animation.
 - Font, icon, and design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `CreditCard`, `ReceiptText`, `Gauge`, `TrendingUp`, `AlertTriangle`, `ExternalLink`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Billing.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

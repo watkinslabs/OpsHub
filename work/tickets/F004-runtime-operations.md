@@ -32,6 +32,8 @@ finished_at: null
 - Architecture: `docs/architecture-decisions.md` sections 2, 3, 7, 9
 - Canonical contract: `docs/capability-contracts.md` row F004
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

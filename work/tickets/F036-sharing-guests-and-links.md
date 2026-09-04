@@ -78,6 +78,8 @@ Excluded: role definitions and ACL storage for roles (F003), workspace membershi
 - Keyboard: Tab through people rows, arrow keys change role in the select, `Delete` on a row prompts revoke, `Escape` closes; copy button is a real button with announced result; focus returns to the `Share` button on close; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Share2`, `Link`, `UserPlus`, `Ban`, `Copy`, `Clock`, `ShieldOff`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Sharing.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

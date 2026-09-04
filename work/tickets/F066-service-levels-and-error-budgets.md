@@ -32,6 +32,8 @@ finished_at: null
 - Architecture: `docs/architecture-decisions.md` sections 1, 3, 9, 10
 - Canonical contract: `docs/capability-contracts.md` row F066 (aggregate `service-level`, module `slo`)
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

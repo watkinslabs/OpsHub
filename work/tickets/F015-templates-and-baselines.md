@@ -83,6 +83,8 @@ Excluded: workflow, report, and dashboard instantiation (F018, F021, F023), port
 - Keyboard: catalog cards are focusable with `Enter` to open; provision dialog traps focus; status steps are a list with `aria-current` on the running step; variance table supports arrow navigation and `Enter` to open the row.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `LayoutTemplate`, `Rocket`, `ListChecks`, `Flag`, `GitCompare`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Templates.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -108,3 +108,45 @@ pub(crate) fn check_roles() -> Result<(), String> {
     for error in &errors { eprintln!("BLOCKED: {error}"); }
     Err(format!("role audit failed: {} finding(s)", errors.len()))
 }
+
+/// A ticket names the artboard that draws it, or states plainly that it has no user surface.
+/// Without this a section 3 can reference a screen nobody drew, which is how a specification
+/// quietly becomes unbuildable.
+pub(crate) fn check_design() -> Result<(), String> {
+    let dir = std::path::Path::new("design/artboards");
+    let available = fs::read_dir(dir)
+        .map_err(|e| format!("missing design/artboards: {e}"))?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".dc.html"))
+        .collect::<Vec<_>>();
+    let mut errors = Vec::new();
+    let (mut drawn, mut headless) = (0usize, 0usize);
+    for path in ticket_files() {
+        let Ok(text) = fs::read_to_string(&path) else { continue; };
+        let label = path.display().to_string();
+        let named = text.match_indices("design/artboards/").map(|(index, _)| {
+            text[index + "design/artboards/".len()..]
+                .split(|c: char| c == '`' || c == ',' || c == ' ' || c == ')')
+                .next().unwrap_or("").to_owned()
+        }).collect::<Vec<_>>();
+        if named.is_empty() {
+            if text.contains("no user surface") { headless += 1; continue; }
+            errors.push(format!("design.unreferenced {label}: names no artboard and does not state that it has no user surface"));
+            continue;
+        }
+        drawn += 1;
+        for artboard in named {
+            if !available.contains(&artboard) {
+                errors.push(format!("design.missing {label}: references `{artboard}`, which is not in design/artboards"));
+            }
+        }
+    }
+    if errors.is_empty() {
+        println!("design checks passed: {drawn} tickets reference an artboard, {headless} have no user surface, {} artboards available", available.len());
+        return Ok(());
+    }
+    errors.sort();
+    for error in &errors { eprintln!("BLOCKED: {error}"); }
+    Err(format!("design audit failed: {} finding(s)", errors.len()))
+}

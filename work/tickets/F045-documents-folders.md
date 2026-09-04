@@ -77,6 +77,8 @@ Excluded: live co-editing sessions, presence, and CRDT change replay (F046); cre
 - Keyboard: tree follows the ARIA tree pattern (Up/Down move, Right expands, Left collapses, Enter opens, `F2` renames); `Ctrl+S` saves a revision; `Escape` closes dialogs and returns focus; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Folder`, `FolderOpen`, `FileText`, `History`, `Move`, `Archive`, `Trash2`, `RotateCcw`, `Search`; spacing and color from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Document.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

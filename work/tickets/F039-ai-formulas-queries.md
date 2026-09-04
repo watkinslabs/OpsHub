@@ -83,6 +83,8 @@ Excluded: insight generation, scheduled scans, evidence records, and assisted wr
 - Keyboard: the prompt box submits on `Ctrl+Enter`; the proposal card is a labelled region; `Apply` opens a focus-trapped confirmation naming the target column or report; cancelling generation returns focus to the prompt box; `prefers-reduced-motion` removes the generating shimmer.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Sparkles`, `FunctionSquare`, `Search`, `GitCompare`, `Check`, `X`, `RotateCcw`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Insights.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -76,6 +76,8 @@ Excluded: allocation editing itself (F033 API, called from the UI), capacity ari
 - Keyboard: heatmap is a grid with arrow navigation and `Enter` opening the resource's conflicts; the time sheet supports `Tab` between day cells and `Enter` to save; dialogs trap focus; `prefers-reduced-motion` disables cell transitions.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Activity`, `AlertTriangle`, `Clock`, `Upload`, `GitMerge`, `Lock`, `CheckCircle2`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Workload.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

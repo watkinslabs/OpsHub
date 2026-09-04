@@ -78,6 +78,8 @@ Excluded: API applications and webhooks (F028); notification preferences and dig
 - Keyboard: popup hand-off returns focus to the `Connect` button and announces the result; all dialogs trap focus; reduced motion disables the status transition.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Plug`, `CalendarSync`, `MessageSquare`, `RefreshCw`, `Unplug`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Integrations.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

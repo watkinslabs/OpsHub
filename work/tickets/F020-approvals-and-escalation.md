@@ -76,6 +76,8 @@ Excluded: notification channel delivery and preferences (F037); workflow authori
 - Keyboard: arrow keys move between inbox items, `Enter` opens, `A` approve, `R` reject, `S` reassign on a focused approval, `Escape` closes dialogs; focus ring from shared token; `prefers-reduced-motion` disables badge pulse.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `CheckCircle2`, `XCircle`, `UserRoundCog`, `Clock`, `AlertTriangle`, `Ban`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Approvals.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

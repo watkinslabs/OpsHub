@@ -30,6 +30,8 @@ finished_at: null
 - Module slug: `load` (Rust module `automation/xtask/src/load/`; profiles, datasets, seed plans, k6 scripts and gate configuration under `testing/load/**`; evidence under `testing/evidence/F067/**`)
 - Owned-path note: the catalog persistence cell `testing/load/**` is a two-segment glob that `content.rs` rejects as a catch-all, so `owned_paths` names its five real subtrees (`profiles`, `datasets`, `seed`, `k6`, `gate`) instead of the collapsed form.
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

@@ -77,6 +77,8 @@ Excluded: charts over pivot outputs (F024), export of outputs (F025), calculated
 - Keyboard: `Tab` through source, dimensions, measures; `Enter` adds the focused column; `Delete` removes a chip; `Alt+ArrowUp/Down` reorders dimensions; focus returns to the list after removal; reduced motion disables status chip animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Table2`, `SigmaSquare`, `RefreshCw`, `FileOutput`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Pivot.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

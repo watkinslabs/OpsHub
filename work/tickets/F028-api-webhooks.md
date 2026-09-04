@@ -78,6 +78,8 @@ Excluded: session login and API token issuance (F038); role and ACL evaluation (
 - Keyboard: tab order follows tables and drawers; `Escape` closes; copy buttons announce; reduced motion disables drawer slide.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Code2`, `Webhook`, `KeyRound`, `RotateCw`, `Power`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Api.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

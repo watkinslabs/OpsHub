@@ -77,6 +77,8 @@ Excluded: typed columns beyond the primary text column (F007), inline cell editi
 - Keyboard: arrow keys move focus between rows and lanes, `Enter` opens a row, `Space` picks up a card, arrows move it, `Enter` drops it, `Escape` cancels; focus ring uses the shared token; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Table`, `Kanban`, `Plus`, `RotateCcw`, `Trash2`; spacing and color from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Main.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

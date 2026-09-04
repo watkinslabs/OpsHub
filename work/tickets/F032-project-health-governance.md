@@ -77,6 +77,8 @@ Excluded: portfolio rollup storage (F031 consumes `project_health`), approval ro
 - Keyboard: tab through indicator rows, `Enter` opens override dialog, gate timeline items are buttons, dialogs trap focus and `Escape` cancels; `prefers-reduced-motion` disables the score animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `HeartPulse`, `ShieldCheck`, `Flag`, `FileCheck`, `Inbox`, `AlertOctagon`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Intake.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

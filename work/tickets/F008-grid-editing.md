@@ -83,6 +83,8 @@ Excluded: column definitions and validation rules (F007), row hierarchy and link
 - Keyboard: arrows move focus, Enter or F2 edits, Escape cancels, Tab moves right, Shift+Arrow extends selection, Ctrl+A selects all, Ctrl+C/Ctrl+V copy and paste, Ctrl+D fills down, Ctrl+Z/Ctrl+Y undo and redo, Delete clears the selection, Alt+Shift+H hides the focused column; focus ring uses the shared token; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Pencil`, `Undo2`, `Redo2`, `History`, `Columns3`, `Snowflake`, `EyeOff`, `ListChecks`; spacing and color from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Main.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F008; every route and event below is reproduced from that row.

@@ -78,6 +78,8 @@ Excluded: comment body attachments UI (F016 references file IDs), document revis
 - Keyboard: `Enter` or `Space` on the drop zone opens the file picker; arrow keys move between cards; `Delete` prompts for delete; proof decisions are buttons in a labelled group; focus returns to the card after dialogs; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Paperclip`, `Upload`, `ShieldCheck`, `ShieldAlert`, `History`, `Download`, `CheckCircle2`, `XCircle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Proofing.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

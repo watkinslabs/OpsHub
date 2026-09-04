@@ -28,6 +28,8 @@ finished_at: null
 - Decision references: `docs/architecture-decisions.md` sections 7, 9, 10; `docs/capability-contracts.md` row F043
 - Module slug: `xtask-lanes` (Rust module `automation/xtask/src/lanes.rs`; lane state `.lanes/<ID>.toml`; worktrees `.worktrees/<branch>`; build targets `.agent-target/<branch>`)
 
+- Design: this feature has no user surface; it ships tooling, runtime or contracts only.
+
 ## 2. Requirement specification
 
 ### Problem and user outcome

@@ -84,6 +84,8 @@ Excluded: the AI provider abstraction, model selection, redaction rules, and the
 - Keyboard: list is a single tab stop with arrow-key roving focus; `Confirm` is never the default focused control in the dialog; dialogs trap focus and restore it to the invoking button; reduced motion disables the run timeline animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Sparkles`, `AlertTriangle`, `TrendingUp`, `FileSearch`, `ShieldCheck`, `Gavel`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Insights.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -82,6 +82,8 @@ Excluded: workspace and folder records themselves (F005), sharing grants, guests
 - Keyboard: arrow keys move through matrix cells, `Space` toggles, `Enter` saves, `Escape` closes the drawer and returns focus; the diff viewer is navigable with `Tab` between changed fields.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `ShieldCheck`, `Lock`, `UserCheck`, `Ban`, `History`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Audit.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -84,6 +84,8 @@ Excluded: SAML 2.0, SCIM provisioning, group mapping (F026); role and permission
 - Keyboard: the 6-digit input accepts paste and auto-advances, `Enter` submits, `Escape` closes dialogs and returns focus; the QR code has an accessible label and a text alternative.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `LogIn`, `KeyRound`, `Fingerprint`, `Smartphone`, `MonitorSmartphone`, `ShieldCheck`, `Trash2`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Login.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

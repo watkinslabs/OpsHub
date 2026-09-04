@@ -77,6 +77,8 @@ Excluded: offline document co-editing (section 10), native app stores, offline a
 - Keyboard and touch: all controls reachable by external keyboard; touch targets ≥ 44 px; `Escape` or back gesture closes row detail; focus moves to the conflict card when one appears; reduced motion disables queue badge animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `WifiOff`, `CloudUpload`, `GitMerge`, `Bell`, `Smartphone`; tokens from `apps/web/src/design/tokens.css` with the compact density scale.
 
+- Design: `design/artboards/Mobile.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

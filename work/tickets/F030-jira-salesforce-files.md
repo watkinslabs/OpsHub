@@ -89,6 +89,8 @@ Excluded: OAuth authorization, the token vault, connection lifecycle, and the th
 - Keyboard: mapping rows move with `Alt+ArrowUp`/`Alt+ArrowDown`; the wizard traps focus per step and restores it to the invoking control; `Escape` closes the merge chooser without applying; reduced motion disables the run-state pulse.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `RefreshCcw`, `ArrowLeftRight`, `Columns3`, `History`, `GitMerge`, `AlertTriangle`, `Database`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Integrations.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -76,6 +76,8 @@ Excluded: multi-sheet dynamic views (reports are F021), publishing dashboards or
 - Keyboard: arrow keys move between cells, `Enter` edits an editable cell, `Escape` cancels, `Tab` moves through policy editor controls; focus ring token; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `EyeOff`, `Lock`, `Link`, `Filter`, `UserCheck`, `Ban`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/DynamicView.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F050 (aggregate `dynamic-view`, module `dynamic-views`, role `view-owner`).

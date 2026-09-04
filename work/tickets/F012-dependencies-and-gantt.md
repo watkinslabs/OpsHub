@@ -84,6 +84,8 @@ Excluded: working calendars and schedule settings themselves (F011), row hierarc
 - Keyboard: arrow keys move focus between bars, `Shift+ArrowRight/Left` opens the shift dialog pre-filled with ±1 day, `L` opens the add-dependency dialog for the focused row, `Enter` opens row details, `Escape` cancels a drag; focus ring uses the shared token; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `GanttChart`, `Link2`, `Diamond`, `MoveHorizontal`, `Route`, `AlertTriangle`; colours from `apps/web/src/design/tokens.css` including `--color-critical`.
 
+- Design: `design/artboards/Timeline.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend
