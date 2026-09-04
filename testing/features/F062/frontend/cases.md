@@ -18,14 +18,12 @@ File: `testing/features/F062/frontend/{theme_tests,surface_tests,lint_tests,patt
 - `empty_state_takes_copy_from_props` — FR-F062-11: no pattern renders hard-coded feature wording; the five `LoadingSkeleton` shapes render distinctly.
 - `data_grid_virtualizes_above_one_hundred_rows` — FR-F062-10: a 5,000-row `DataGridPanel` mounts a bounded number of row nodes and keeps its header sticky.
 - `data_grid_scrolls_within_its_container` — FR-F062-10: a wide grid scrolls horizontally inside its own element and the page does not.
-- `paid_affordances_disabled_without_entitlement` — FR-F062-16: column reorder, column pinning, row pinning and range selection render disabled with a tooltip naming the capability and linking to `/admin/entitlements`.
+- `no_paid_grid_package_in_build_graph` — FR-F062-16: the dependency tree and built bundle contain no `@mui/x-data-grid-pro` or `-premium`, and no upgrade prompt renders anywhere in the grid.
 - `server_capabilities_available_at_every_tier` — FR-F062-16: grouping, tree rows, aggregation and xlsx export all work unentitled, and the grid calls the F013, F009, F022 and F010 endpoints rather than a client implementation.
-- `paid_bundle_absent_by_default` — FR-F062-16: the default build graph contains no `@mui/x-data-grid-pro` import and the grid mounts with no console error.
-- `entitlement_enables_paid_enhancements` — FR-F062-17: with the entitlement `active` the paid chunk loads lazily and the four enhancements become available.
-- `column_reorder_persists_to_view_settings` — FR-F062-17: dropping a column writes the new order to the active view's `settings.columns`.
-- `pinning_persists_per_viewer` — FR-F062-17: column and row pinning survive reload under `opshub.grid.<view_id>` and do not leak to other viewers.
-- `range_selection_copies_tsv` — FR-F062-17: shift-click and shift-arrow extend the range and the clipboard carries TSV with the grid's visible formatting.
-- `paid_enhancements_have_keyboard_equivalents` — FR-F062-17: each of the four is reachable and operable by keyboard with an accessible announcement.
+- `column_reorder_writes_layout_column_order` — FR-F062-17: dragging a header, and its keyboard equivalent, persist the new order to F008 `layout.column_order` within 1 s and leave another user's order untouched.
+- `freeze_and_hide_persist_through_layout` — FR-F062-17: freeze-up-to-here and hide-column persist through `layout.frozen_column_count` and `layout.hidden_columns`.
+- `range_selection_extends_and_copies_tsv` — FR-F062-17: Shift+Arrow, Shift+Click and Ctrl+Click build contiguous and non-contiguous ranges and the clipboard carries TSV with the grid's visible formatting.
+- `grid_behaviours_have_keyboard_equivalents` — FR-F062-17: reorder, freeze, hide and selection are each operable by keyboard with an accessible announcement.
 - `chart_palette_is_fixed_and_labelled` — FR-F062-13: `ChartPanel` uses the five-series palette in order and every series carries a legend entry, direct label or value.
 - `formatted_date_uses_explicit_locale` — FR-F062-11: the formatting components never call `toLocaleString` without a locale and fall back to `en-US`/`UTC`.
 - `icons_import_only_through_registry` — FR-F062-14: a static scan finds no `lucide-react` import outside `apps/web/src/ui/icons.ts`.
