@@ -140,6 +140,75 @@ Create a decision record before adding a service/library or changing auth, data,
 
 Before implementation starts, a ticket must meet entry criteria. Before release, it must meet every exit criterion, have test evidence and a rollback plan, record `finished_at`, and move to `work/archived/`.
 
+## Sources of truth
+
+Each of these owns exactly one thing. When two disagree, the one listed here wins for its own subject
+and the other is corrected — never both edited to meet in the middle.
+
+| Subject | Source of truth |
+|---|---|
+| Architecture and data-model rules | `docs/architecture-decisions.md` |
+| Product requirements | `docs/product-capability-spec.md` |
+| Routes, events, tables, aggregates, module slugs, roles per feature | `docs/capability-contracts.md` |
+| Permission catalogue, principal kinds, role definitions | `docs/authorization-model.md` |
+| What a milestone contains and when it is done | `docs/milestones/README.md` |
+| Threats, trust boundaries and their mitigations | `docs/threat-model.md` |
+| Screens | `design/artboards/*.dc.html`, indexed by `design/canvas.json` |
+| Feature contract, scope, tests, ownership | its ticket in `work/` |
+| Which items exist and their dependencies | `work/plan.md` |
+
+The ticket is the contract and the artboard is the picture: when they disagree the ticket wins and
+the artboard is corrected.
+
+## Gates
+
+Run before review and in CI. Each exists because something was wrong that a human review missed.
+
+| Command | Enforces |
+|---|---|
+| `validate-decisions` | The decision record parses and carries no unresolved language |
+| `validate-plan` | Every plan row has a file and every file has a plan row. `validate-work` cannot see a row whose file was never created, so both must run |
+| `validate-work` | Content quality: no placeholders, minimum requirement counts, gherkin scenarios, named failing tests, disjoint module-scoped owned paths, harness lanes |
+| `check-contracts` | Catalog and tickets agree **in both directions**: a catalog route missing from its ticket fails, and so does a route a ticket names that no row declares |
+| `check-persistence` | Third normal form, no array columns, justified `jsonb`, one repository class per table-owning feature |
+| `check-roles` | Every role a ticket or catalog row authorizes against is defined in the authorization model |
+| `check-migrations` | Migration naming, ordering, reversibility and safety |
+| `test-all`, `test-feature` | Every feature harness is present and valid |
+| `self-test` | The gates' own positive controls, including that a source-tree root cannot be added to the catch-all exemption |
+
+## Writing a ticket
+
+Beyond the template, these are the rules that have actually been violated:
+
+- **Name the aggregate.** Section 1 carries an `- Aggregate: \`<name>\`` line matching the catalog row.
+  Rewriting a ticket without it fails `check-contracts`.
+- **Reproduce every catalog route, event and table** verbatim in section 4, and invent none. A route
+  you need that the catalog lacks is a catalog change first, in the same commit.
+- **Normalize.** No array column. An enumerable set is a child table with a foreign key and its own
+  indexes. `jsonb` only for genuinely schema-less payloads — cell values, event payloads, authored
+  ASTs, provider snapshots, diffs — never for something the product filters, joins, sorts or
+  constrains on, and say in the ticket why a kept one is a payload.
+- **Name the data access class.** One `<Aggregate>Repository` per object type in
+  `crates/persistence/src/<module>/`, and state that the use cases contain no SQL. No handler, job or
+  test opens a connection.
+- **Authorize against the model.** Use a role that `docs/authorization-model.md` defines. Needing a
+  new one means adding it there first, with what it inherits and what it adds.
+- **Own your paths.** `owned_paths` are module-scoped globs including
+  `crates/persistence/src/<module>/**` when the feature owns tables, disjoint from every other
+  feature, and every story and task path is a subset of its parent's.
+- **Reference the design.** Section 3 names the artboard in `design/artboards/`, or says plainly that
+  the feature has no user surface.
+- **Do not restate a gate's own denylist.** A ticket that enumerates the forbidden markers, or quotes
+  an undeclared example route, fails the gate it is describing. Reference the constant or the rule
+  instead. This has now happened four times.
+- **Two features never write the same table.** Child tables belong to their parent's repository.
+
+## Milestones
+
+Every ticket declares a `target_milestone`. A feature may not depend on one in a later milestone —
+the dependency graph must be acyclic and forward-only. `docs/milestones/README.md` defines each
+milestone's contents and exit criteria and is generated from the tickets, so scope cannot drift.
+
 ## Navigation
 
 Required files are `Claude.md`, `MANIFEST.md`, `docs/product-capability-spec.md`, `work/plan.md`, the matching template, and the current item. Do not open unrelated documentation.

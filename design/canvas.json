@@ -1,0 +1,435 @@
+{
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "Core work"
+    },
+    {
+      "id": "page-2",
+      "name": "Plan & report"
+    },
+    {
+      "id": "page-3",
+      "name": "Enterprise"
+    },
+    {
+      "id": "page-6",
+      "name": "Advanced modules"
+    },
+    {
+      "id": "page-5",
+      "name": "Public surfaces"
+    },
+    {
+      "id": "page-4",
+      "name": "Design system"
+    }
+  ],
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Sheet \u2014 grid view"
+    },
+    {
+      "file": "Board.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Sheet \u2014 board view"
+    },
+    {
+      "file": "Timeline.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Sheet \u2014 timeline (dark)"
+    },
+    {
+      "file": "Document.dc.html",
+      "x": 0,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Document \u2014 live collaboration"
+    },
+    {
+      "file": "Forms.dc.html",
+      "x": 1560,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Form builder"
+    },
+    {
+      "file": "Workflow.dc.html",
+      "x": 3120,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Workflow builder"
+    },
+    {
+      "file": "Dashboard.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Dashboard (dark)"
+    },
+    {
+      "file": "Report.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Report builder (dark)"
+    },
+    {
+      "file": "Portfolio.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Portfolio rollup"
+    },
+    {
+      "file": "Workload.dc.html",
+      "x": 0,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Workload (dark)"
+    },
+    {
+      "file": "Approvals.dc.html",
+      "x": 1560,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Approvals inbox"
+    },
+    {
+      "file": "Insights.dc.html",
+      "x": 3120,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "AI insights + proposal diff"
+    },
+    {
+      "file": "Login.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Sign in"
+    },
+    {
+      "file": "Admin.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 users & groups"
+    },
+    {
+      "file": "Entra.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 Microsoft Entra"
+    },
+    {
+      "file": "Billing.dc.html",
+      "x": 0,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 billing (dark)"
+    },
+    {
+      "file": "Sharing.dc.html",
+      "x": 1560,
+      "y": 1020,
+      "w": 1440,
+      "h": 1120,
+      "page": "page-3",
+      "title": "Sharing & distribution"
+    },
+    {
+      "file": "Mobile.dc.html",
+      "x": 3120,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Mobile"
+    },
+    {
+      "file": "Tokens.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1560,
+      "page": "page-4",
+      "title": "Design tokens"
+    },
+    {
+      "file": "Components.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1180,
+      "page": "page-4",
+      "title": "Component library"
+    },
+    {
+      "file": "Charts.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 1180,
+      "page": "page-4",
+      "title": "Chart & data widgets"
+    },
+    {
+      "file": "Search.dc.html",
+      "x": 0,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Global search"
+    },
+    {
+      "file": "Notifications.dc.html",
+      "x": 1560,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Notifications & preferences (dark)"
+    },
+    {
+      "file": "Resources.dc.html",
+      "x": 0,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Resources & allocations"
+    },
+    {
+      "file": "Signup.dc.html",
+      "x": 0,
+      "y": 2160,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Self-serve signup & trial"
+    },
+    {
+      "file": "Audit.dc.html",
+      "x": 1560,
+      "y": 2160,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 audit log"
+    },
+    {
+      "file": "Api.dc.html",
+      "x": 3120,
+      "y": 2160,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 API & webhooks (dark)"
+    },
+    {
+      "file": "Publishing.dc.html",
+      "x": 1560,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Publishing & embeds"
+    },
+    {
+      "file": "Intake.dc.html",
+      "x": 3120,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Project intake"
+    },
+    {
+      "file": "Proofing.dc.html",
+      "x": 0,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Files & proofing"
+    },
+    {
+      "file": "Integrations.dc.html",
+      "x": 0,
+      "y": 3180,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 integrations (dark)"
+    },
+    {
+      "file": "UpdateRequest.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-5",
+      "title": "Update request \u2014 recipient"
+    },
+    {
+      "file": "PublicView.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-5",
+      "title": "Published dashboard (dark)"
+    },
+    {
+      "file": "Entitlements.dc.html",
+      "x": 1560,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Admin \u2014 entitlements"
+    },
+    {
+      "file": "Mcp.dc.html",
+      "x": 3120,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Admin \u2014 MCP access (dark)"
+    },
+    {
+      "file": "Pivot.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Pivot app"
+    },
+    {
+      "file": "DynamicView.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Dynamic View \u2014 scoped external editing (dark)"
+    },
+    {
+      "file": "Templates.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Templates gallery (dark)"
+    },
+    {
+      "file": "Governance.dc.html",
+      "x": 0,
+      "y": 1020,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Governance & compliance"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "core-note",
+      "x": 0,
+      "y": -150,
+      "w": 760,
+      "page": "page-1",
+      "text": "One record set, many presentations.\nGrid, board and timeline are the same rows under different view settings (F013). Brand hue and light/dark are live tweaks on every artboard."
+    },
+    {
+      "id": "plan-note",
+      "x": 0,
+      "y": -150,
+      "w": 760,
+      "page": "page-2",
+      "text": "Reporting reads across sources; it never copies them.\nEvery number traces to rows the viewer is allowed to see. AI proposals stop at a diff and change nothing until approved."
+    },
+    {
+      "id": "ent-note",
+      "x": 0,
+      "y": -150,
+      "w": 760,
+      "page": "page-3",
+      "text": "Enterprise surfaces.\nEntra sign-in sits beside password and SAML, never replacing them. Billing credit applies before any charge. Mobile is a submission and review surface, not a second product."
+    },
+    {
+      "id": "system-note",
+      "x": 0,
+      "y": -150,
+      "w": 760,
+      "page": "page-4",
+      "text": "Build order: tokens -> MUI theme -> components.\nTanStack Table supplies headless grid state and renders through themed MUI components; MUI X Charts and Date Pickers are MIT. No paid grid package and no second UI library."
+    },
+    {
+      "id": "public-note",
+      "x": 0,
+      "y": -150,
+      "w": 760,
+      "page": "page-5",
+      "text": "Unauthenticated surfaces.\nNo session, no account, no tenant discovery. A recipient sees only the fields shared with them; a published page renders as the publisher's permissions at request time and shows an error state, never stale data, if that access is lost."
+    },
+    {
+      "id": "mod-note",
+      "x": 0,
+      "y": -150,
+      "w": 760,
+      "page": "page-6",
+      "text": "Modules and administration.\nEach advanced module is entitled, permission-aware, audited and reversible. Dynamic View shows the rule the whole tier depends on: a recipient sees three fields of eighteen and one row of 1,284, and can never infer the shape of what is withheld."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-1"
+  }
+}

@@ -1,0 +1,155 @@
+import os
+# Shared pieces for every OpsHub artboard.
+FONTS = '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">'
+
+CSS = """
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  a { color: var(--accent-fg); text-decoration: none; } a:hover { color: var(--accent-emphasis); }
+  .app {
+    /* spacing 4px base */
+    --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px;
+    --space-7:32px; --space-8:40px; --space-9:48px; --space-10:64px;
+    --radius-sm:4px; --radius-md:6px; --radius-lg:10px; --radius-full:9999px;
+    --text-xs:12px; --text-sm:13px; --text-base:14px; --text-lg:16px; --text-xl:20px; --text-2xl:24px; --text-3xl:30px;
+    --control-sm:28px; --control-md:32px; --control-lg:40px; --row-h:36px; --topbar-h:56px; --rail-w:240px;
+    /* light theme */
+    --bg-canvas:#f6f7f9; --bg-surface:#ffffff; --bg-raised:#ffffff; --bg-sunken:#eff1f4;
+    --bg-hover:#f1f3f6; --bg-active:#e6e9ee; --bg-selected: color-mix(in oklch, var(--brand) 10%, #ffffff);
+    --text-primary:#14171c; --text-secondary:#5b636f; --text-tertiary:#8c94a1; --text-inverse:#ffffff;
+    --border-subtle:#edeff2; --border-default:#dee2e8; --border-strong:#c2c9d2;
+    --focus-ring: var(--brand);
+    --accent-bg: color-mix(in oklch, var(--brand) 10%, #ffffff);
+    --accent-fg: color-mix(in oklch, var(--brand) 82%, #0b0d10);
+    --accent-border: color-mix(in oklch, var(--brand) 32%, #ffffff);
+    --accent-emphasis: var(--brand);
+    --success-bg:#e9f7ef; --success-fg:#0f6d39; --success-border:#b6e2c8; --success-emphasis:#17a35a;
+    --warning-bg:#fdf3e2; --warning-fg:#8a5806; --warning-border:#f2dba6; --warning-emphasis:#d98207;
+    --danger-bg:#fdeded; --danger-fg:#a41c1c; --danger-border:#f4c5c5; --danger-emphasis:#dc2b2b;
+    --shadow-1: 0 1px 2px rgba(16,20,28,.06), 0 1px 1px rgba(16,20,28,.04);
+    --shadow-2: 0 4px 12px rgba(16,20,28,.08), 0 1px 3px rgba(16,20,28,.05);
+    --shadow-3: 0 16px 40px rgba(16,20,28,.14), 0 4px 10px rgba(16,20,28,.07);
+    background: var(--bg-canvas); color: var(--text-primary);
+    font-size: var(--text-base); line-height: 20px; -webkit-font-smoothing: antialiased;
+    width: 1440px; height: 900px; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .app.dark {
+    --bg-canvas:#0c0e12; --bg-surface:#14171d; --bg-raised:#1a1e25; --bg-sunken:#0f1216;
+    --bg-hover:#1e232b; --bg-active:#262c35; --bg-selected: color-mix(in oklch, var(--brand) 22%, #14171d);
+    --text-primary:#eef1f5; --text-secondary:#a2abb8; --text-tertiary:#6f7885; --text-inverse:#0c0e12;
+    --border-subtle:#1e232b; --border-default:#2a313a; --border-strong:#3d4650;
+    --accent-bg: color-mix(in oklch, var(--brand) 22%, #14171d);
+    --accent-fg: color-mix(in oklch, var(--brand) 62%, #ffffff);
+    --accent-border: color-mix(in oklch, var(--brand) 45%, #14171d);
+    --success-bg:#0f2a1c; --success-fg:#6ee7a8; --success-border:#1d4c33; --success-emphasis:#22c46e;
+    --warning-bg:#2c2010; --warning-fg:#f0c073; --warning-border:#4d3a18; --warning-emphasis:#e0930f;
+    --danger-bg:#2d1516; --danger-fg:#f5a3a3; --danger-border:#552527; --danger-emphasis:#e5484d;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.5); --shadow-2: 0 4px 14px rgba(0,0,0,.55);
+    --shadow-3: 0 18px 44px rgba(0,0,0,.65);
+  }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  .row { display: flex; align-items: center; }
+  .btn { display: inline-flex; align-items: center; gap: var(--space-2); height: var(--control-md);
+    padding: 0 var(--space-3); border-radius: var(--radius-md); font-size: var(--text-base);
+    font-weight: 500; border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+  .btn-primary { background: var(--brand); color: #fff; box-shadow: var(--shadow-1); }
+  .btn-secondary { background: var(--bg-surface); color: var(--text-primary); border-color: var(--border-default); box-shadow: var(--shadow-1); }
+  .btn-ghost { background: transparent; color: var(--text-secondary); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 var(--space-2);
+    border-radius: var(--radius-full); font-size: var(--text-xs); font-weight: 600; letter-spacing: .01em; }
+  .card { background: var(--bg-surface); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-1); }
+  .rail-item { display: flex; align-items: center; gap: var(--space-3); height: var(--control-lg);
+    padding: 0 var(--space-3); border-radius: var(--radius-md); color: var(--text-secondary);
+    font-size: var(--text-base); font-weight: 500; }
+  .rail-item.on { background: var(--bg-selected); color: var(--accent-fg); font-weight: 600; }
+  .th { font-size: var(--text-xs); font-weight: 600; color: var(--text-tertiary); letter-spacing: .04em;
+    text-transform: uppercase; }
+  .cell { height: var(--row-h); display: flex; align-items: center; padding: 0 var(--space-3);
+    border-bottom: 1px solid var(--border-subtle); font-size: var(--text-sm); overflow: hidden; }
+"""
+
+def icon(name, size=20, color="currentColor", sw="1.6"):
+    p = {
+      "grid": '<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>',
+      "chart": '<path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/>',
+      "flow": '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V14a4 4 0 0 0 4 4h5.5"/>',
+      "people": '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 5.5a3 3 0 0 1 0 5"/><path d="M18 20a5 5 0 0 0-3-4.6"/>',
+      "cog": '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>',
+      "doc": '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v4h4"/><path d="M9 12h6M9 16h6"/>',
+      "search": '<circle cx="11" cy="11" r="6"/><path d="M20 20l-3.5-3.5"/>',
+      "bell": '<path d="M18 15v-4a6 6 0 1 0-12 0v4l-2 3h16z"/><path d="M10 21h4"/>',
+      "plus": '<path d="M12 5v14M5 12h14"/>',
+      "filter": '<path d="M3 5h18l-7 8v5l-4 2v-7z"/>',
+      "sort": '<path d="M7 4v16M7 20l-3-3M7 4l3 3"/><path d="M14 8h7M14 13h5M14 18h3"/>',
+      "chev": '<path d="M9 6l6 6-6 6"/>',
+      "down": '<path d="M6 9l6 6 6-6"/>',
+      "clock": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      "calendar": '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+      "warn": '<path d="M12 3l9 16H3z"/><path d="M12 9v5M12 17h.01"/>',
+      "check": '<path d="M4 12l5 5L20 6"/>',
+      "layers": '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+      "shield": '<path d="M12 3l8 3v6c0 5-3.5 8.2-8 9-4.5-.8-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+      "user": '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+      "dots": '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+      "panel": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+      "sparkle": '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
+    }[name]
+    return (f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" '
+            f'stroke-width="{sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{p}</svg>')
+
+def chip(text, kind="accent"):
+    return (f'<span class="chip" style="background: var(--{kind}-bg); color: var(--{kind}-fg); '
+            f'border: 1px solid var(--{kind}-border);">{text}</span>')
+
+def avatar(initials, hue):
+    return (f'<span style="width:24px;height:24px;border-radius:var(--radius-full);'
+            f'background:oklch(0.72 0.11 {hue});color:#10131a;font-size:10px;font-weight:700;'
+            f'display:inline-flex;align-items:center;justify-content:center;flex:none;">{initials}</span>')
+
+def page(body, props=None, logic_extra="", theme="light", size=(1440, 900)):
+    """Wrap body markup as a .dc.html artboard."""
+    props = props or '{"brand":{"editor":"color","default":"#5b5bd6","options":["#5b5bd6","#0e7c86","#b4530a","#1f6feb"]},' \
+                     '"theme":{"editor":"enum","options":["light","dark"],"default":"THEME"}}'
+    props = props.replace("THEME", theme)
+    prev = '"$preview":{"width":%d,"height":%d}' % size
+    props = props[:-1] + ',' + prev + '}' 
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  {FONTS}
+  <style>{CSS}</style>
+</helmet>
+<div class="app {{{{themeClass}}}}" style="--brand: {{{{brand}}}}; width:{size[0]}px; height:{size[1]}px;">
+{body}
+</div>
+</x-dc>
+<script data-dc-script data-props='{props}'>
+class Component extends DCLogic {{
+  renderVals() {{
+    const theme = this.props.theme ?? '{theme}';
+    return {{ brand: this.props.brand ?? '#5b5bd6', themeClass: theme === 'dark' ? 'dark' : '' }};
+  }}
+{logic_extra}
+}}
+</script>
+</body>
+</html>
+"""
+
+
+ARTBOARDS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "artboards")
+
+def write(name, html):
+    """Every generator writes into design/artboards/, whatever directory it is run from."""
+    os.makedirs(ARTBOARDS, exist_ok=True)
+    path = os.path.join(ARTBOARDS, name)
+    with open(path, "w") as handle:
+        handle.write(html)
+    print("wrote", name, len(html))
