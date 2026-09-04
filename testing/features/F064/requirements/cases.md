@@ -28,4 +28,6 @@ Feature: Billing and subscriptions. Flag `F064_FEATURE`. Every case maps to a ti
 | `F064-REQ-017` | FR-F064-17 | api | redemption succeeds once and returns the new balance; a second attempt returns 409 `already_redeemed`; two concurrent redemptions of one code yield exactly one success; `invalid_code`, `expired` and `not_applicable` are distinguished; the 6th attempt in an hour is rate limited |
 | `F064-REQ-018` | FR-F064-18 | api, e2e | balance covering an invoice marks it `paid_by_credit` with no provider charge; a partial balance reduces the amount due and carries the remainder; unused credit expires with a ledger entry and a 14-day warning; a tenant whose credit covers a failed payment leaves `past_due` and never enters dunning |
 
+| `F064-REQ-019` | FR-F064-19 | api | a plan change writes exactly the module set in `docs/packaging.md` section 2 with `source: plan` and leaves every `manual` row untouched; removing a module from a plan grandfathers current holders as `manual` rather than downgrading them; the upgrade surface lists the same modules the table does |
+
 Evidence: command, fixture seed, provider mock log, result, and artifact path recorded under `testing/evidence/F064/`.

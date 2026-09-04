@@ -175,6 +175,7 @@ and the other is corrected — never both edited to meet in the middle.
 | What a milestone contains and when it is done | `docs/milestones/README.md` |
 | Threats, trust boundaries and their mitigations | `docs/threat-model.md` |
 | How code is written and styled | `docs/engineering-standards.md` |
+| What each plan includes | `docs/packaging.md` |
 | Screens | `design/artboards/*.dc.html`, indexed by `design/canvas.json` |
 | Feature contract, scope, tests, ownership | its ticket in `work/` |
 | Which items exist and their dependencies | `work/plan.md` |
