@@ -77,6 +77,9 @@ Outcome: teams plan work, visualize it, and collect requests. Milestone M2.
 | F011 Dates and schedules | S021 dates/calendars; S022 working time | T041 date types/timezones; T042 working calendar; T043 schedule API; T044 date UI tests | F007 |
 | F049 Localization | S097 locale formatting; S098 translations | T193 locale/timezone formatting; T194 message catalog; T195 tenant locale settings; T196 i18n tests | F005 |
 | F012 Dependencies and Gantt | S023 dependency links; S024 schedule shifts | T045 dependency engine; T046 cycle detection and critical path; T047 Gantt view; T048 schedule E2E | F009, F011 |
+| F069 Home and my work | S137 home surfaces; S138 favourites and recents | T273 home aggregation; T274 favourites and recents; T275 home UI; T276 home permission tests | F005, F006, F013 |
+| F070 Trash and recovery | S139 trash index; S140 restore and purge | T277 trash projection; T278 restore service; T279 trash UI; T280 recovery tests | F005, F006 |
+| F071 Migration import | S141 source parsing; S142 mapped provisioning | T281 source adapters; T282 structure mapping; T283 migration UI; T284 migration tests | F007, F010, F013 |
 | F013 Views | S025 card/calendar; S026 timeline | T049 saved-view schema; T050 card view; T051 calendar/timeline; T052 view permissions | F008, F011 |
 | F014 Forms | S027 form builder; S028 public submission | T053 form schema; T054 conditional rules; T055 submission endpoint; T056 abuse/upload tests | F007 |
 | F015 Templates and baselines | S029 project template; S030 baseline compare | T057 template versioning; T058 provisioning job; T059 baseline snapshot; T060 variance UI | F012, F013, F014 |

@@ -23,6 +23,22 @@ Status: FROZEN 2026-09-03. These decisions are prerequisites for implementation 
 - `jsonb` is permitted only for genuinely user-defined, schema-less payloads: typed cell values, view and widget settings, event payloads, provider response snapshots, and diffs. It is never used for data the product filters, joins, sorts, aggregates, or enforces a constraint on. A `jsonb` column that the product queries by key is a modelling error and becomes a table.
 - Denormalization is allowed only as a derived, rebuildable cache — never as the source of truth — and every such column or table names the query it serves and the job that rebuilds it.
 
+## 2.2 Schema change
+
+- Every schema change is **expand, migrate, contract** across three deploys, never one. Expand adds
+  the new shape and keeps the old; migrate backfills and dual-writes until the read path is switched;
+  contract removes the old shape only once no running version reads it.
+- A single deploy never contains both a write to a new column and the removal of the old one. The
+  running application must work against the schema before and after any migration it ships with,
+  because a rollback runs the old binary against the new schema.
+- Backfills run as resumable jobs in batches with a bounded rate, never as a statement inside a
+  migration. A migration that would lock a large table for longer than a second is a backfill job.
+- `NOT NULL` arrives as: add nullable, backfill, add a validated check, then set not-null. Indexes
+  are created `CONCURRENTLY`. Renames are add-copy-drop across three deploys, never `ALTER … RENAME`.
+- `cargo xtask check-migrations` enforces the mechanical half — naming, ordering, reversibility, and
+  the banned statements. The staging discipline above is a review responsibility, and a migration
+  that cannot state which of the three phases it is fails review.
+
 ## 2.1 Data access
 
 - Every table is reached through exactly one data access class in `crates/persistence/src/<aggregate>/`, named `<Aggregate>Repository`: `UserRepository`, `SheetRepository`, `DepartmentRepository`, one per object type. Two classes never write the same table.
@@ -87,3 +103,22 @@ Status: FROZEN 2026-09-03. These decisions are prerequisites for implementation 
 
 - A ticket is build-ready only when it names its real aggregate, routes/events, schema changes, permission matrix, UI states, test files, rollout flag, and rollback.
 - Generic route/resource names, empty dependency lists where dependencies exist, and “defined by child tasks” language are invalid.
+
+## 11. Environments, release and recovery
+
+- Three environments, all from the same artifact: `dev` (ephemeral, per lane), `staging` (production
+  shape, anonymised data, the only place a release candidate is proven), `production`. An image is
+  built once and promoted; nothing is rebuilt per environment.
+- Configuration differs by environment only through `RuntimeConfig` and the secret source. No
+  environment branches in code, and no environment-specific build.
+- Release is **rolling with health gates**: instances are replaced in batches, `/readyz` must pass
+  before the next batch, and a failed batch stops the rollout with the previous version still
+  serving. Feature-level risk is carried by flags (F048), which is why the deploy itself does not
+  need canary weighting.
+- Rollback is redeploying the previous image, which is safe because of the expand-migrate-contract
+  rule in section 2.2: the previous binary always runs against the current schema.
+- Recovery targets, which the backup and PITR design in F004 exists to meet: **RPO 5 minutes**
+  (continuous WAL archiving) and **RTO 1 hour** for a full restore. Both are proven by the restore
+  drill, not asserted — a drill that has not run in 30 days fails the release gate.
+- Every deploy records the image digest, the migration set applied, and the flag state, so "what was
+  running when this broke" is answerable without archaeology.

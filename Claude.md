@@ -176,6 +176,9 @@ and the other is corrected — never both edited to meet in the middle.
 | Threats, trust boundaries and their mitigations | `docs/threat-model.md` |
 | How code is written and styled | `docs/engineering-standards.md` |
 | What each plan includes | `docs/packaging.md` |
+| Incident behaviour and postmortems | `docs/incident-management.md` |
+| Accessibility claim and its evidence | `docs/accessibility-conformance.md` |
+| Vulnerability reporting and testing | `docs/security-disclosure.md` |
 | Screens | `design/artboards/*.dc.html`, indexed by `design/canvas.json` |
 | Feature contract, scope, tests, ownership | its ticket in `work/` |
 | Which items exist and their dependencies | `work/plan.md` |
@@ -196,7 +199,8 @@ Run before review and in CI. Each exists because something was wrong that a huma
 | `check-persistence` | Third normal form, no array columns, justified `jsonb`, one repository class per table-owning feature |
 | `check-roles` | Every role a ticket or catalog row authorizes against is defined in the authorization model |
 | `check-design` | Every ticket names an artboard that exists in `design/artboards/`, or states plainly that it has no user surface |
-| `check-migrations` | Migration naming, ordering, reversibility and safety |
+| `check-migrations` | Migration naming, ordering, reversibility and safety. The expand-migrate-contract staging in decisions section 2.2 is a review responsibility it cannot check |
+| `validate-tickets` | Ticket metadata, dependency references, owned paths, flags, required sections, file size and lifecycle timestamps. Run it: it catches the 500-line limit on files the other gates do not read |
 | `test-all`, `test-feature` | Every feature harness is present and valid |
 | `self-test` | The gates' own positive controls, including that a source-tree root cannot be added to the catch-all exemption |
 

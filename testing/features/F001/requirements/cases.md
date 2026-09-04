@@ -23,4 +23,6 @@ Feature: Repository and CI. Flag `F001_FEATURE`. Every case maps to a ticket req
 | `F001-NFR-003` | NFR-F001-03 | accessibility | `/status` axe serious = 0, single `h1`, live region announces state |
 | `F001-NFR-004` | NFR-F001-04 | api | rerun of a job is idempotent; no retry-on-flake configuration present |
 
+| `F001-REQ-015` | FR-F001-15 | api | a fixture dependency with a known high advisory fails the `supply-chain` job; a GPL-licensed dependency fails the licence check; the CycloneDX SBOM lists every workspace member and web dependency; an expired exception fails rather than continuing to suppress |
+
 Evidence: command, fixture seed, result, and artifact path recorded under `testing/evidence/F001/`.

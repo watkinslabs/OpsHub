@@ -17,6 +17,9 @@ implementation.
 | `docs/capability-contracts.md` | Contract catalog: aggregate, module slug, routes, events, tables, and roles per feature. |
 | `docs/product-capability-spec.md` | Product requirements and build order. |
 | `work/plan.md` | Delivery index: every feature with its stories, tasks, and dependencies. |
+| `docs/accessibility-conformance.md` | The WCAG 2.2 AA claim, the tests behind it, and where we fall short. |
+| `docs/incident-management.md` | Severity, roles, behaviour during an incident, and the postmortem contract. |
+| `docs/security-disclosure.md` | How to report a vulnerability, our commitments, safe harbour, and the testing programme. |
 | `docs/packaging.md` | What each plan includes: limits and the module-by-plan matrix F064 projects onto F048. |
 | `docs/engineering-standards.md` | How code is written and styled: tokens, components, icons, Rust, tests, and what enforces each rule. |
 | `docs/threat-model.md` | Assets, trust boundaries, threats and the feature that answers each. Required before implementation. |
