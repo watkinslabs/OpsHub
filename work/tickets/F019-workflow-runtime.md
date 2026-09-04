@@ -77,6 +77,8 @@ Excluded: workflow authoring and validation (F018); approval quorum and escalati
 - Keyboard: arrow keys move between runs, `Enter` opens detail, `R` opens retry dialog, `C` opens cancel dialog on a focused run, `Escape` closes; focus ring from shared token; `prefers-reduced-motion` disables status pulse.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Play`, `RotateCcw`, `XCircle`, `AlertTriangle`, `Clock`, `CheckCircle2`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/WorkflowRuns.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

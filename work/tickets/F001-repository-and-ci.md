@@ -49,7 +49,7 @@ As a maintainer, I want a clean checkout to build both the Rust workspace and th
 - **FR-F001-04:** `pnpm install --frozen-lockfile && pnpm --filter web build` exits 0 and writes `apps/web/dist/index.html`; `pnpm --filter web typecheck` runs `tsc --noEmit` under `strict: true`.
 - **FR-F001-05:** `pnpm --filter web dev` serves the app on port 5173 with route `/status` rendering the `StatusPage` that calls `GET /healthz` and shows `ok`, `degraded`, or `unreachable`.
 - **FR-F001-06:** `.github/workflows/gates.yml` defines five jobs named `validate-work`, `rust`, `web`, `policy`, and `line-limit`; all five are required status checks and a pull request into `main` cannot merge while any of them is failing or missing.
-- **FR-F001-07:** The `validate-work` job runs `cargo xtask validate-work`, `validate-plan`, `validate-tickets`, `check-contracts`, `check-migrations`, `check-persistence`, and `check-roles` in that order and exits 1 with the `BLOCKED:` lines from the first failing command.
+- **FR-F001-07:** The `validate-work` job runs `cargo xtask validate-work`, `validate-plan`, `validate-tickets`, `check-contracts`, `check-migrations`, `check-persistence`, `check-roles`, and `check-design` in that order and exits 1 with the `BLOCKED:` lines from the first failing command.
 - **FR-F001-08:** The `policy` job runs `cargo xtask self-test`, `cargo xtask audit-range origin/main..HEAD`, and `cargo xtask audit-pr title.txt body.txt`; a commit message, title, or body containing a forbidden attribution token fails the job with output starting `BLOCKED:`.
 - **FR-F001-09:** The `line-limit` job fails with `<path>: <n> lines; limit is 500` for any tracked text file over 500 lines and passes otherwise.
 - **FR-F001-10:** The `rust` job starts service containers `postgres:18` and `nats:2.11` with JetStream enabled, exports `DATABASE_URL` and `NATS_URL`, runs `cargo test --workspace`, and uploads JUnit output to the artifact `rust-junit`.
@@ -79,6 +79,8 @@ Excluded: xtask commands themselves (F041, F042, F043, F044), container images a
 - CI output: every failing gate prints one `BLOCKED:` line per finding with path and reason; the job summary lists findings as a markdown table.
 - Keyboard: retry button is a native `button`; focus is moved to the status badge after retry completes; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: the `/status` page uses only browser defaults and two Lucide icons `Activity`, `RefreshCw`; it ships before F062 and deliberately consumes no design token, so F001 owns no file under `apps/web/src/design/`.
+
+- Design: `design/artboards/Status.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
 
 ## 4. Technical specification
 

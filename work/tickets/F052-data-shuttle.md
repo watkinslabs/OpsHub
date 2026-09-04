@@ -77,6 +77,8 @@ Excluded: new file-format parsers beyond F010 CSV/XLSX; connector authentication
 - Keyboard: `Tab` order covers list, filters, rows, actions; mapping rows are edited with arrow keys and `Enter`; `Escape` closes the drawer and returns focus; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Truck`, `Upload`, `Download`, `Play`, `RotateCcw`, `Archive`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/DataShuttle.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F052 (aggregate `shuttle-flow`, module `data-shuttle`, role `data-admin`).

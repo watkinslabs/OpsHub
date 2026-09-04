@@ -79,6 +79,8 @@ Excluded: OIDC login, sessions, MFA, API tokens (F038); user and group tables an
 - Keyboard: tab order follows form order; `Escape` closes dialogs and returns focus; the one-time token field is selectable and has a `Copy` button with a live-region confirmation; reduced motion disables the status transition animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `ShieldCheck`, `KeyRound`, `RefreshCw`, `Users`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Sso.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

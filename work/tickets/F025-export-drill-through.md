@@ -85,6 +85,8 @@ Excluded: sheet and view exports and the import pipeline (F010), report definiti
 - Keyboard: `Enter` on a chart point or group row opens the panel, focus moves to the panel heading and is trapped, `Escape` returns focus to the originating element, `Ctrl+Shift+E` opens the export dialog from report and dashboard toolbars.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `SquareArrowOutUpRight`, `Download`, `FileSpreadsheet`, `FileText`, `Image`, `Lock`, `RefreshCw`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Exports.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

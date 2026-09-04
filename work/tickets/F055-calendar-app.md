@@ -76,6 +76,8 @@ Excluded: recurring-event authoring (recurrence display comes from F011 row recu
 - Keyboard: arrows move between days and events, `Enter` opens event details, `Space` picks up an event, arrows move by day (week/month) or 15 minutes (week), `Enter` drops, `Escape` cancels; `T` jumps to today; `1/2/3` switch layouts; focus ring from shared tokens; `prefers-reduced-motion` disables drag animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `CalendarDays`, `CalendarRange`, `List`, `Globe`, `Share2`, `Link`, `EyeOff`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Calendar.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F055 (aggregate `calendar`, module `calendar-app`, roles `calendar-editor`; reads via resource ACL and F036 shares).

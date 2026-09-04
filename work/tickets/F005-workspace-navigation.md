@@ -82,6 +82,8 @@ Excluded: sheets and rows (F006), sharing links and guests (F036), documents ins
 - Keyboard: arrow keys move focus in the tree, `Right` expands, `Left` collapses, `Enter` opens, `F2` renames, `Space` picks up a folder for move, arrows choose the target, `Enter` drops, `Escape` cancels; moves are announced through a live region; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Folder`, `FolderOpen`, `FolderPlus`, `Users`, `Move`, `RotateCcw`, `Trash2`; spacing and color from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Workspace.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F005 (aggregate `workspace`, module `workspaces`, roles `workspace-admin`).

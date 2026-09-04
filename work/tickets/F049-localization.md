@@ -81,6 +81,8 @@ Excluded: working calendars and holidays (F011), user-translated column names or
 - Keyboard: comboboxes support type-ahead, `ArrowUp`/`ArrowDown`, `Enter`, `Escape`; `Save` is reachable by `Tab`; focus returns to the changed control after save; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062) with CJK fallback stack `Noto Sans JP`; Lucide icons `Globe`, `Clock`, `Languages`, `Save`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Localization.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

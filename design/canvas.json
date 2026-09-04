@@ -376,6 +376,168 @@
       "h": 900,
       "page": "page-6",
       "title": "Governance & compliance"
+    },
+    {
+      "file": "Workspace.dc.html",
+      "x": 0,
+      "y": 4080,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Workspace home"
+    },
+    {
+      "file": "ColumnEditor.dc.html",
+      "x": 1560,
+      "y": 4080,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Typed column editor (dark)"
+    },
+    {
+      "file": "Schedules.dc.html",
+      "x": 3120,
+      "y": 4080,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Working calendars & schedules"
+    },
+    {
+      "file": "FormulaEditor.dc.html",
+      "x": 0,
+      "y": 5100,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Formula editor (dark)"
+    },
+    {
+      "file": "Comments.dc.html",
+      "x": 1560,
+      "y": 5100,
+      "w": 1440,
+      "h": 900,
+      "page": "page-1",
+      "title": "Comments & activity"
+    },
+    {
+      "file": "WorkflowRuns.dc.html",
+      "x": 0,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Workflow run console"
+    },
+    {
+      "file": "Metrics.dc.html",
+      "x": 1560,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Metric builder"
+    },
+    {
+      "file": "Exports.dc.html",
+      "x": 3120,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-2",
+      "title": "Exports & drill-through"
+    },
+    {
+      "file": "Sso.dc.html",
+      "x": 0,
+      "y": 4200,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 SSO & SCIM"
+    },
+    {
+      "file": "Localization.dc.html",
+      "x": 1560,
+      "y": 4200,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Admin \u2014 localization"
+    },
+    {
+      "file": "Status.dc.html",
+      "x": 3120,
+      "y": 4200,
+      "w": 1440,
+      "h": 900,
+      "page": "page-3",
+      "title": "Status page"
+    },
+    {
+      "file": "WorkApps.dc.html",
+      "x": 0,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "WorkApps"
+    },
+    {
+      "file": "DataShuttle.dc.html",
+      "x": 1560,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Data Shuttle (dark)"
+    },
+    {
+      "file": "DataMesh.dc.html",
+      "x": 3120,
+      "y": 2040,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "DataMesh"
+    },
+    {
+      "file": "Bridge.dc.html",
+      "x": 0,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Bridge (dark)"
+    },
+    {
+      "file": "Calendar.dc.html",
+      "x": 1560,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Calendar app"
+    },
+    {
+      "file": "Assets.dc.html",
+      "x": 3120,
+      "y": 3060,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "DAM assets (dark)"
+    },
+    {
+      "file": "Formatting.dc.html",
+      "x": 0,
+      "y": 4080,
+      "w": 1440,
+      "h": 900,
+      "page": "page-6",
+      "title": "Conditional formatting"
     }
   ],
   "annotations": [

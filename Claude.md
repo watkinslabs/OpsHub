@@ -172,6 +172,7 @@ Run before review and in CI. Each exists because something was wrong that a huma
 | `check-contracts` | Catalog and tickets agree **in both directions**: a catalog route missing from its ticket fails, and so does a route a ticket names that no row declares |
 | `check-persistence` | Third normal form, no array columns, justified `jsonb`, one repository class per table-owning feature |
 | `check-roles` | Every role a ticket or catalog row authorizes against is defined in the authorization model |
+| `check-design` | Every ticket names an artboard that exists in `design/artboards/`, or states plainly that it has no user surface |
 | `check-migrations` | Migration naming, ordering, reversibility and safety |
 | `test-all`, `test-feature` | Every feature harness is present and valid |
 | `self-test` | The gates' own positive controls, including that a source-tree root cannot be added to the catch-all exemption |

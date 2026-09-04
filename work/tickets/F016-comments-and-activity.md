@@ -77,6 +77,8 @@ Excluded: notification delivery for mentions (F037 consumes `mention.created.v1`
 - Keyboard: `Ctrl+Enter` submits, `Escape` closes the combobox then the drawer, arrow keys move through suggestions, `R` on a focused thread toggles resolve; focus returns to the composer after submit; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `MessageSquare`, `AtSign`, `CheckCircle2`, `History`, `Pencil`, `Trash2`; spacing and colors from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Comments.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

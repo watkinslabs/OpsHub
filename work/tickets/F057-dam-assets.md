@@ -77,6 +77,8 @@ Excluded: uploading files (F017 owns uploads and versions), proofing markup (F01
 - Keyboard: arrow keys move between tiles, `Enter` opens the drawer, `Escape` closes it, `Tab` cycles renditions and actions; collection tree uses `ArrowRight/Left` to expand and collapse; reduced motion disables tile fade-in.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Image`, `Film`, `FolderTree`, `BadgeCheck`, `ShieldAlert`, `Archive`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Assets.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

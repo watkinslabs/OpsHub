@@ -85,6 +85,8 @@ Excluded: inline cell editing, undo, and bulk edits (F008), link targets and rol
 - Keyboard: header receives focus in the tab order, `Enter` opens the menu, `Alt+ArrowLeft/Right` reorders, `Delete` prompts removal; drawer traps focus, `Escape` closes without saving; option list supports `Alt+ArrowUp/Down` reorder; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Type`, `Hash`, `DollarSign`, `Calendar`, `Clock`, `ToggleLeft`, `User`, `Link`, `Paperclip`, `List`, `Sigma`, `Timer`, `AlertCircle`, `EyeOff`, `GripVertical`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/ColumnEditor.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F007.

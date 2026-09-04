@@ -26,7 +26,7 @@ Status: READY FOR IMPLEMENTATION. Specification, architecture and design are com
 
 ## Design
 
-- 39 screens on the design canvas across six pages: core work, planning and reporting, enterprise,
+- 57 screens in `design/artboards/`, one per feature with a user surface, across six canvas pages: core work, planning and reporting, enterprise,
   advanced modules, public surfaces, and the design system sheets.
 - Token, component and chart sheets carry the real values — every colour in both themes, the type
   ramp, spacing, radii, elevation, motion, density — so the screens and F062 agree.

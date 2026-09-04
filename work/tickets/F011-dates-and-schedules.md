@@ -83,6 +83,8 @@ Excluded: dependencies, critical path, and multi-row shift propagation (F012), c
 - Screen reader: the date editor exposes `role="dialog"` named by the column label, the resolved working day is announced through `aria-live="polite"`, and the timezone label is part of the field description.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `CalendarDays`, `Clock`, `Globe`, `Flag`, `Settings2`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Schedules.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

@@ -81,6 +81,8 @@ Excluded: dashboards and widget placement (F023), time-series projection and cha
 - Keyboard: card is a focusable region with `Enter` opening the source report; editor fields in tab order; comparison arrows are `aria-hidden` with visible text `up`/`down`; focus ring tokens; reduced motion disables the sparkline draw animation.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Gauge`, `TrendingUp`, `TrendingDown`, `Minus`, `Target`, `RefreshCw`; color tokens `--kpi-better`, `--kpi-worse`, `--kpi-flat` from `apps/web/src/design/tokens.css` meeting 4.5:1 contrast.
 
+- Design: `design/artboards/Metrics.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

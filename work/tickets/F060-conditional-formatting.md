@@ -79,6 +79,8 @@ Excluded: formula parsing and recalculation itself (F035), saved-view definition
 - Keyboard and screen reader: every formatted row exposes `aria-describedby` pointing to a visually hidden `Formatted by Late tasks, Mine`; icons carry `aria-hidden` and their meaning comes from the description; the signal mode switch is a labelled two-option radio group.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Palette`, `ListOrdered`, `Eye`, `EyeOff`, `AlertTriangle`, `CircleHelp`; all fills, text colours, and focus rings from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Formatting.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 ### Rust backend

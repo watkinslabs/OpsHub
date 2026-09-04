@@ -77,6 +77,8 @@ Excluded: new connector adapters (F029/F030 own adapters; Bridge consumes `jira`
 - Keyboard: `Tab` between steps, `Enter` opens the step form, `Escape` closes, `Alt+ArrowUp/Down` reorders a step, `R` on a failed step focuses `Retry step`; focus ring from shared tokens.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Workflow`, `Play`, `RotateCcw`, `XCircle`, `Clock`, `GitBranch`, `Plug`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/Bridge.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F054 (aggregate `bridge-workflow`, module `bridge`, roles `workflow-editor`; reads by `workflow-viewer` per F019 conventions).

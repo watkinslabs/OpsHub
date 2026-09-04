@@ -83,6 +83,8 @@ Excluded: automation expression evaluation (F018 reuses the parser), report calc
 - Keyboard: `Ctrl+Space` opens autocomplete, arrows and `Enter` pick, `Escape` closes, `Ctrl+Enter` saves; focus returns to the column header after save; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Sigma`, `FunctionSquare`, `AlertTriangle`, `RefreshCw`, `GitBranch`; error colors from `apps/web/src/design/tokens.css` with 4.5:1 contrast.
 
+- Design: `design/artboards/FormulaEditor.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F035.

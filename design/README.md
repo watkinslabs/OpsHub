@@ -42,6 +42,16 @@ links the published canvas, which is a rendering of exactly these files.
 
 ## Publishing
 
-The canvas is seeded from `artboards/` plus `canvas.json` and published as an Artifact. The seeded
-output is a build artifact and is deliberately not committed — it embeds a 2 MB editor and would be
-regenerated on every change.
+The canvas is seeded from `artboards/` plus `canvas.json` and published as an Artifact. Seed from
+inside `artboards/` with a copy of the manifest beside the files:
+
+```sh
+cd design/artboards && cp ../canvas.json . \
+  && node <skill>/seed-canvas.mjs --template <skill>/payload.template.html \
+       --out /tmp/opshub-canvas.html --title "OpsHub Design System" \
+       $(python3 -c "import json;print(' '.join('--artboard '+a['file'] for a in json.load(open('canvas.json'))['artboards']))") \
+       --canvas canvas.json && rm canvas.json
+```
+
+The seeded output is a build artifact and is deliberately not committed — it embeds a 2 MB editor and
+is regenerated on every change.

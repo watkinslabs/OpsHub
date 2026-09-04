@@ -77,6 +77,8 @@ Excluded: file-based ingestion (F052); external system sync (F030); new formula 
 - Keyboard: `Tab` order covers tabs, tables, and actions; arrow keys move within map tables; `Enter` opens a column picker; `Escape` closes pickers and dialogs and restores focus; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `GitMerge`, `Link2`, `Play`, `Eye`, `AlertTriangle`, `Check`, `ArrowLeftRight`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/DataMesh.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F053 (aggregate `datamesh-mapping`, module `datamesh`, role `data-admin`).

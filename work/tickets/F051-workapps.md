@@ -75,6 +75,8 @@ Excluded: new data surfaces (every page embeds an existing F006/F013/F014/F021/F
 - Keyboard: `Alt+ArrowUp/Down` reorders the focused page in the builder, `Enter` opens a page, navigation is a `nav` with arrow-key roving focus, `Escape` closes the drawer; motion respects `prefers-reduced-motion`.
 - Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `LayoutGrid`, `Layers`, `Users`, `Rocket`, `History`, `EyeOff`; tokens from `apps/web/src/design/tokens.css`.
 
+- Design: `design/artboards/WorkApps.dc.html` on the canvas indexed by `design/canvas.json`. The ticket is the contract and the artboard is the picture; when they disagree the ticket wins.
+
 ## 4. Technical specification
 
 Canonical contract: `docs/capability-contracts.md` row F051 (aggregate `work-app`, module `workapps`, role `app-admin`).
