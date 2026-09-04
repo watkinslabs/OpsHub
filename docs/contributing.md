@@ -19,12 +19,13 @@ cargo run --quiet --manifest-path $M -- check-contracts
 cargo run --quiet --manifest-path $M -- check-persistence
 cargo run --quiet --manifest-path $M -- check-roles
 cargo run --quiet --manifest-path $M -- check-design
+cargo run --quiet --manifest-path $M -- check-references
 cargo run --quiet --manifest-path $M -- check-migrations
 cargo run --quiet --manifest-path $M -- test-all
 cargo run --quiet --manifest-path $M -- self-test
 ```
 
-All eleven pass on a clean clone. If one fails on a clone you have not touched, that is a bug in the
+All twelve pass on a clean clone. If one fails on a clone you have not touched, that is a bug in the
 gate or the backlog, not something to work around — fix it or report it before continuing.
 
 Product code does not exist yet. F001 creates the Cargo and pnpm workspaces; until it is done there

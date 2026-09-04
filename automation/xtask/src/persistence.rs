@@ -150,3 +150,66 @@ pub(crate) fn check_design() -> Result<(), String> {
     for error in &errors { eprintln!("BLOCKED: {error}"); }
     Err(format!("design audit failed: {} finding(s)", errors.len()))
 }
+
+/// Tickets cite each other's requirements and each other's files. Nothing verified that those
+/// references resolve, so a renumbered requirement or a moved document leaves a dangling citation
+/// that reads as authoritative. This checks every cross-reference in the backlog and the docs.
+pub(crate) fn check_references() -> Result<(), String> {
+    use std::collections::{HashMap, HashSet};
+    let mut declared: HashMap<String, HashSet<String>> = HashMap::new();
+    for path in crate::support::work_files() {
+        let Ok(text) = fs::read_to_string(&path) else { continue; };
+        let Some(id) = front_value(&text, "id:") else { continue; };
+        for prefix in ["FR-", "NFR-", "SR-"] {
+            let key = format!("{prefix}{id}-");
+            let owned = crate::support::tagged_ids(&text, &key);
+            if !owned.is_empty() { declared.entry(key).or_default().extend(owned); }
+        }
+    }
+    let mut errors = Vec::new();
+    let mut checked = 0usize;
+    let scan = crate::support::work_files().into_iter()
+        .chain(std::path::Path::new("docs").read_dir().into_iter().flatten().flatten().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "md"));
+    for path in scan {
+        let Ok(text) = fs::read_to_string(&path) else { continue; };
+        let label = path.display().to_string();
+        for prefix in ["FR-", "NFR-", "SR-"] {
+            for (index, _) in text.match_indices(prefix) {
+                let tail = &text[index + prefix.len()..];
+                let owner = tail.chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>();
+                if owner.len() != 4 || !crate::support::valid_id(&owner) { continue; }
+                let rest = &tail[owner.len()..];
+                if !rest.starts_with('-') { continue; }
+                let digits = rest[1..].chars().take_while(char::is_ascii_digit).count();
+                if digits == 0 { continue; }
+                let reference = format!("{prefix}{owner}-{}", &rest[1..1 + digits]);
+                checked += 1;
+                let key = format!("{prefix}{owner}-");
+                match declared.get(&key) {
+                    Some(set) if set.contains(&reference) => {}
+                    Some(_) => errors.push(format!("reference.unknown {label}: cites `{reference}`, which {owner} does not define")),
+                    None => errors.push(format!("reference.no_owner {label}: cites `{reference}`, but {owner} declares no {prefix}ids")),
+                }
+            }
+        }
+        // Repository-relative paths a document points at must exist.
+        for token in backtick_tokens(&text) {
+            let candidate = token.split_whitespace().next().unwrap_or("");
+            if !(candidate.starts_with("docs/") || candidate.starts_with("design/artboards/")) { continue; }
+            if candidate.contains('*') || !candidate.ends_with(".md") && !candidate.ends_with(".html") { continue; }
+            checked += 1;
+            if !std::path::Path::new(candidate).exists() {
+                errors.push(format!("reference.missing_file {label}: points at `{candidate}`, which does not exist"));
+            }
+        }
+    }
+    errors.sort();
+    errors.dedup();
+    if errors.is_empty() {
+        println!("reference checks passed: {checked} cross-references resolve");
+        return Ok(());
+    }
+    for error in errors.iter().take(40) { eprintln!("BLOCKED: {error}"); }
+    Err(format!("reference audit failed: {} finding(s)", errors.len()))
+}

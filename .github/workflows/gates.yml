@@ -27,6 +27,7 @@ jobs:
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-persistence
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-roles
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-design
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-references
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- self-test
       - name: pull request text gate
         if: github.event_name == 'pull_request'

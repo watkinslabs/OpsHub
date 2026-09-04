@@ -8,3 +8,4 @@ cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-contracts
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-persistence
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-roles
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-design
+cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-references

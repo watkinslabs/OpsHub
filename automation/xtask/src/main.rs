@@ -8,7 +8,7 @@ mod support;
 use std::{env, process::ExitCode};
 
 fn usage() -> Result<(), String> {
-    eprintln!("cargo xtask <audit-staged|audit-message FILE|audit-range RANGE|audit-pr TITLE BODY|validate-tickets|validate-work|validate-plan|validate-decisions|check-contracts|check-persistence|check-roles|check-design|check-ownership|check-migrations|test-feature ID|test-all|self-test|scaffold-plan|install-hooks>");
+    eprintln!("cargo xtask <audit-staged|audit-message FILE|audit-range RANGE|audit-pr TITLE BODY|validate-tickets|validate-work|validate-plan|validate-decisions|check-contracts|check-persistence|check-roles|check-design|check-references|check-ownership|check-migrations|test-feature ID|test-all|self-test|scaffold-plan|install-hooks>");
     Err("invalid command".into())
 }
 
@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         Some("check-persistence") => persistence::check_persistence(),
         Some("check-roles") => persistence::check_roles(),
         Some("check-design") => persistence::check_design(),
+        Some("check-references") => persistence::check_references(),
         Some("check-ownership") => policy::check_ownership_command(),
         Some("check-migrations") => release::check_migrations(),
         Some("test-feature") => args.next().ok_or("feature id required".into()).and_then(|id| release::test_feature(&id)),
