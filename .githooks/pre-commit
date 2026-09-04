@@ -11,3 +11,4 @@ cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-design
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-references
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-order
 cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-filters
+cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-completeness

@@ -31,7 +31,8 @@ finished_at: null
 - Branch: `f071-migration-import`
 - Capability area: planning and intake (spec 5.2 structural import bullets; 5.1 typed columns and hierarchy; section 6 async job and reliability targets)
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 5, 7, 9; `docs/capability-contracts.md` row F071
-- Module slug: `migration`; aggregate: `migration`
+- Aggregate: `migration`
+- Module slug: `migration`
 
 ## 2. Requirement specification
 
@@ -101,6 +102,213 @@ Canonical contract: `docs/capability-contracts.md` row F071.
 - Authorization: `sheet-editor` on `target_folder_id` for create, commit, and delete, and on the migration's folder for read; `viewer` and `commenter` receive `denied` on every route; every provisioning call runs under the requesting actor's context so a folder the actor cannot write is refused before the first sheet is created; foreign-tenant ids map to `not_found`.
 - Validation: `source_kind` in the four values, `name` 1–120 chars, `file_id` present and scanned, container and limits per FR-F071-03, `column_overrides` target types within the twelve F007 types with settings valid for that type, `sheet_overrides` naming sheet maps of this migration, `waived_issue_ids` naming issues of this migration.
 - Error mapping: `MigrationError::UnsupportedSource | LimitExceeded | InvalidOverride | UnresolvedAmbiguity | BlockingIssues → 400 invalid`, `AlreadyCommitting | TerminalStatus → 409 conflict`, `NotFound | Expired → 404 not_found`, `AuthzError::Denied → 403 denied`, `ConcurrentMigrationQuota → 429 rate_limited`, `SourceUnreadable → 503 unavailable`.
+
+### Interface
+
+Exact shapes. `T?` is nullable; a missing optional field and an explicit `null` are the same thing.
+Timestamps are RFC 3339 UTC, ids are UUIDv7 strings, `version` increments by one per write. Unlisted
+request fields are rejected with `400 invalid`. `Page<T>` and the error body (including its optional
+`reason`) are F028's; `ColumnType` is F007's twelve-member enum and is not redefined here;
+`ActorContext` is F038's; the permission vocabulary is `docs/authorization-model.md`.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `contains`, `between` — two narrow uses and no more: `GET /api/v1/migrations` filters by `status` and `source_kind` with equality only, and a translated Excel AutoFilter stages an F013 filter AST holding exactly these three operators (FR-F071-12); every richer source predicate becomes an issue rather than a fourth operator, because a filter this feature cannot express faithfully must be visible, not approximated.
+
+**`CreateMigrationRequest`** — `POST /api/v1/migrations`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `file_id` | uuid | yes | an F017 file already scanned `clean`; unscanned, foreign-tenant or absent → `404 not_found`; a container that is neither `.xlsx` nor `.zip`, or whose entries do not match `source_kind` → `400 invalid` with `field_errors.file_id = "unsupported_source"`; past the size or expansion caps → `field_errors.file_id = "expansion_limit"` |
+| `source_kind` | `"excel" \| "google-sheets" \| "smartsheet" \| "airtable"` | yes | outside the four → `400 invalid` |
+| `target_folder_id` | uuid | yes | caller holds `sheet-editor` on it, else `403 denied`; another tenant's folder → `404 not_found` |
+| `name` | string? | no | 1–120 characters after trim; defaults to the container's file name |
+
+**`CommitMigrationRequest`** — `POST /api/v1/migrations/{id}/commit`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_overrides` | ColumnOverride[] | no | default empty; each `column_map_id` must belong to this migration, else `400 invalid` with `field_errors.column_overrides` |
+| `sheet_overrides` | SheetOverride[] | no | default empty; each `sheet_map_id` must belong to this migration |
+| `accept_ambiguous` | bool | no | default `false`; while `false`, any column still `ambiguous` with no override is `400 invalid` with `field_errors.column_overrides` naming it |
+| `waived_issue_ids` | uuid[] | no | default empty; each must name an issue of this migration; an unwaived `blocking` issue leaves commit `400 invalid` with `field_errors.waived_issue_ids` |
+
+**`ColumnOverride`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `column_map_id` | uuid | yes | a `migration_column_maps` row of this migration |
+| `target_type` | ColumnType | yes | one of F007's twelve; re-validated against F007's create-column contract before any write |
+| `settings` | object? | no | the F007 settings payload for `target_type`; invalid for that type → `400 invalid` with `field_errors.column_overrides` and nothing is created |
+
+**`SheetOverride`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_map_id` | uuid | yes | a `migration_sheets` row of this migration |
+| `name` | string? | no | 1–200 characters; deduplicated against the destination folder with a ` (2)` suffix, as the proposed name already is |
+| `included` | bool | yes | `false` marks the tab `skipped` and creates no sheet for it |
+
+**`MigrationSummary`** — the list item, and the `migration` member of the preview
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `source_kind` | `"excel" \| "google-sheets" \| "smartsheet" \| "airtable"` | |
+| `target_folder_id` | uuid | |
+| `name` | string | |
+| `status` | `"analyzing" \| "ready" \| "committing" \| "completed" \| "failed" \| "cancelled"` | |
+| `failure_reason` | `"invalid_source" \| "blocking_issues" \| "dead_letter" \| "cancelled"`? | present only when `status` is `failed` or `cancelled` |
+| `tab_count` | integer | |
+| `total_rows` | integer | staged rows across every included tab |
+| `committed_sheet_count` | integer | `0` until the first tab commits, which is how the dry run says nothing exists yet |
+| `blocking_issue_count` | integer | unwaived `blocking` issues; commit is refused while it is non-zero |
+| `expires_at` | timestamp | 7 days after a terminal status; the cleanup job's key |
+| `version` | integer | pass as `If-Match` on commit and delete |
+| `created_at` / `updated_at` | timestamp | |
+| `created_by` / `updated_by` | uuid | |
+
+**`MigrationPreviewResponse`** — `GET /api/v1/migrations/{id}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `migration` | MigrationSummary | |
+| `sheets` | SheetPlanDto[] | in `ordinal` order |
+| `issues` | IssueDto[] | in `ordinal` order, which is source position — the ordering NFR-F071-05 makes deterministic |
+| `sample_rows` | map<uuid, (string?)[][]> | keyed by `sheet_map_id`, up to 20 rows per tab, each row an array of raw source strings in `source_index` order; parsed on demand from the stored file and never persisted |
+
+**`SheetPlanDto`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the `sheet_map_id` overrides name |
+| `ordinal` | integer | source tab order; also the commit order |
+| `source_name` | string | |
+| `proposed_name` | string | deduplicated against the destination folder |
+| `header_row_number` | integer? | `null` when no row qualified, which also raises `no_header_row` |
+| `row_count` | integer | staged rows, already truncated at the 100,000 cap when `row_cap_exceeded` was raised |
+| `column_count` | integer | |
+| `included` | bool | |
+| `state` | `"pending" \| "committing" \| "committed" \| "failed" \| "skipped"` | |
+| `target_sheet_id` | uuid? | non-null exactly when `state` is `committing` or `committed` |
+| `cursor_row_number` | integer | the resume point; `≤ row_count` |
+| `committed_rows` | integer | |
+| `failure_reason` | string? | present only when `state` is `failed`; the dead-letter reason the UI shows inline |
+| `columns` | ColumnMapDto[] | in `source_index` order |
+
+**`ColumnMapDto`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the `column_map_id` an override names |
+| `source_index` | integer | 0-based position in the source tab |
+| `source_header` | string? | `null` when the tab had no header row |
+| `inferred_type` | ColumnType | one of F007's twelve; `formula` is never inferred from values |
+| `confidence` | decimal string | `0.000`–`1.000`, three decimals, sent as a string so no client does float arithmetic on it |
+| `state` | `"inferred" \| "ambiguous" \| "overridden" \| "excluded"` | |
+| `target_type` | ColumnType? | non-null exactly when `state` is `overridden`, matching the table's own check constraint |
+| `settings` | object | the proposed F007 column settings, moved whole to the create-column call; `{}` when the type needs none |
+| `sample_values` | string[] | up to 5 raw values; for an `ambiguous` column below 0.95 these are the values that failed |
+| `link_target_sheet_map_id` | uuid? | present when the column resolved to a cross-tab link |
+| `link_key_source_index` | integer? | present exactly when `link_target_sheet_map_id` is |
+| `target_column_id` | uuid? | the created F007 column, present only after its tab commits |
+
+**`IssueDto`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the id a `waived_issue_ids` entry names |
+| `sheet_map_id` | uuid? | `null` for a migration-wide issue |
+| `kind` | one of the twenty `kind` values of FR-F071-15 | |
+| `severity` | `"blocking" \| "warning" \| "informational"` | |
+| `source_ref` | string? | the source column or cell reference, e.g. `Milestones!D14` |
+| `message` | string | written in the user's terms, not the parser's |
+| `ordinal` | integer | source position; the stable sort key |
+| `waived_by` | uuid? | non-null exactly when `waived_at` is |
+| `waived_at` | timestamp? | |
+
+**`CommitAcceptedResponse`** — the `202` body of both mutations that enqueue work
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | the migration |
+| `status` | `"analyzing" \| "committing"` | `analyzing` from `POST /api/v1/migrations`, `committing` from the commit route |
+| `version` | integer | the row's version, per the catalog's "mutations return `version`" convention, so the client can `If-Match` the next call without a second read |
+
+**List parameters** — `GET /api/v1/migrations`
+
+| Parameter | Type | Constraint |
+|---|---|---|
+| `status` | string? | equality on one of the six status values; anything else → `400 invalid` |
+| `source_kind` | string? | equality on one of the four source kinds |
+| `cursor` | string? | F028's opaque signed cursor |
+| `limit` | integer? | 1–100, default 20 |
+
+The response is F028's `Page<MigrationSummary>`, sorted `created_at` descending then `id`, which is
+the `migrations(tenant_id, status, created_at desc)` index.
+
+**Status codes**
+
+| Status | Produced by |
+|---|---|
+| `200` | `GET /api/v1/migrations`, `GET /api/v1/migrations/{id}` |
+| `202` | `POST /api/v1/migrations` and `POST /api/v1/migrations/{id}/commit`, both acknowledged in under 2 s |
+| `204` | `DELETE /api/v1/migrations/{id}` |
+| `400 invalid` | `unsupported_source`, `expansion_limit`, `tab_limit`, an override naming a foreign map id, an invalid `target_type` or `settings`, an unwaived `blocking` issue, and an `ambiguous` column with neither an override nor `accept_ambiguous` |
+| `403 denied` | a viewer or commenter on `target_folder_id`, or an actor without `sheet-editor` on the migration's folder |
+| `404 not_found` | a `file_id`, `target_folder_id` or migration id from another tenant, and a migration past `expires_at` |
+| `409 conflict` | committing a migration already `committing` or `completed`, a stale `If-Match`, and an `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | a fourth concurrent migration in `analyzing` or `committing` for the tenant, with `Retry-After` |
+| `503 unavailable` | `SourceUnreadable` — object storage will not serve the staged file; nothing is written |
+
+### Use case signatures
+
+In `crates/domain/src/migration/service.rs`; worker handlers in `services/worker/src/migration/`.
+`Ctx` is F038's `ActorContext`; `JobCtx` is the worker's actor-less job context carrying tenant and
+correlation id.
+
+```rust
+fn create_migration(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateMigration) -> Result<Migration, DomainError>;
+fn analyze_migration(ctx: &JobCtx, uow: &mut UnitOfWork, id: MigrationId, source: &dyn SourceReader) -> Result<Migration, DomainError>;
+fn get_migration(ctx: &Ctx, repo: &dyn MigrationRepository, sheets: &dyn MigrationSheetRepository, maps: &dyn MigrationColumnMapRepository, issues: &dyn MigrationIssueRepository, source: &dyn SourceReader, id: MigrationId) -> Result<MigrationPreview, DomainError>;
+fn list_migrations(ctx: &Ctx, repo: &dyn MigrationRepository, filter: MigrationFilter, page: Cursor) -> Result<Page<Migration>, DomainError>;
+fn apply_overrides(ctx: &Ctx, uow: &mut UnitOfWork, id: MigrationId, expected: Version, req: CommitMigration) -> Result<Migration, DomainError>;
+fn waive_issue(ctx: &Ctx, uow: &mut UnitOfWork, id: IssueId) -> Result<MigrationIssue, DomainError>;
+fn commit_migration(ctx: &Ctx, uow: &mut UnitOfWork, id: MigrationId, expected: Version, req: CommitMigration) -> Result<Migration, DomainError>;
+fn resume_commit(ctx: &JobCtx, uow: &mut UnitOfWork, sheet: SheetMapId, source: &dyn SourceReader) -> Result<MigrationSheet, DomainError>;
+fn rollback_sheet(ctx: &JobCtx, uow: &mut UnitOfWork, sheet: SheetMapId, reason: FailureReason) -> Result<MigrationSheet, DomainError>;
+fn delete_migration(ctx: &Ctx, uow: &mut UnitOfWork, id: MigrationId, expected: Version) -> Result<(), DomainError>;
+fn cleanup_expired(ctx: &JobCtx, uow: &mut UnitOfWork, batch: usize) -> Result<CleanupReport, DomainError>;
+```
+
+`MigrationFilter` is `{ status: Option<MigrationStatus>, source_kind: Option<SourceKind> }` — the
+whole of this route's filter surface. `CommitMigration` is the deserialized `CommitMigrationRequest`;
+`apply_overrides` is the validation half of `commit_migration` and is called by it, not by a route of
+its own, which is why the overrides are submitted whole with the commit. `waive_issue` is likewise
+reached through `commit_migration`'s `waived_issue_ids` and has no route. A use case never takes a
+pool or a connection and never returns a database row type.
+
+Transaction boundaries:
+
+- `create_migration` writes the `migrations` row, its audit row and the analysis job's outbox message
+  in **one `UnitOfWork`**, so a migration that exists is always one a worker will pick up.
+- `analyze_migration` writes every `migration_sheets`, `migration_column_maps` and `migration_issues`
+  row plus the status flip to `ready` and the recomputed `blocking_issue_count` in **one
+  `UnitOfWork`**. A half-staged plan would be a preview that lies about what commit will create;
+  re-analysis replaces the whole plan through `replace_column_maps`, which is only atomic here.
+- `commit_migration` validates and applies every override, waives the named issues, flips the status
+  to `committing` and enqueues the commit job in **one `UnitOfWork`**, so the plan a worker reads is
+  exactly the plan the user approved.
+- Provisioning is **one `UnitOfWork` per tab**: that tab's sheet, its columns and options, and its
+  views. A structure failure therefore leaves nothing of that tab, which is the invariant behind "a
+  failed tab leaves nothing half-created". Rows are *not* in that boundary — they stream afterwards in
+  1,000-row chunks, each chunk its own transaction advancing `cursor_row_number` and
+  `committed_rows`, because one transaction over 100,000 rows would hold locks for minutes and lose
+  the resume point.
+- `rollback_sheet` soft-deletes that tab's sheet and rows and marks the map `failed` in **one
+  `UnitOfWork`**; the migration continues with the next tab in its own boundaries.
+- The link pass and the hierarchy pass run **one `UnitOfWork` per row batch** after every tab is
+  committed; a link that fails marks its issue and never rolls back a committed sheet.
+- `delete_migration` soft-deletes the migration and every sheet it created in one `UnitOfWork`, and
+  the source file removal follows the commit, since an object-store delete cannot be rolled back.
 
 ### PostgreSQL/SQLx
 

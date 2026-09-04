@@ -86,12 +86,150 @@ Excluded: the per-entity soft delete and restore routes themselves, which stay w
 - Domain entities in `crates/domain/src/trash/`: `TrashEntry { id, tenant_id, kind: KindKey, item_id, title, parent: Option<ItemRef>, parent_path, workspace_id, deleted_at, deleted_by, expires_at, state: Restorable|Blocked|Held|Expired, blocked_reason: Option<BlockedReason>, held, source_event_id, source_version, projection_epoch, projected_at }`, `ItemRef { kind: KindKey, id }`, `TrashKindSpec { key, resource, deleted_event, restored_event, target: &'static dyn TrashTarget }`, `TrashRegistry { by_key: BTreeMap<KindKey, &'static TrashKindSpec> }`.
 - Registry and ports in `crates/domain/src/trash/registry.rs`: `trait TrashTarget { fn describe(&self, uow, id) -> Result<Option<DeletedItem>>; fn parent_of(&self, uow, id) -> Result<Option<ItemRef>>; fn restore(&self, uow, id) -> Result<Version>; fn purge(&self, uow, id) -> Result<PurgedBlobs>; fn list_deleted(&self, uow, tenant, cursor) -> Result<Page<DeletedItem>> }`. Owning features implement it in their own module and publish it through the `linkme` distributed slice `TRASH_KINDS`; `TrashRegistry::load` collects the slice at start-up, where a failure must stop the process, and validates uniqueness and resource keys. Adding a kind touches only the owning feature.
 - Use cases: `list_trash`, `restore_item`, `purge_item`, `project_event`, `rebuild_tenant`, `sweep_expired`, `resolve_blocked_state`.
-- API endpoints (`services/api/src/trash/`): `GET /api/v1/trash`, `POST /api/v1/trash/{kind}/{id}/restore`, `DELETE /api/v1/trash/{kind}/{id}`. DTOs: `TrashQuery { kind?, workspace_id?, deleted_by?, deleted_after?, deleted_before?, q?, cursor?, limit? }`, `TrashEntryResponse`, `TrashPage { items, next_cursor, as_of, stale }`, `RestoreResponse { kind, item_id, version, restored_children }`. Purge returns no body.
+- API endpoints (`services/api/src/trash/`): `GET /api/v1/trash`, `POST /api/v1/trash/{kind}/{id}/restore`, `DELETE /api/v1/trash/{kind}/{id}`. DTOs: `TrashQuery { kind?, workspace_id?, deleted_by?, deleted_after?, deleted_before?, q?, cursor?, limit? }`, `TrashEntryResponse`, `TrashPage` (F028's `Page<TrashEntryResponse>` — `items`, `next_cursor`, `has_more`, `total?` — plus this feature's `as_of` and `stale`), `RestoreResponse { kind, item_id, version, restored_children }`. Purge returns no body.
 - Worker jobs (`services/worker/src/trash/`): `project.rs` consuming `jobs.trash.project` fed by the outbox subjects of the registered kinds; `rebuild.rs` consuming `jobs.trash.rebuild` with per-tenant quota 1 and a 30-minute timeout; `sweep.rs` nightly at 03:00 tenant local, batching 500 entries, 3 retries then dead letter.
 - Events: `item.restored.v1` and `item.purged.v1`, published through the outbox with the conventional envelope plus `{ kind, item_id, parent_kind, parent_id }`. Deletion itself publishes nothing here — the owning feature's `<aggregate>.deleted.v1` is the only deletion event, which is what makes this a projection.
 - Authorization: `editor` on the resource for list and restore, resolved through F003 against the item's surviving ACL and, for restore, additionally `<resource>:create` on the restore parent; `compliance-admin` for `DELETE`; cross-tenant maps to `not_found`. No new role is introduced.
 - Validation: `kind` must be a registered key; `limit` 1–200; `q` 1–120 characters; `deleted_after` before `deleted_before`; `If-Match` on purge must equal the entry's `source_version`.
 - Error mapping: `TrashError::UnknownKind → 400 invalid`, `::EntryNotFound → 404 not_found`, `::TargetMissing → 404 not_found`, `::ParentDeleted → 409 conflict`, `::VersionMismatch → 409 conflict`, `::LegalHold → 409 conflict`, `::PurgeNotPermitted → 403 denied`, `AuthzError::Denied → 403 denied`, `::RegistryUnavailable → 503 unavailable`.
+
+### Interface
+
+Exact shapes. `T?` is nullable; a missing optional field and an explicit `null` are the same thing.
+Timestamps are RFC 3339 UTC, ids are UUIDv7 strings. Unlisted request fields and unlisted query
+parameters are rejected with `400 invalid`. The error body (including its optional `reason`) is
+F028's; `ActorContext` is F038's; the permission vocabulary is `docs/authorization-model.md`.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `gte`, `lte`, `starts_with` — the index offers fixed parameters over a projection rather than an authored predicate: `kind`, `workspace_id` and `deleted_by` are equality, `deleted_after`/`deleted_before` are inclusive bounds on `deleted_at`, and `q` is the prefix over `title`; there is no set membership, no emptiness test and no `is_me`, because a projection row holds no cell values and every entry already belongs to the caller's tenant.
+
+**`TrashQuery`** — query parameters of `GET /api/v1/trash`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | KindKey? | no | must be a key registered in `TRASH_KINDS`; unregistered → `400 invalid` with `field_errors.kind` |
+| `workspace_id` | uuid? | no | an unreadable or foreign-tenant workspace yields an empty page, never `403` |
+| `deleted_by` | uuid? | no | equality on the deleting principal |
+| `deleted_after` | timestamp? | no | inclusive lower bound on `deleted_at` |
+| `deleted_before` | timestamp? | no | inclusive upper bound; earlier than `deleted_after` → `400 invalid` with `field_errors.deleted_before` |
+| `q` | string? | no | 1–120 characters, case-insensitive prefix over `title`; outside the range → `400 invalid` |
+| `cursor` | string? | no | F028's opaque signed cursor; re-signed, expired, or issued for a different filter → `400 invalid` with `field_errors.cursor` |
+| `limit` | integer? | no | 1–200, default 50 |
+
+**`TrashPage`** — the response envelope of `GET /api/v1/trash`
+
+| Field | Type | Notes |
+|---|---|---|
+| `items` | TrashEntryResponse[] | ordered `deleted_at` descending then `entry_id`, ACL-prefiltered before paging so a page is never short while more rows exist |
+| `next_cursor` | string? | F028's cursor; `null` on the last page |
+| `has_more` | bool | F028's field, `true` when `next_cursor` is non-null |
+| `total` | integer? | present only when `include_total=true` is accepted; this route does not accept it, so it is always absent |
+| `as_of` | timestamp | the projector's last applied event time — this feature's own envelope field, not F028's |
+| `stale` | bool | `true` when `as_of` is more than 120 seconds behind now, the NFR-F070-01 p99 bound |
+
+`items`, `next_cursor`, `has_more` and `total` are F028's `Page<TrashEntryResponse>` reproduced
+exactly; `as_of` and `stale` are the two fields this feature adds because the index is a projection
+and a reader must be able to tell how far behind it is.
+
+**`TrashEntryResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `entry_id` | uuid | the projection row's id; never the deleted item's id |
+| `kind` | KindKey | one of the registered keys — `sheet`, `row`, `view`, `folder`, `document`, `file`, `report`, `dashboard` as they register |
+| `item_id` | uuid | the deleted item in its owning feature's table |
+| `title` | string | the item's title at deletion, refreshed by `trash.rebuild` |
+| `parent_kind` | KindKey? | `null` exactly when `parent_id` is null |
+| `parent_id` | uuid? | |
+| `parent_path` | string | derived, rebuildable cache; `""` when the item had no readable parent chain |
+| `workspace_id` | uuid? | `null` for an item outside any workspace |
+| `deleted_at` | timestamp | |
+| `deleted_by` | DeletedBy | never a bare id: see below |
+| `expires_at` | timestamp? | `deleted_at` plus F027's `purge_after_days`; `null` means keep forever and the client renders no countdown |
+| `days_remaining` | integer? | `null` exactly when `expires_at` is null; negative once past expiry and before the sweep runs |
+| `state` | `"restorable" \| "blocked" \| "held" \| "expired"` | |
+| `blocked_reason` | `"parent_deleted" \| "target_missing"`? | present exactly when `state` is `blocked` |
+| `held` | bool | `true` when `LegalHoldPort::is_held` answered for this item; `state` is then `held` |
+
+**`DeletedBy`** — NFR-F070-02 forbids naming a principal the caller may not already see
+
+| Field | Type | Notes |
+|---|---|---|
+| `user_id` | uuid? | `null` when the caller may not see that principal |
+| `display_name` | string | the principal's name, or the literal `Someone` when `user_id` is null |
+
+**`RestoreResponse`** — `POST /api/v1/trash/{kind}/{id}/restore`
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | KindKey | echoed from the path |
+| `item_id` | uuid | |
+| `version` | integer | the restored item's new version, from the owning repository's `restore` |
+| `restored_children` | integer | how many child records the owning feature's restore brought back, so the toast can say so; `0` for a kind with no children |
+
+`{kind}` and `{id}` are path parameters on both mutating routes: `kind` must be a registered key
+(`400 invalid` otherwise) and `id` is the item id, never the `entry_id`. `POST .../restore` takes no
+body. `DELETE` takes no body and returns none.
+
+**Headers**
+
+| Header | Route | Rule |
+|---|---|---|
+| `Idempotency-Key` | both mutations | required; a replay with the same body returns the original response, a different body is `409 conflict` |
+| `If-Match` | `DELETE` only | required, and must equal the entry's `source_version`; restore takes none, because it resolves the live row and re-checks permission rather than trusting the projection |
+
+**Status codes**
+
+| Status | Produced by |
+|---|---|
+| `200` | the index, and a successful restore |
+| `204` | a successful purge |
+| `400 invalid` | unregistered `kind`, `limit` or `q` out of range, `deleted_before` before `deleted_after`, a malformed cursor, or an unlisted parameter |
+| `403 denied` | restore into a parent the caller may not write (`<resource>:create` missing), and `DELETE` without `compliance-admin` — the two cases where the caller can already see the entry, so refusing is not a leak |
+| `404 not_found` | an entry, item or kind from another tenant; an item the caller could not read before it was deleted; and `target_missing` on restore. All three are indistinguishable |
+| `409 conflict` | `parent_deleted` (with `field_errors.parent_id` naming the parent's kind, title and `entry_id`), `legal_hold` (naming the `HoldRef`), a stale `If-Match`, and a replayed `Idempotency-Key` with a different body |
+| `503 unavailable` | `RegistryUnavailable` — the kind registry has not loaded, so no kind can be resolved safely |
+
+The `409` bodies use the F028 error body's `reason` key for the machine-readable case:
+`parent_deleted` and `legal_hold` are `reason` values, not message text.
+
+### Use case signatures
+
+In `crates/domain/src/trash/`; workers in `services/worker/src/trash/`. `Ctx` is F038's
+`ActorContext`. `RetentionPolicyPort`, `PurgeExecutorPort` and `LegalHoldPort` are F027's, defined in
+full in that ticket's Interface section and taken here as written — this feature calls them and
+restates neither their methods nor `PurgeOutcome`, `PurgeBatchReport` or `HoldRef`.
+
+```rust
+fn list_trash(ctx: &Ctx, repo: &dyn TrashEntryRepository, registry: &TrashRegistry, query: TrashQuery, page: Cursor) -> Result<TrashPage, DomainError>;
+fn restore_item(ctx: &Ctx, uow: &mut UnitOfWork, registry: &TrashRegistry, kind: KindKey, item: ItemId) -> Result<Restored, DomainError>;
+fn purge_item(ctx: &Ctx, uow: &mut UnitOfWork, registry: &TrashRegistry, purger: &dyn PurgeExecutorPort, holds: &dyn LegalHoldPort, kind: KindKey, item: ItemId, expected: SourceVersion) -> Result<(), DomainError>;
+fn project_event(ctx: &JobCtx, uow: &mut UnitOfWork, registry: &TrashRegistry, event: &OutboxEvent) -> Result<Applied, DomainError>;
+fn rebuild_tenant(ctx: &JobCtx, uow: &mut UnitOfWork, registry: &TrashRegistry, tenant: TenantId) -> Result<RebuildReport, DomainError>;
+fn sweep_expired(ctx: &JobCtx, uow: &mut UnitOfWork, retention: &dyn RetentionPolicyPort, purger: &dyn PurgeExecutorPort, holds: &dyn LegalHoldPort, batch: usize) -> Result<SweepReport, DomainError>;
+fn resolve_blocked_state(ctx: &JobCtx, uow: &mut UnitOfWork, parent: ItemRef) -> Result<u32, DomainError>;
+```
+
+`Restored` is `{ kind, item_id, version, restored_children }` — the domain value the
+`RestoreResponse` above is serialized from. A use case never takes a pool or a connection and never
+returns a database row type.
+
+Transaction boundaries:
+
+- `restore_item` runs the kind port's `restore`, the `item.restored.v1` outbox row, the audit row and
+  the deletion of the trash entry in **one `UnitOfWork`**. The entry must disappear with the restore
+  or a reader sees a restored item still sitting in the trash; and the owning repository's own audit
+  and outbox rows for the restore are written by the base contract inside the same transaction.
+- `purge_item` calls `PurgeExecutorPort::purge_item` inside **one `UnitOfWork`** that also removes the
+  entry and writes `item.purged.v1`. F027's executor writes the `purge.executed` audit event in that
+  same boundary, which is why the purge is never recorded twice under two names.
+- `project_event` applies **one event per `UnitOfWork`**: the version-guarded upsert or the entry
+  delete, and nothing else. One event per transaction is what makes redelivery and out-of-order
+  delivery harmless without a lock.
+- `rebuild_tenant` writes the new epoch's rows and deletes the previous epoch's in **one
+  `UnitOfWork`**, so no reader ever sees a half-built index — the invariant NFR-F070-05 checks.
+- `sweep_expired` opens **one `UnitOfWork` per batch of 500 entries per tenant**, not one per run: the
+  batch is the resume checkpoint, and the hold check plus the executor call for that batch share it.
+- `list_trash` and the `stale` computation are reads and take a repository, never a `UnitOfWork`.
 
 ### PostgreSQL/SQLx
 
@@ -178,6 +316,14 @@ Scenario: The projection is derived, not a second truth
 - External dependencies: none
 - Risks and mitigations: the projection drifting from the owning tables, mitigated by the rebuild equivalence test and the rule that no decision reads the projection; an ACL post-filter silently leaking titles, mitigated by making the prefilter a join and testing the page-size invariant; a purge path that bypasses F027's audit, mitigated by routing every purge through `PurgeExecutorPort` and asserting it with a spy; a later feature registering a kind whose restore is not idempotent, mitigated by a registry conformance suite each owning feature runs in its own harness
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F070 interface work | `TrashPage` corrected to carry F028's `has_more` and `total?` alongside `items` and `next_cursor`, with `as_of` and `stale` named as this feature's own two additions | The DTO listed a four-field envelope that silently dropped `has_more` from the envelope F028 owns; two implementers would have shipped different list JSON for the same page |
 
 ## 7.1 Agent handoff
 

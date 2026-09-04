@@ -25,6 +25,7 @@ finished_at: null
 
 - Branch: `f066-service-levels-and-error-budgets`
 - Capability area: reliability governance (spec section 6 availability, performance, and observability bullets; section 8 release gates)
+- Aggregate: `service-level`
 - Module slug: `slo`
 
 ### Decision references
@@ -102,6 +103,190 @@ Canonical contract: aggregate `service-level`; module `slo`; surface `cargo xtas
 - Error mapping: `serde_yaml` failure → `slo.schema` at the reported line, exit 1; unreadable file or unknown flag → exit 2; `slo.budget_exhausted` and the missing operator role → exit 3; every other check returns findings and never panics.
 - No event is published and no aggregate is persisted; the catalog row lists `none` for events and this feature adds none.
 - Data access (decision 2.1): the `service-level` aggregate owns no table and no repository; `verify-slo` reads YAML and queries Prometheus only, holds no SQL string, `sqlx` dependency, or database connection, and the harness proves it by running the command with no database reachable.
+
+### Interface
+
+This feature has no HTTP surface, so its interface is four shapes and one command: the declaration
+file that is the only place a service level is stated, the exception file that is the only way a
+refusal is suppressed, the report that is the only artefact a release decision reads, and the
+arguments, findings and exit codes of `verify-slo`. Every generated rule is derived from the first of
+those, so the schema below is the whole authored surface. Ratios are decimals in `0 < x <= 1`; minutes
+are decimal minutes; timestamps are RFC 3339 UTC. An unknown key anywhere is `slo.schema`, exit `1`.
+
+**`Objectives`** — the top level of `infra/slo/objectives.yml`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `version` | integer | yes | `1`; any other value is `slo.schema` |
+| `window` | string | yes | `28d`; the rolling window of FR-F066-07, written directly as a Prometheus range selector |
+| `classes` | map<string, Class> | yes | 1–8 entries (NFR-F066-01's cardinality bound); a class referenced by no objective and not marked `excluded` is `slo.schema` |
+| `objectives` | Objective[] | yes | 1–6 entries; a duplicate `id` is `slo.schema` |
+| `burn_alerts` | BurnAlert[] | yes | the four pairs of FR-F066-09; a short window that is not one twelfth of its long window is `slo.window_pair` |
+| `policy` | Policy | yes | |
+
+**`Class`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `methods` | string[] | yes | HTTP methods this class covers; `async_ack` additionally pins status `202` |
+| `routes` | string[] | yes | axum route templates, never concrete paths; two classes covering the same `(route, method)` pair is `slo.class_overlap`, and a route seen in the metrics sample and in no class is `slo.route_unclassified` naming the route and the feature id that must declare it |
+| `excluded` | bool | no | default `false`; `true` keeps the class out of every objective's numerator and denominator, which is what `analytics`, `integration` and `exempt` are for |
+
+**`Objective`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | string | yes | `^[a-z][a-z0-9_]{2,40}$`; unique; the `objective` label on every generated rule and alert |
+| `sli` | `"availability" \| "latency"` | yes | `availability` counts a request bad only on a 5xx; `latency` counts a request good when it fell in the `le` bucket **and** did not 5xx, so a fast error buys no latency credit |
+| `threshold_seconds` | decimal | when `sli` is `latency` | one of the histogram boundaries the exporter publishes; a boundary with no exact `le` series is `slo.bucket_missing` naming the objective and the boundary |
+| `classes` | string[] | yes | keys of `classes`; naming an `excluded` class is `slo.schema` |
+| `target` | decimal | yes | strictly `0 < target < 1`; `1.0` is `slo.schema`, because a budget of zero minutes cannot be spent or reported |
+| `status_filter` | string? | no | an extra status selector, used by `ack_async` to pin `202` |
+
+**Budget arithmetic**, derived from `target` and the 40,320 minutes of a 28-day window, never authored:
+
+| Objective | `target` | Budget minutes |
+|---|---|---|
+| `availability_core` | 0.995 | 201.6 |
+| `latency_core_read` | 0.95 | 2,016 |
+| `latency_core_write` | 0.95 | 2,016 |
+| `ack_async` | 0.99 | 403.2 |
+
+**`BurnAlert`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `severity` | `"page" \| "ticket"` | yes | the routing decision, and the word the runbook anchor is named for |
+| `long` / `short` | string | yes | Prometheus durations; `short` must be exactly one twelfth of `long`, so an alert clears within minutes of recovery instead of dragging a spent spike across the long window |
+| `consumed` | decimal | yes | the fraction of the 28-day budget the pair fires at — 0.02, 0.05, 0.10, 0.10 |
+| `for` | string | yes | the pending duration: `2m`, `15m`, `1h`, `6h` |
+
+`factor = consumed * 672h / long_window_h`, giving 13.44, 5.6, 2.8 and 0.93, and both windows must
+exceed it for the alert to fire. `verify-slo` recomputes every factor and reports
+`slo.threshold_drift` with `expected` and `found` on a mismatch, which is what makes a hand-edited
+threshold fail rather than silently change the promise.
+
+**`Policy`** — `{ guarded_below: decimal (0.25), exception_max_days: integer (14) }`.
+
+**`Exception`** — one entry of `infra/slo/exceptions.yml`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `objective` | string | yes | an `id` from `objectives.yml`; an exception for a different objective suppresses nothing |
+| `reason` | string | yes | non-empty |
+| `owner` | string | yes | the person accountable while the freeze is lifted |
+| `ticket` | string | yes | a work-item id |
+| `expires_at` | timestamp | yes | at most `exception_max_days` from now; expired or malformed is `slo.exception_expired`, exit `1`, and does not suppress the refusal |
+
+**Generated rule names.** `infra/prometheus/rules/slo-recording.yml` is regenerated in memory and
+compared byte for byte; a difference is `slo.rule_drift` naming the differing rule.
+
+| Rule | Windows | Meaning |
+|---|---|---|
+| `slo:sli:ratio_rate<w>{objective}` | `5m, 30m, 1h, 2h, 6h, 24h, 3d, 28d` | good events over all events in `w` |
+| `slo:burn_rate:ratio_rate<w>{objective}` | the same eight | `(1 - ratio) / (1 - target)` |
+| `slo:budget:remaining_ratio28d{objective}` | 28d only | `1 - (1 - ratio) / (1 - target)`, clamped at `-1` for display, raw in the report |
+| `slo:budget:remaining_minutes28d{objective}` | 28d only | the remaining ratio scaled by the objective's budget minutes |
+
+Every rule aggregates `route` and `status` away with `sum by (objective)`, so at most 40 series exist
+regardless of route count; a generated rule that would keep `route` in its output labels is
+`slo.cardinality`.
+
+**`SloReport`** — `testing/evidence/F066/slo-report.json`, and the `--budget --json` object
+
+| Field | Type | Notes |
+|---|---|---|
+| `generated_at` | timestamp | the only non-deterministic field; two runs over one snapshot are otherwise byte-identical |
+| `window` | string | `"28d"` |
+| `objectives_sha256` | string | hex digest of `objectives.yml`, so a report is tied to the promise it measured |
+| `objectives` | ObjectiveResult[] | one per objective, in declaration order |
+| `state` | `"ok" \| "guarded" \| "exhausted" \| "insufficient_data"` | the worst objective state present, ignoring `insufficient_data` |
+| `exceptions` | Exception[] | live exceptions only, listed beside the objective they suppress |
+
+**`ObjectiveResult`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `target` | string / decimal | |
+| `ratio` | decimal | `slo:sli:ratio_rate28d` |
+| `remaining_ratio` | decimal | raw, not clamped; negative once the budget is overspent |
+| `remaining_minutes` | decimal | `remaining_ratio * budget_minutes` |
+| `budget_minutes` | decimal | from the table above |
+| `state` | `"ok" \| "guarded" \| "exhausted" \| "insufficient_data"` | `ok` above 0.25 remaining, `guarded` in `(0, 0.25]`, `exhausted` at or below 0, and `insufficient_data` under 100 requests in the window — which is never `breached` and never freezes a release |
+| `sample_count` | integer | the 28-day denominator, which is what makes `insufficient_data` checkable rather than asserted |
+
+**Command arguments.** `cargo xtask verify-slo [args]`.
+
+| Argument | Type | Required | Constraint |
+|---|---|---|---|
+| `--metrics <PATH\|URL>` | string | no | a Prometheus text exposition; defaults to the internal metrics endpoint; absent → `skipped: metrics sample absent` and the bucket check passes |
+| `--budget` | flag | no | switches to budget mode, which requires `--source` |
+| `--source <PATH\|URL>` | string | with `--budget` | a recorded instant-query snapshot or a Prometheus URL; a bearer token is read from the F004 secret source, never from the command line |
+| `--write-rules` | flag | no | regenerates both rule files; CI runs without it so a hand edit fails as `slo.rule_drift` |
+| `--json` | flag | no | one object on stdout: `{ command, ok, checked, findings: [{ code, path, line, message }], duration_ms }`, or the `SloReport` in budget mode |
+
+`XTASK_ROLE=operator` with `XTASK_OWNER`, or CI on `main`, is required to record the report; without
+it `--budget` runs every check, prints `dry run: operator role required to record`, and exits `3`.
+
+**Findings and exit codes.** One line per finding on stderr as `BLOCKED: <code> <path>:<line>:
+<message>`, sorted by path then line then code; ASCII, `NO_COLOR`-aware, no line past 200 characters.
+
+| Code | Produced when |
+|---|---|
+| `slo.schema` | an unknown key, a target outside `0 < t < 1`, a duplicate `id`, or a class no objective references |
+| `slo.class_overlap` / `slo.route_unclassified` | two classes cover one `(route, method)` pair / a sampled route belongs to no class |
+| `slo.rule_drift` / `slo.threshold_drift` / `slo.window_pair` | a generated file edited by hand / a burn factor that is not the computed one / a short window that is not one twelfth of its long window |
+| `slo.alert_unlinked` | an alerting rule under `infra/alerts/` with no `objective` label naming a declared id, or a `runbook` annotation whose anchor does not exist |
+| `slo.bucket_missing` | a latency objective's boundary has no exact `le` series, or the metric is not a histogram |
+| `slo.cardinality` | a generated rule would keep `route` in its output labels |
+| `slo.exception_expired` | an exception past `expires_at` or missing a required field |
+| `slo.budget_exhausted` | budget mode found an `exhausted` objective with no live exception — a refusal, not a finding |
+
+| Exit | Meaning |
+|---|---|
+| `0` | clean; `verify-slo passed (4 objectives, 7 classes)` |
+| `1` | findings; `verify-slo failed: <n> findings` |
+| `2` | usage or I/O error; `--budget` writes no report on this path |
+| `3` | refused: `slo.budget_exhausted`, or the operator role absent after a full dry run |
+
+### Use case signatures
+
+In `automation/xtask/src/slo.rs`. There is no `Ctx` and no `UnitOfWork`: the `service-level` aggregate
+owns no table, and `verify-slo` holds no SQL string, no SQLx dependency and no database connection —
+the harness proves it by running the command with no database reachable. `Finding` is F042's type and
+the reporter is F041's.
+
+```rust
+fn load_objectives(path: &Path) -> Result<Objectives, Vec<Finding>>;
+fn check_classes(objectives: &Objectives) -> Vec<Finding>;
+fn render_recording_rules(objectives: &Objectives) -> String;
+fn render_burn_alerts(objectives: &Objectives) -> String;
+fn check_rule_drift(objectives: &Objectives, committed: &Path) -> Vec<Finding>;
+fn check_exposition(exposition: &str, objectives: &Objectives) -> Vec<Finding>;
+fn check_alert_links(alerts_dir: &Path, objectives: &Objectives, runbook: &Path) -> Vec<Finding>;
+fn budget_minutes(target: f64, window_minutes: f64) -> f64;
+fn burn_factor(consumed: f64, long_window_hours: f64) -> f64;
+fn remaining_ratio(ratio: f64, target: f64) -> f64;
+fn load_exceptions(path: &Path, now: Timestamp) -> Result<Vec<Exception>, Vec<Finding>>;
+fn budget_report(snapshot: &Snapshot, objectives: &Objectives, exceptions: &[Exception], now: Timestamp) -> SloReport;
+fn verify_slo(args: &Args) -> Result<(), String>;
+```
+
+`budget_minutes`, `burn_factor` and `remaining_ratio` are pure arithmetic taking no file and no
+client, which is why the four burn factors and the four budgets are unit-tested as values rather than
+asserted against a rendered file; `render_recording_rules` and `render_burn_alerts` are pure functions
+of `Objectives`, which is what makes drift a byte comparison rather than a judgement.
+
+Write boundaries, in place of a transaction boundary this feature has no database to open:
+
+- `--write-rules` regenerates **both** rule files or neither: recording rules and burn alerts are
+  derived from one declaration, and a tree holding a new recording rule beside an old alert would
+  page on a factor computed from a target that no longer exists.
+- `budget_report` writes `slo-report.json` as one temp file plus rename, and only after the snapshot
+  parsed and the role check passed; an exit `2` writes nothing, and an exit `3` still writes the
+  report when the role permitted it, because a refusal a reader cannot inspect is not evidence.
+- `infra/slo/exceptions.yml` is authored, never written by this command. Nothing else in this feature
+  writes, and it never writes outside its four owned directories.
 
 ### PostgreSQL/SQLx
 

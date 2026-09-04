@@ -105,6 +105,225 @@ Excluded: outbound mail transport and templates (F037); releasing or replaying a
 - Validation: `label` ≤ 120 characters; `mappings` 1–7 entries with distinct sources and columns belonging to the sheet; `allow_list` 1–200 rows required when `sender_policy = 'allow_list'`; `max_messages_per_hour` 1–600; `max_message_bytes` 1,048,576–52,428,800; `rotate_from_id` must name an `active` address on the same sheet.
 - Error mapping: `InboundError::AddressLimit → 409 conflict`, `::InvalidMapping → 400 invalid`, `::BadSignature → 403 denied`, `::UnknownRecipient → 404 not_found`, `::LimitExceeded → 429 rate_limited`, `::ProviderUnavailable → 503 unavailable`, `AuthzError::Denied → 403 denied`; the webhook translates every message-level refusal into a `200` acknowledgement with a recorded disposition rather than an error status, so a provider never retries a decision.
 
+### Interface
+
+Exact shapes. `T?` is nullable; a missing optional field and an explicit `null` are the same thing.
+Timestamps are RFC 3339 UTC, ids are UUIDv7 strings, `version` increments by one per write. Unlisted
+request fields are rejected with `400 invalid`. `Page<T>` and the error body (including its optional
+`reason`) are F028's; `ActorContext` is F038's; the permission vocabulary is
+`docs/authorization-model.md`.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `gte`, `lte` — both list routes offer fixed parameters and no authored predicate: `sheet_id`, `status`, `sender_policy`, `address_id`, `disposition` and `from` are equality, and `received_after`/`received_before` are inclusive bounds on `received_at`; there is deliberately no substring search over `subject` or `from_address`, because a log of other people's mail must not become a searchable corpus.
+
+**`CreateInboundAddressRequest`** — `POST /api/v1/inbound-addresses`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `sheet_id` | uuid | yes | caller holds `sheet-editor` on it, else `403 denied`; another tenant's sheet → `404 not_found`; a sixth `active` address → `409 conflict` with `field_errors.sheet_id = "address_limit"` |
+| `label` | string? | no | ≤ 120 characters |
+| `sender_policy` | `"anyone" \| "tenant_members" \| "allow_list"` | no | default `tenant_members` |
+| `auth_policy` | `"enforce" \| "quarantine"` | no | default `enforce`; neither value skips authentication |
+| `allow_list` | SenderRule[] | no | required and 1–200 rows when `sender_policy` is `allow_list`, else must be absent or empty → `400 invalid` with `field_errors.allow_list` |
+| `mappings` | Mapping[] | yes | 1–7 entries, `source` distinct and `column_id` distinct, every column of `sheet_id` and type-compatible with its source, else `400 invalid` with `field_errors.mappings` |
+| `max_messages_per_hour` | integer? | no | 1–600, default 60 |
+| `max_message_bytes` | integer? | no | 1,048,576–52,428,800, default 26,214,400 |
+| `rotate_from_id` | uuid? | no | must name an `active` address on the same sheet; supplying it mints the replacement and sets the old address's `rotation_grace_ends_at` 7 days out |
+
+**`Mapping`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `source` | `"subject" \| "body_text" \| "from" \| "to" \| "received_at" \| "message_id" \| "attachments"` | yes | one entry per source; a repeat is `400 invalid` |
+| `column_id` | uuid | yes | a live column of the address's sheet; one column may back only one source |
+
+**`SenderRule`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"address" \| "domain"` | yes | |
+| `pattern` | string | yes | an address matched exactly and case-insensitively, or a domain matched as itself or a subdomain of itself |
+
+**`InboundAddressResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `sheet_id` | uuid | |
+| `address` | string | the full `local_part@domain`; returned only to actors holding `sheet-editor` on the sheet, and absent for every other reader |
+| `label` | string? | |
+| `sender_policy` / `auth_policy` | enum | as above |
+| `allow_list` | SenderRule[] | reassembled from `inbound_address_senders`; `[]` unless the policy is `allow_list` |
+| `mappings` | Mapping[] | reassembled from `inbound_address_mappings` |
+| `status` | `"active" \| "revoked"` | |
+| `rotation_grace_ends_at` | timestamp? | present only while a rotated predecessor is still accepting |
+| `rotated_from_id` | uuid? | |
+| `max_messages_per_hour` / `max_message_bytes` | integer | |
+| `last_message_at` | timestamp? | `null` until the first delivery |
+| `counts` | `{ accepted, rejected, quarantined }` of integers | dispositions over the last 30 days, from `count_dispositions_since` |
+| `revoked_at` / `revoked_by` | timestamp? / uuid? | both present exactly when `status` is `revoked` |
+| `version` | integer | pass as `If-Match` on `DELETE` |
+| `created_at` / `updated_at` | timestamp | |
+
+**`InboundMessageResponse`** — never carries body text, headers, or the raw message
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `address_id` | uuid | |
+| `received_at` | timestamp | the sort key, newest first |
+| `from_address` | string | the header-From address as received |
+| `from_display_name` | string? | |
+| `subject` | string? | truncated to 500 characters with `\r`, `\n` and NUL stripped |
+| `size_bytes` | integer | |
+| `authentication` | Authentication | see below |
+| `disposition` | `"accepted" \| "rejected" \| "quarantined"` | |
+| `rejection_reason` | RejectionReason? | non-null exactly when `disposition` is `rejected` |
+| `row_id` | uuid? | the created row; exactly one of `row_id` and `comment_id` is non-null when `disposition` is `accepted`, and both are null otherwise |
+| `comment_id` | uuid? | the appended F016 comment, present only for a valid reply token |
+| `attachments` | Attachment[] | in `position` order |
+| `issues` | MessageIssue[] | what could not be mapped; an accepted message may still carry issues |
+| `applied_at` | timestamp? | present only when `disposition` is `accepted` |
+
+**`Authentication`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `spf` / `dkim` / `dmarc` | `"pass" \| "fail" \| "softfail" \| "neutral" \| "none" \| "temperror" \| "permerror"` | recorded as the provider reported them |
+| `aligned` | bool | header-From alignment verdict |
+| `auth_note` | string? | `"dmarc_none_aligned"` when the message continued on an aligned `spf` or `dkim` pass under `dmarc = none` |
+
+**`RejectionReason`** — `"unknown_recipient" | "dmarc_fail" | "unauthenticated_sender" |
+"sender_not_permitted" | "rate_limited" | "too_large" | "loop_suspected" | "thread_cap" |
+"invalid_thread_token" | "target_unavailable" | "unparseable"`. It appears in the log only; it never
+reaches a sender, because every refusal bounces identically (FR-F072-07).
+
+**`Attachment`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `position` | integer | 1–50 |
+| `file_id` | uuid? | non-null only when `disposition` is `stored` |
+| `file_name` / `mime_type` | string | as declared by the part, decoded per RFC 2231 |
+| `size_bytes` | integer | |
+| `content_id` | string? | |
+| `disposition` | `"stored" \| "rejected_type" \| "rejected_size" \| "rejected_count" \| "quarantined"` | a non-`stored` part never blocks the row |
+
+**`MessageIssue`** — `{ code, column_id?, detail }` where `code` is one of `mapping_failed`,
+`column_missing`, `type_mismatch`, `value_rejected`, `body_truncated`, `sender_unresolved`,
+`attachment_rejected`.
+
+**`ProviderInboundEvent`** — `POST /webhooks/inbound-email/{provider}`
+
+The request body is the provider's own payload and is **not** a shape this feature defines: it is
+verified before it is parsed. Two inputs are required of every provider and are read from the header
+names that provider's adapter declares — the HMAC-SHA256 signature and the timestamp — and the MAC is
+computed over `timestamp || "\n" || raw_body` with the deployment secret
+`inbound-email/<provider>/webhook_secret`, compared in constant time, with a previous-secret window
+and a 300-second skew bound. Each adapter's `parse` normalizes the payload to the fields
+`InboundMessageResponse` exposes plus the MIME parts and the raw message. `{provider}` outside
+`postmark`, `sendgrid`, `mailgun` is `404 not_found` before any body is read.
+
+Its success body is `{ "message_id": uuid }` — the id of the row this delivery produced, or on a
+repeat delivery the id of the first one, which is what makes the replay guard observable to the
+provider without telling it anything else.
+
+**Two responses that are deliberately not what the error mapping suggests.** A *message-level*
+refusal — failed authentication, failed sender policy, an exceeded limit, a loop, an invalid thread
+token — is answered `200` with the disposition recorded, so a provider never retries a decision. And
+an *unknown recipient* is answered `200`, bounced identically to every other refusal, and counted in
+`inbound_messages_total{disposition="rejected"}`, but **no `inbound_messages` row is written**:
+`address_id` and `tenant_id` are `not null`, so there is no address to own the row and no tenant to
+scope it to. `InboundError::UnknownRecipient → 404 not_found` therefore applies to the tenant-facing
+routes, where an address or message id does not resolve for the caller.
+
+**List parameters**
+
+| Route | Parameter | Type | Constraint |
+|---|---|---|---|
+| `GET /api/v1/inbound-addresses` | `sheet_id`, `status`, `sender_policy` | uuid? / enum? / enum? | equality; an unreadable `sheet_id` yields an empty page |
+| | `cursor`, `limit` | string? / integer? | F028's cursor; `limit` 1–100, default 20 |
+| `GET /api/v1/inbound-messages` | `address_id`, `sheet_id`, `disposition`, `from` | uuid? / uuid? / enum? / string? | equality; `from` matches `from_address` case-insensitively |
+| | `received_after`, `received_before` | timestamp? | inclusive bounds; `before` earlier than `after` → `400 invalid` |
+| | `cursor`, `limit` | string? / integer? | `limit` 1–100, default 20 |
+
+Both return F028's `Page<T>` over the response type above, sorted newest first — `created_at` for
+addresses, `received_at` for messages.
+
+**Status codes**
+
+| Status | Produced by |
+|---|---|
+| `200` | both list routes, and every webhook delivery that passed signature verification, whatever the message's disposition |
+| `201` | a minted or rotated address |
+| `204` | `DELETE /api/v1/inbound-addresses/{id}` |
+| `400 invalid` | an invalid mapping, an allow-list that does not match the policy, `max_messages_per_hour` or `max_message_bytes` out of range, `limit` out of range, an inverted date range, or an unlisted field |
+| `403 denied` | an actor without `sheet-editor` creating, rotating or revoking; and a webhook whose signature is missing, stale or invalid, which also writes an audit event and persists nothing |
+| `404 not_found` | an address, message or sheet id from another tenant, and an unknown `{provider}` |
+| `409 conflict` | the sixth active address, a stale `If-Match`, and an `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | the tenant-facing routes' own quota, with `Retry-After`; a message over its address's hourly limit is a recorded `rejected` disposition inside a `200`, never a `429` to the provider |
+| `503 unavailable` | `ProviderUnavailable` — the bounce transport or the object store refuses; the delivery is retried rather than decided |
+
+Every refusal path holds the webhook response to a constant-time floor of 250 ms, so latency confirms
+nothing that the body already refuses to confirm.
+
+### Use case signatures
+
+In `crates/domain/src/inbound-email/`; workers in `services/worker/src/inbound-email/`. `Ctx` is
+F038's `ActorContext`; `JobCtx` is the worker's job context carrying tenant and correlation id. The
+webhook handler runs under no actor at all — its authority is the signature — so `verify_webhook` and
+`record_delivery` take a `WebhookCtx` carrying only the provider and the correlation id.
+
+```rust
+fn create_address(ctx: &Ctx, uow: &mut UnitOfWork, req: CreateInboundAddress) -> Result<InboundAddress, DomainError>;
+fn rotate_address(ctx: &Ctx, uow: &mut UnitOfWork, from: AddressId, req: CreateInboundAddress) -> Result<InboundAddress, DomainError>;
+fn revoke_address(ctx: &Ctx, uow: &mut UnitOfWork, id: AddressId, expected: Version) -> Result<(), DomainError>;
+fn list_addresses(ctx: &Ctx, repo: &dyn InboundAddressRepository, filter: AddressFilter, page: Cursor) -> Result<Page<InboundAddress>, DomainError>;
+fn verify_webhook(ctx: &WebhookCtx, provider: &dyn InboundProvider, secrets: &dyn SecretSource, sig: &Signature, raw: &[u8]) -> Result<ProviderDelivery, DomainError>;
+fn record_delivery(ctx: &WebhookCtx, uow: &mut UnitOfWork, delivery: ProviderDelivery) -> Result<Accepted, DomainError>;
+fn evaluate_authentication(auth: &AuthResults, policy: AuthPolicy) -> Disposition;
+fn evaluate_sender_policy(ctx: &JobCtx, repo: &dyn InboundAddressRepository, address: &InboundAddress, from: &EmailAddress) -> Result<Disposition, DomainError>;
+fn enforce_limits(ctx: &JobCtx, uow: &mut UnitOfWork, address: &InboundAddress, from: &EmailAddress, size: u64) -> Result<Disposition, DomainError>;
+fn detect_loop(headers: &Headers) -> Disposition;
+fn parse_mime(raw: &[u8], depth: u8) -> Result<ParsedMessage, DomainError>;
+fn sanitize_body(parsed: &ParsedMessage) -> BodyText;
+fn apply_to_row(ctx: &JobCtx, uow: &mut UnitOfWork, address: &InboundAddress, message: MessageId, parsed: &ParsedMessage, files: &dyn FileStorePort) -> Result<Applied, DomainError>;
+fn append_thread_comment(ctx: &JobCtx, uow: &mut UnitOfWork, token: &PresentedToken, message: MessageId, body: &BodyText) -> Result<Applied, DomainError>;
+fn list_messages(ctx: &Ctx, repo: &dyn InboundMessageRepository, filter: MessageFilter, page: Cursor) -> Result<Page<InboundMessage>, DomainError>;
+fn send_bounce(ctx: &JobCtx, uow: &mut UnitOfWork, to: &EmailAddress, address: AddressId, transport: &dyn MailTransportPort) -> Result<BounceOutcome, DomainError>;
+fn sweep_raw_messages(ctx: &JobCtx, uow: &mut UnitOfWork, batch: usize, store: &dyn BlobStore) -> Result<SweepReport, DomainError>;
+```
+
+`AddressFilter` is `{ sheet_id, status, sender_policy }` and `MessageFilter` is
+`{ address_id, sheet_id, disposition, from, received_after, received_before }` — together, the whole
+filter surface of this feature. `evaluate_authentication`, `detect_loop`, `parse_mime` and
+`sanitize_body` are pure and take no context and no repository, which is what lets the decision table,
+the loop detector and the sanitiser be fuzzed without a database. A use case never takes a pool or a
+connection and never returns a database row type.
+
+Transaction boundaries:
+
+- `record_delivery` writes the `inbound_messages` row and the `inbound_rate_windows` bump in **one
+  `UnitOfWork`**, and the unique `(provider, provider_message_id)` index is inside it. That is what
+  makes the replay guard real: a second delivery raises the unique violation before any effect, and
+  the handler answers with the first message's id.
+- `apply_to_row` writes the F006 row through its owning repositories, every
+  `inbound_message_attachments` row, every `inbound_message_issues` row, the disposition update and
+  the `inbound-message.applied.v1` outbox row in **one `UnitOfWork`**. The disposition and its effect
+  must be atomic, because `disposition = 'accepted'` requires exactly one of `row_id` or `comment_id`
+  and that check is only meaningful inside the transaction that sets it.
+- `append_thread_comment` uses the same single boundary for the token claim (the `use_count`
+  increment, which is what caps a token at 20 uses), the F016 comment, the disposition and the event.
+- `create_address` and `rotate_address` write the address row, its mapping rows, its sender rows, the
+  `count_active_for_sheet` check enforcing the five-address cap, the audit row, and — for a rotation —
+  the predecessor's `rotation_grace_ends_at`, in **one `UnitOfWork`**. The count and the insert must
+  share the boundary or two concurrent creations both read four and both insert.
+- Every refusal path still writes **one `UnitOfWork`** holding the message row with its disposition
+  and the `inbound-message.rejected.v1` outbox row, so a refusal is as durable as an acceptance. The
+  bounce is not in that boundary: it is enqueued through the outbox and sent by the `bounce` job,
+  because a mail send cannot be rolled back.
+- `sweep_raw_messages` opens **one `UnitOfWork` per batch**, clearing `raw_object_key` only after the
+  object delete returns, so a crash leaves an orphaned object rather than a row pointing at nothing.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_inbound-email_*.sql` is an expand phase (decision section 2.2) that adds only new tables. It creates `inbound_addresses(id uuid pk, tenant_id uuid not null, sheet_id uuid not null references sheets(id) on delete cascade, local_part text not null, domain text not null, label text, sender_policy text not null default 'tenant_members' check (sender_policy in ('anyone','tenant_members','allow_list')), auth_policy text not null default 'enforce' check (auth_policy in ('enforce','quarantine')), status text not null default 'active' check (status in ('active','revoked')), rotation_grace_ends_at timestamptz, rotated_from_id uuid references inbound_addresses(id) on delete restrict, max_messages_per_hour int not null default 60 check (max_messages_per_hour between 1 and 600), max_message_bytes int not null default 26214400 check (max_message_bytes between 1048576 and 52428800), last_message_at timestamptz, revoked_at timestamptz, revoked_by uuid references users(id) on delete restrict, version bigint not null default 1, created_by, created_at, updated_by, updated_at, deleted_at)`, `inbound_messages(id uuid pk, tenant_id uuid not null, address_id uuid not null references inbound_addresses(id) on delete cascade, provider text not null check (provider in ('postmark','sendgrid','mailgun')), provider_message_id text not null, rfc822_message_id text, in_reply_to text, from_address text not null, from_display_name text, to_address text not null, subject text, size_bytes int not null, spf text not null check (spf in ('pass','fail','softfail','neutral','none','temperror','permerror')), dkim text not null check (dkim in ('pass','fail','softfail','neutral','none','temperror','permerror')), dmarc text not null check (dmarc in ('pass','fail','softfail','neutral','none','temperror','permerror')), aligned boolean not null default false, auth_note text, disposition text not null check (disposition in ('accepted','rejected','quarantined')), rejection_reason text check (rejection_reason in ('unknown_recipient','dmarc_fail','unauthenticated_sender','sender_not_permitted','rate_limited','too_large','loop_suspected','thread_cap','invalid_thread_token','target_unavailable','unparseable')), row_id uuid references rows(id) on delete set null, comment_id uuid, reply_token_id uuid references inbound_reply_tokens(id) on delete set null, provider_snapshot jsonb not null, raw_object_key text, raw_expires_at timestamptz, received_at timestamptz not null, applied_at timestamptz, created_at, updated_at)` and `inbound_message_attachments(id uuid pk, tenant_id uuid not null, message_id uuid not null references inbound_messages(id) on delete cascade, position smallint not null check (position between 1 and 50), file_id uuid references files(id) on delete set null, file_name text not null, mime_type text not null, size_bytes int not null, content_id text, disposition text not null check (disposition in ('stored','rejected_type','rejected_size','rejected_count','quarantined')))`.

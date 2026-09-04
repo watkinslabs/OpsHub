@@ -101,6 +101,203 @@ Excluded: the notification inbox, channels, preferences, quiet hours and digests
 - Validation: `slug` matches `^[a-z0-9-]{3,64}$` and is unique per scope and tenant; `title` at most 120 graphemes and `body_markdown` at most 4,000; at least one translation whose `locale` equals the announcement's default; `targets` at most 50 rows; `expires_at` in the future; `learn_more_article_slug` must resolve to an existing article.
 - Error mapping: `AnnouncementError::UnknownTarget → 400 invalid`, `::MaterialChange → 409 conflict`, `::AlreadyPublished → 409 conflict`, `::ForeignTenantTarget → 403 denied`, `::PlatformScopeDenied → 403 denied`, `::NotFound → 404 not_found`, `::BundleSignature → 503 unavailable`, `AuthzError::Denied → 403 denied`.
 
+### Interface
+
+Exact shapes. `T?` is nullable; a missing optional field and an explicit `null` are the same thing.
+Timestamps are RFC 3339 UTC, ids are UUIDv7 strings, `version` increments by one per write. Unlisted
+request fields are rejected with `400 invalid`. `Page<T>` and the error body (including its optional
+`reason`) are F028's; `ActorContext` is F038's; the permission vocabulary and the `platform-operator`,
+`tenant-admin` and `self` principal kinds are `docs/authorization-model.md` sections 2 and 3.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq` — the two read routes offer one switch each and no authored predicate: `include_dismissed` selects on the caller's own dismissal state and `context` selects on a screen key, both equality. Visibility itself is not a filter parameter at all — it is the server-side target evaluation of FR-F073-04, which a caller can neither widen nor inspect.
+
+**`Translation`** — used by both aggregates
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `locale` | string | yes | a BCP 47 tag F049 resolves; duplicate locale in one payload → `400 invalid` |
+| `title` | string | yes | ≤ 120 graphemes |
+| `body_markdown` | string | yes | ≤ 4,000 characters, and restricted Markdown: see the note below |
+
+**Restricted Markdown on the wire.** `body_markdown` is the field FR-F073-01 and FR-F073-11 name, and
+it is never a free Markdown string. It is the serialization of the server-side `SafeDoc` node union —
+paragraph, heading, list, emphasis, strong, inline code, code block, anchor and nothing else — so a
+raw HTML node cannot be represented in a stored or transmitted body, not merely filtered out of one.
+`render(md) -> SafeDoc` runs on write, an authored body whose nodes fall outside the union is
+`400 invalid`, and `SafeMarkdown` parses the same restricted grammar back into the same node union on
+the client. Anchors carry only `https:` URLs and same-origin application paths; any other scheme is a
+text node.
+
+**`Target`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `kind` | `"plan" \| "entitlement" \| "role" \| "tenant"` | yes | |
+| `value` | string | yes | `plan` in `free`, `team`, `enterprise` (`docs/packaging.md` section 1); `entitlement` an F048 key, matching only in state `active` or `trial`; `role` a role defined in `docs/authorization-model.md` section 3, matched at any scope; `tenant` a tenant id, and any tenant but the caller's → `403 denied` with `field_errors.targets = "foreign_tenant"`. An unknown value in any kind → `400 invalid` |
+
+Evaluation is OR within a kind and AND across kinds; no target rows at all reaches every user in
+scope. At most 50 target rows per announcement.
+
+**`PublishAnnouncementRequest`** — `POST /api/v1/announcements`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `scope` | `"platform" \| "tenant"` | yes | `platform` requires the `platform-operator` principal kind; any session holding a tenant role, `tenant-admin` included, gets `403 denied`. `tenant` requires `tenant-admin`, and from a `platform-operator` is `400 invalid` because that principal has no tenant |
+| `slug` | string | yes | `^[a-z0-9-]{3,64}$`, unique per scope and tenant among live rows; a repeat → `409 conflict` with `field_errors.slug` |
+| `severity` | `"info" \| "change" \| "action_required"` | yes | `action_required` without `learn_more_article_slug` → `400 invalid`, matching the table's own check constraint |
+| `default_locale` | string | yes | the locale the fallback resolves to; must equal the `locale` of one supplied translation. Derived from the `announcements.default_locale` column and this section's Validation bullet, which FR-F073-02's abbreviated body does not name |
+| `translations` | Translation[] | yes | 1–50 entries, one of them matching `default_locale`, else `400 invalid` with `field_errors.translations` |
+| `targets` | Target[] | no | default empty, which reaches every user in scope; ≤ 50 rows |
+| `learn_more_article_slug` | string? | no | must resolve to an existing `help_articles.slug`, else `400 invalid` |
+| `expires_at` | timestamp? | no | must be in the future |
+| `publish` | bool | no | default `false` leaves `state: "draft"`; `true` publishes immediately, setting `published_at`, computing `audience_size` and emitting `announcement.published.v1` |
+
+`tenant_id` is never a body field: it is written from the session, which is why a tenant author cannot
+publish into another tenant even by naming one.
+
+**`PublishAnnouncementResponse`** — `201`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `slug` | string | |
+| `state` | `"draft" \| "published" \| "retracted" \| "superseded"` | |
+| `audience_size` | integer? | `null` while `draft`; a publish-time snapshot once published and never recomputed, so it can never become a live count of who is reading |
+| `content_hash` | string | SHA-256 hex over the canonical serialization of `severity`, the sorted target tuples, `learn_more_article_slug` and every translation |
+| `version` | integer | pass as `If-Match` on `PATCH` |
+
+**`EditAnnouncementRequest`** — `PATCH /api/v1/announcements/{id}`, `If-Match` required
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `revision` | `"editorial"` | yes | the only accepted value; it is an assertion the server verifies, not a mode it trusts |
+| `expires_at` | timestamp? | no | future, or explicit `null` to clear |
+| `translations` | Translation[] | no | each edited body must differ from the stored body by at most 5% of its NFC-normalized, whitespace-collapsed token count |
+
+Any change to `severity`, the target set or `learn_more_article_slug`, or a body past the 5% bound, is
+a **material change**: `409 conflict` with `field_errors.revision = "material"` and nothing written.
+The path forward is a new announcement carrying `supersedes_id`, which sets the original to
+`superseded`; the replacement has its own `content_hash`, carries no dismissal rows, and therefore
+appears once to everyone it targets, while the superseded row stays dismissed for whoever dismissed it.
+
+**`AnnouncementResponse`** — the item of `GET /api/v1/announcements`
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `slug` | string | |
+| `scope` | `"platform" \| "tenant"` | |
+| `severity` | `"info" \| "change" \| "action_required"` | carried as text by the client, never colour alone |
+| `title` / `body_markdown` | string | the caller's locale, or the `default_locale` when it has no translation |
+| `learn_more_article_slug` | string? | |
+| `published_at` | timestamp | the sort key, newest first |
+| `expires_at` | timestamp? | |
+| `dismissed` | bool | `true` only in an `include_dismissed=true` response, since a dismissed item is otherwise absent |
+| `interrupting` | bool | `false` for every `info` and `change`; `true` only for an `action_required` that is inside the FR-F073-09 budget at the moment this response was assembled |
+| `translation_fallback` | bool | `true` when the body came from `default_locale` rather than the caller's locale |
+
+**`HelpIndexResponse`** — `GET /api/v1/help/articles`
+
+| Field | Type | Notes |
+|---|---|---|
+| `articles` | `{ slug, title, section, updated_at }[]` | in `position` order when `context` matched, otherwise by `section` then `title` |
+| `locale` | string | the caller's effective F049 locale |
+| `translation_fallback` | bool | `true` when any listed title fell back to its article's `default_locale` |
+| `matched` | bool | present only when `context` was supplied; `false` for an unknown or unmapped key, which returns the full index rather than an error |
+
+**`HelpArticleResponse`** — `GET /api/v1/help/articles/{slug}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `slug` | string | |
+| `version` | integer | the highest `help_article_versions.version`; a version is immutable, which is what makes the `ETag` strong |
+| `locale` | string | the locale actually served |
+| `title` / `body_markdown` | string | restricted Markdown, as above |
+| `updated_at` | timestamp | |
+| `translation_fallback` | bool | `true` when served from `default_locale` |
+
+Both help routes are readable by any authenticated session, carry no tenant data, and are served from
+a shared cache with a strong `ETag` per `(slug, version, locale)`; a matching `If-None-Match` is `304`.
+
+**List parameters**
+
+| Route | Parameter | Type | Constraint |
+|---|---|---|---|
+| `GET /api/v1/announcements` | `include_dismissed` | bool? | default `false`; `true` returns dismissed items with `dismissed: true` |
+| | `cursor` | string? | F028's opaque signed cursor |
+| | `limit` | integer? | 1–50, default 20 |
+| `GET /api/v1/help/articles` | `context` | string? | a screen key; unknown or unmapped is `matched: false`, never `404` |
+
+`GET /api/v1/announcements` returns F028's `Page<AnnouncementResponse>` sorted `published_at`
+descending then `id`. `GET /api/v1/help/articles` returns `HelpIndexResponse` and is not paginated:
+the index is deployment-wide content, bounded by the imported bundle.
+
+**Status codes**
+
+| Status | Produced by |
+|---|---|
+| `200` | the list, both help routes |
+| `201` | `POST /api/v1/announcements` |
+| `204` | `POST /api/v1/announcements/{id}/dismiss`, including the second and every later call |
+| `304` | a help article whose `ETag` matches `If-None-Match` |
+| `400 invalid` | an unknown target value, a slug outside the pattern, a missing `default_locale` translation, `action_required` without an article, a past `expires_at`, a `tenant`-scope body from a `platform-operator`, or an unlisted field |
+| `403 denied` | `scope: "platform"` from any tenant role, authoring from an ordinary member, a `targets` entry naming a foreign tenant, and a `scoped-actor` token without the announcement scope on any mutation — that token may still read |
+| `404 not_found` | an announcement of another tenant on `PATCH` or dismiss, and an unknown or withdrawn help `slug`, which the drawer treats as a degraded read and answers with the contextual index |
+| `409 conflict` | a material change under `revision: "editorial"`, a duplicate `slug`, publishing an already-published announcement, a stale `If-Match`, and an `Idempotency-Key` replayed with a different body |
+| `503 unavailable` | `BundleSignature` — the help bundle failed verification, so the previous version keeps serving and nothing is written |
+
+Every mutation requires `Idempotency-Key`, and `PATCH` additionally requires `If-Match`. Dismissal is
+idempotent by its primary key rather than by the key alone, so a replay writes nothing either way.
+
+### Use case signatures
+
+In `crates/domain/src/announcements/`; the import job in `services/worker/src/announcements/`. `Ctx`
+is F038's `ActorContext`; `JobCtx` is the worker's job context carrying correlation id and no actor.
+
+```rust
+fn list_announcements(ctx: &Ctx, repo: &dyn AnnouncementRepository, entitlements: &dyn EntitlementPort, include_dismissed: bool, page: Cursor) -> Result<Page<VisibleAnnouncement>, DomainError>;
+fn publish_announcement(ctx: &Ctx, uow: &mut UnitOfWork, req: PublishAnnouncement) -> Result<Announcement, DomainError>;
+fn edit_announcement(ctx: &Ctx, uow: &mut UnitOfWork, id: AnnouncementId, expected: Version, req: EditAnnouncement) -> Result<Announcement, DomainError>;
+fn supersede_announcement(ctx: &Ctx, uow: &mut UnitOfWork, original: AnnouncementId, req: PublishAnnouncement) -> Result<Announcement, DomainError>;
+fn dismiss_announcement(ctx: &Ctx, uow: &mut UnitOfWork, id: AnnouncementId) -> Result<(), DomainError>;
+fn evaluate_targets(actor: &Ctx, targets: &[Target], entitlements: &TenantEntitlements) -> bool;
+fn interruption_budget(ctx: &Ctx, repo: &dyn AnnouncementRepository, now: Timestamp) -> Result<Budget, DomainError>;
+fn list_help_index(ctx: &Ctx, repo: &dyn HelpArticleRepository, locale: &Locale, context: Option<ContextKey>) -> Result<HelpIndex, DomainError>;
+fn load_help_article(ctx: &Ctx, repo: &dyn HelpArticleRepository, slug: &Slug, locale: &Locale) -> Result<ArticleView, DomainError>;
+fn import_help_bundle(ctx: &JobCtx, uow: &mut UnitOfWork, bundle: SignedBundle, verifier: &dyn BundleVerifier) -> Result<ImportReport, DomainError>;
+fn render(md: &str) -> Result<SafeDoc, ContentError>;
+```
+
+`Budget` is `{ remaining_today: u8, remaining_week: u8 }` and is what sets `interrupting` on a list
+response — the cap is applied server-side before the field is written, never in the client.
+`evaluate_targets` and `render` are pure and take no repository, which is what lets the target truth
+table and the injection corpus run without a database. A use case never takes a pool or a connection
+and never returns a database row type.
+
+Transaction boundaries:
+
+- `publish_announcement` writes the `announcements` row, every `announcement_translations` row, every
+  `announcement_targets` row, the `audience_size` snapshot, the audit row and the
+  `announcement.published.v1` outbox row in **one `UnitOfWork`**. The default-locale translation
+  constraint and the target set are only meaningful against the complete set, and an announcement
+  visible with a partial target set would reach the wrong people.
+- `supersede_announcement` writes the replacement and flips the original to `superseded` in **one
+  `UnitOfWork`**, so no reader ever sees both live and neither sees a gap where neither is.
+- `edit_announcement` writes the editorial classification's result — the changed translation rows,
+  `expires_at`, the version bump and the audit row — in one `UnitOfWork` under `If-Match`. The
+  `content_hash` is recomputed inside it, because supersession is decided from that hash.
+- `dismiss_announcement` writes the `announcement_dismissals` row and the
+  `announcement.dismissed.v1` outbox row in one `UnitOfWork`; the row's primary key makes the second
+  call a no-op inside the same boundary rather than a second event.
+- Recording an interruption writes the `announcement_interruptions` row in the same `UnitOfWork` that
+  serves the list response's `interrupting: true`, so a modal counted against the budget is always a
+  modal the caller was actually told to show.
+- `import_help_bundle` writes the `help_articles`, `help_article_versions`,
+  `help_article_translations` and `help_article_contexts` rows for one `bundle_id` in **one
+  `UnitOfWork`**. That is what makes a failed import leave the previous version serving.
+- `list_announcements`, `list_help_index` and `load_help_article` are reads and take repositories,
+  never a `UnitOfWork`.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_announcements_*.sql` creates `announcements(id uuid pk, tenant_id uuid references tenants(id) on delete cascade, scope text not null check (scope in ('platform','tenant')), slug text not null, severity text not null check (severity in ('info','change','action_required')), state text not null default 'draft' check (state in ('draft','published','retracted','superseded')), supersedes_id uuid references announcements(id) on delete restrict, default_locale text not null, content_hash text not null, audience_size integer, learn_more_article_slug text, published_at timestamptz, expires_at timestamptz, version bigint not null default 1, created_by uuid not null, created_at timestamptz not null, updated_by uuid not null, updated_at timestamptz not null, deleted_at timestamptz, check ((scope = 'tenant') = (tenant_id is not null)), check (severity <> 'action_required' or learn_more_article_slug is not null))`.
@@ -188,6 +385,15 @@ Scenario: A stale help link degrades to the index in the reader's language
 - External dependencies: none. Both surfaces are served entirely by the deployment, which is what FR-F073-14 requires
 - Risks and mitigations: announcement fatigue turning the panel into an advert, mitigated by mandatory targeting review at publish and the severity rules in FR-F073-08; the 5% editorial threshold misclassifying a genuine correction, mitigated by the author's ability to publish a superseding announcement instead and by the classifier's fixed corpus test; content injection through an authored body, mitigated by the `SafeDoc` node union and the fuzz corpus in NFR-F073-02; the platform-scope tenant predicate exception being copied into a write path, mitigated by it being one named read-only query that `check-persistence` and review both look at
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F073 interface work | The Interface section defines `body_markdown` as the serialization of the server-side `SafeDoc` node union — restricted Markdown, rejected at authoring time when a node falls outside the union — rather than as a free Markdown string | FR-F073-01 and FR-F073-11 put `body_markdown` on the wire while FR-F073-13 and `SafeMarkdown` make the node union the only path to the DOM; without saying which the string is, one implementer ships a server-rendered union and another ships a client-side sanitiser, and only one of those is the type-level guarantee NFR-F073-02 is fuzzed against |
+| 2026-09-04 | F073 interface work | `PublishAnnouncementRequest` carries a required `default_locale` | The DDL declares `announcements.default_locale not null` and the validation bullet requires a translation matching it, but FR-F073-02's body listed no field that could supply it |
 
 ## 7.1 Agent handoff
 

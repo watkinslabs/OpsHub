@@ -30,6 +30,7 @@ jobs:
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-references
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-order
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-filters
+          cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- check-completeness
           cargo run --quiet --manifest-path automation/xtask/Cargo.toml -- self-test
       - name: pull request text gate
         if: github.event_name == 'pull_request'

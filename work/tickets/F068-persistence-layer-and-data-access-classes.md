@@ -25,6 +25,7 @@ finished_at: null
 
 - Branch: `f068-persistence-layer-and-data-access-classes`
 - Capability area: platform data access (spec section 2 canonical data model; section 8 release gates)
+- Aggregate: `repository`
 - Module slug: `persistence` (crate `crates/persistence`, gate module `automation/xtask/src/persistence.rs`)
 
 ### Decision references
@@ -104,6 +105,241 @@ Canonical contract: aggregate `repository`; module `persistence`; surface `crate
 - `users/mod.rs`, `users/spec.rs`, `users/queries.rs`: `UserSpec` with `TABLE = "users"`, `AGGREGATE = "user"`, `COLUMNS = ["id", "tenant_id", "email", "display_name", "status", "external_id", "last_login_at", "version", "created_by", "created_at", "updated_by", "updated_at", "deleted_at"]`, `SORTABLE = ["display_name", "created_at", "updated_at"]`, `CO_TABLES = []`; `UserFilter { status, email, group_id, created_after }`; `NewUser`, `UserPatch`; `pub type UserRepository = BaseRepository<'static, UserSpec>;` and the three named queries of FR-F068-13. `find_by_email` uses F002's `users_tenant_email_idx` partial unique index and the `citext` column type, so it is case-insensitive without a `lower()` wrapper.
 - `RepoError { NotFound, VersionConflict { expected, actual }, InvalidCursor, InvalidSort, Forbidden, Constraint { name }, Unavailable }`; the API layer maps `VersionConflict → 409 conflict`, `NotFound → 404 not_found`, `InvalidCursor` and `InvalidSort → 400 invalid` with `field_errors.cursor` and `field_errors.sort`, `Forbidden → 403 denied`, `Constraint → 400 invalid`, `Unavailable → 503`, matching decision section 3.
 - `automation/xtask/src/persistence.rs`: `check_persistence(args) -> Result<(), String>` with `scan_sources`, `scan_migrations`, `scan_specs`, `catalog_tables`, `Policy` (serde model of `schema-policy.toml`), and `Baseline`. It reuses F041's `support::{OutputFormat, report}` reporter and adds no dependency beyond `toml`, already in the workspace. Production call path: dispatched from `automation/xtask/src/main.rs` as `Some("check-persistence") => persistence::check_persistence(args)`, a one-line addition made under the F041 owner's review at integration, and run as a step in `.github/workflows/gates.yml` owned by F001; `crates/persistence/README.md` carries both lines verbatim so each edit is mechanical.
+
+### Interface
+
+This feature has no HTTP surface. Its interface is the contract sixty-four other features implement
+against, so the traits are given in full rather than described: a caller who has to guess a signature
+here writes a repository that forgets a rule. `Page<T>` and `SignedCursor` are F028's and are consumed,
+not redefined; the error body every `RepoError` eventually becomes is F028's too.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in`, `contains`, `is_empty`, `is_not_empty` — this is the lowered form every consumer's predicate compiles into, so it carries only the operators a column predicate can become a bound `where` clause: no `between` (two comparisons), no `not_contains`, `starts_with` or `not_in` (each expressible by the caller's own AST over the above), and no `is_me` or `is_error`, which resolve at query time in F013 and F035 against an actor and a cell state this layer cannot see. `Cmp::IsNull` is the single lowered form of `is_empty` and `is_not_empty`, negated by the comparison rather than by a second operator name.
+
+**The sealed contract.** `crates/persistence/src/repository/mod.rs`, over `async_trait`:
+
+```rust
+pub trait Repository: sealed::Sealed {
+    type Entity: Send + Sync + 'static;
+    type Id: Copy + Send + Sync + Into<Uuid>;
+    type Filter: Predicate + Send + Sync;
+    type New: Send;
+    type Patch: Send;
+
+    async fn get(&self, ctx: &TenantCtx, id: Self::Id) -> Result<Self::Entity, RepoError>;
+    async fn list(&self, ctx: &TenantCtx, filter: &Self::Filter, page: PageRequest) -> Result<Page<Self::Entity>, RepoError>;
+    async fn insert(&self, ctx: &WriteCtx, new: Self::New) -> Result<Self::Entity, RepoError>;
+    async fn update(&self, ctx: &WriteCtx, id: Self::Id, expected: Version, patch: Self::Patch) -> Result<Self::Entity, RepoError>;
+    async fn soft_delete(&self, ctx: &WriteCtx, id: Self::Id, expected: Version) -> Result<Deleted, RepoError>;
+    async fn restore(&self, ctx: &WriteCtx, id: Self::Id, expected: Version) -> Result<Self::Entity, RepoError>;
+    async fn purge(&self, ctx: &PurgeCtx, id: Self::Id) -> Result<Purged, RepoError>;
+}
+
+mod sealed { pub trait Sealed {} }
+
+impl<S: RepositorySpec> sealed::Sealed for BaseRepository<'_, S> {}
+impl<S: RepositorySpec> Repository for BaseRepository<'_, S> { /* the only implementation */ }
+```
+
+`Version` is a `NonZeroI64` newtype, `Deleted` is `{ id, version, deleted_at }`, `Purged` is
+`{ id, rows_removed }`. Because `sealed` is private and those two `impl` blocks are the only ones, a
+hand-written `impl Repository for MyRepository` fails to compile with `error[E0603]: module 'sealed'
+is private` — the tenant predicate, soft-delete filter, version check, audit row and outbox enqueue
+cannot be bypassed by writing a second implementation.
+
+**The specification carries data, never statements.** `repository/spec.rs`:
+
+```rust
+pub trait RepositorySpec: Send + Sync + 'static {
+    const TABLE: &'static str;
+    const AGGREGATE: &'static str;
+    const COLUMNS: &'static [&'static str];
+    const SORTABLE: &'static [&'static str];
+    const CO_TABLES: &'static [&'static str];
+
+    type Entity: Send + Sync + 'static;
+    type Id: Copy + Send + Sync + Into<Uuid>;
+    type Filter: Predicate + Send + Sync;
+    type New: Send;
+    type Patch: Send;
+
+    fn map_row(row: &PgRow) -> Result<Self::Entity, RepoError>;
+    fn bind_new(new: &Self::New, b: &mut Binder<'_>);
+    fn bind_patch(patch: &Self::Patch, b: &mut Binder<'_>);
+    fn payload(e: &Self::Entity) -> serde_json::Value;
+    fn event(op: Op) -> EventName;
+}
+
+pub enum Op { Insert, Update, SoftDelete, Restore, Purge }
+pub enum EventName { Named(&'static str), Silent(&'static str) }
+```
+
+No method returns a `String`, a `&str` of SQL, or an executor, so a specification cannot express a
+predicate of its own; `map_row` receives a `PgRow` and returns an entity with no query access, so it
+cannot smuggle one either. `event` has no default, so a specification must state the event for all
+five mutating operations; `Silent` carries the reason, and every `Named` value must appear in the
+contract catalog.
+
+**The five behaviours, and where each is applied.** None of them is a caller's responsibility, and
+none is expressible in a `RepositorySpec`, which is why forgetting one is a compile error rather than
+a review comment.
+
+| Behaviour | Applied by | On | Shape |
+|---|---|---|---|
+| Tenant predicate | `BaseRepository` statement builders | every read and write | `tenant_id = $1` bound from `TenantCtx`; a cross-tenant `get`, `update`, `soft_delete` or `purge` is `NotFound` with no distinguishing message, timing branch or field |
+| Soft-delete filter | the same builders | `get`, `list`, `update` | `and deleted_at is null` unless `Visibility::Deleted` or `Visibility::Any` is passed; `list` defaults to `Visibility::Live`, and `restore` inverts the predicate |
+| Version check | the single `update` statement | `update`, `soft_delete`, `restore` | `and version = $expected`, with `version = version + 1` in the same statement. Zero affected rows triggers one scoped re-read that separates `VersionConflict { expected, actual }` from `NotFound` |
+| Audit row | `repository/audit.rs`, same statement batch | all five mutating ops | `{ id, tenant_id, actor_id, action: "{AGGREGATE}.{op}", target_kind, target_id, before, after, field_diff, correlation_id, occurred_at }`; `before` is the pre-image already read for the version check and `field_diff` is computed from `COLUMNS` |
+| Outbox enqueue | `repository/outbox.rs`, same statement batch | the four published ops | `{ id, tenant_id, aggregate, aggregate_id, event, payload, correlation_id, idempotency_key, occurred_at, published_at: null }`; `purge` writes none |
+
+There is no public `audit`, `enqueue` or `publish` method on any type in the crate, so neither row can
+be written or skipped separately from the write it belongs to.
+
+**Contexts.** The argument type is the permission.
+
+| Type | Fields | Rule |
+|---|---|---|
+| `TenantCtx` | `{ tenant_id, actor_id, correlation_id }` | the only argument of a read; `Debug` redacts nothing here because it holds no secret |
+| `WriteCtx` | `{ tenant: TenantCtx, idempotency_key: IdempotencyKey, db: Db<'_> }` | the only argument type a mutating method accepts, which is how "all writes require an idempotency key" becomes a type requirement rather than a rule; `Debug` redacts the key |
+| `PurgeCtx` | `{ tenant: TenantCtx, grant: PurgeGrant }` | built only by `PurgeCtx::new(tenant, grant)` |
+| `PurgeGrant` | one private field | produced only by `PurgeGrant::verify(scopes, aggregate) -> Result<PurgeGrant, RepoError>` against a `purge:{aggregate}` scope; implements neither `Default`, `Clone`, nor `From<TenantCtx>`, so it cannot be manufactured |
+
+`Db<'a>` is a private enum `Pool(&'a PgPool) | Tx(&'a mut PgConnection)`. A handle from
+`Database::repo::<S>()` opens one transaction per mutating call and commits before returning; a handle
+from `UnitOfWork::repo::<S>()` writes on the caller's transaction. `BaseRepository` has no `begin`,
+`commit`, `rollback` or `savepoint` method at all, so a repository handed a transaction cannot open
+its own.
+
+**`PageRequest`**
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `cursor` | SignedCursor? | no | F028's signed cursor; a mismatch on `table`, `tenant_id`, `order` or `filter_hash` is `InvalidCursor`, so a cursor cannot be replayed against another tenant, filter or table |
+| `limit` | Limit | no | clamped to 1–200, default 50 |
+| `sort` | SortKey | yes | must be a member of `S::SORTABLE`, else `InvalidSort` |
+| `order` | `Asc \| Desc` | no | default `Asc`; part of the cursor payload |
+
+**Cursor payload.** Encoded and decoded in `repository/cursor.rs` over F028's `SignedCursor`, signed
+HMAC-SHA256 with F028's 24-hour expiry.
+
+| Field | Type | Notes |
+|---|---|---|
+| `table` | string | `S::TABLE`; a cursor is not portable between tables |
+| `tenant_id` | uuid | |
+| `sort_value` | scalar | the last row's value in `sort` |
+| `id` | uuid | the tiebreaker that makes the key total |
+| `order` | `"asc" \| "desc"` | |
+| `filter_hash` | `[u8; 32]` | SHA-256 over the sorted `Comparison`s, which is what binds a page to the filter that produced it |
+| `issued_at` | timestamp | |
+
+The predicate is `and (sort_col, id) > ($k, $id)` — never `offset` — so page 2,000 costs what page 2
+costs. The result is F028's `Page<T>`: `items`, `next_cursor`, `has_more`, and `total?`, which this
+layer never populates because counting is a second query the caller must ask for.
+
+**Filter lowering.** `repository/filter.rs`:
+
+```rust
+pub trait Predicate { fn comparisons(&self) -> Vec<Comparison<Self::Spec>>; }
+pub struct Comparison<S> { pub column: Column<S>, pub op: Cmp, pub value: Value }
+pub enum Cmp { Eq, Ne, Lt, Lte, Gt, Gte, In, Contains, IsNull(bool) }
+pub fn filter_hash<S: RepositorySpec>(cs: &[Comparison<S>]) -> [u8; 32];
+```
+
+`Column::<S>::new(name)` returns `None` unless `name` is in `S::COLUMNS`, so a column from a foreign
+specification does not construct. A `Filter` type is data; it never names a table or composes text.
+
+**`RepoError` and its one mapping.** Each module maps its own error enum onto the six-code vocabulary
+exactly once; the API layer applies this table and no handler invents a status code.
+
+| Variant | HTTP | Body |
+|---|---|---|
+| `NotFound` | `404 not_found` | cross-tenant, soft-deleted under `Visibility::Live`, and genuinely absent are indistinguishable |
+| `VersionConflict { expected, actual }` | `409 conflict` | carries the current version |
+| `InvalidCursor` / `InvalidSort` | `400 invalid` | `field_errors.cursor` / `field_errors.sort` |
+| `Forbidden` | `403 denied` | only from `PurgeGrant::verify` |
+| `Constraint { name }` | `400 invalid` | the constraint name, never a row value |
+| `Unavailable` | `503 unavailable` | |
+
+`Display` never contains a row value, an email or a bound parameter — only the aggregate, the
+operation and the version numbers.
+
+**`UnitOfWork`.** `uow/mod.rs`:
+
+```rust
+impl UnitOfWork {
+    pub async fn begin(db: &Database, ctx: TenantCtx) -> Result<Self, RepoError>;
+    pub fn repo<S: RepositorySpec>(&mut self) -> BaseRepository<'_, S>;
+    pub async fn commit(self) -> Result<Committed, RepoError>;
+    pub async fn rollback(self) -> Result<(), RepoError>;
+}
+```
+
+`repo` borrows `&mut self`, so only one repository handle exists at a time and the handles are used in
+sequence on one transaction; `commit` and `rollback` take `self` by value, so a handle cannot outlive
+the transaction and a committed unit of work cannot be reused. `Committed` is `{ events, audits }`.
+
+**`check-persistence` command.** `cargo xtask check-persistence [--json] [--baseline <file>]
+[--write-baseline]`. Findings are one line on stderr as `BLOCKED: <code> <path>:<line>: <message>`,
+sorted by path, then line, then code; `--json` prints exactly one object
+`{ command, ok, checked, findings: [{ code, path, line, message }], duration_ms }`.
+
+| Code | Produced when |
+|---|---|
+| `persist.raw_sql` | a `sqlx::query*` call or a SQL string literal outside the crate and the migrations directory |
+| `persist.connection_type` | a pool, connection, row, arguments, transaction, executor or acquire type named outside the crate, or re-exported from `lib.rs` |
+| `persist.escape_hatch` | a public function in the crate named `query`, `execute`, `exec`, `raw` or `sql`, or one taking a `&str` parameter named `sql` |
+| `persist.table_unmapped` / `persist.table_double_write` | a catalog table in no specification's `TABLE` or `CO_TABLES` / one in two |
+| `persist.array_column` | an array type declared in a `create table` or `add column` |
+| `persist.jsonb_unlisted` / `persist.policy_stale` | a `jsonb` column absent from `schema-policy.toml` / a policy entry whose column no longer exists |
+| `persist.baseline_widened` | a run adds a finding the baseline does not record, or `--write-baseline` runs without `XTASK_ROLE=maintainer` |
+
+Exit `0` clean with `check-persistence passed (<n> items)`, `1` findings with
+`check-persistence failed: <n> findings`, `2` usage or I/O, `3` refused with
+`REFUSED: persist.baseline_widened`.
+
+### Use case signatures
+
+This feature has no domain use cases: it is the layer they call. What it exposes instead is the
+worked reference implementation every later `crates/persistence/src/<aggregate>/` copies, and the
+gate's own entry points.
+
+```rust
+pub type UserRepository = BaseRepository<'static, UserSpec>;
+
+impl UserRepository {
+    pub async fn find_by_email(&self, ctx: &TenantCtx, email: &Email) -> Result<Option<User>, RepoError>;
+    pub async fn list_active_in_group(&self, ctx: &TenantCtx, group: GroupId, page: PageRequest) -> Result<Page<User>, RepoError>;
+    pub async fn count_by_status(&self, ctx: &TenantCtx) -> Result<StatusCounts, RepoError>;
+}
+
+fn check_persistence(args: &Args) -> Result<(), String>;
+fn scan_sources(root: &Path) -> Vec<Finding>;
+fn scan_migrations(dir: &Path, policy: &Policy) -> Vec<Finding>;
+fn scan_specs(root: &Path) -> Result<Vec<SpecRef>, Vec<Finding>>;
+fn catalog_tables(path: &Path) -> Result<BTreeSet<String>, Vec<Finding>>;
+```
+
+Every named query is built from `self.select(pred)` or `self.select_page(pred, page)`, so the tenant
+predicate and the soft-delete filter still apply to it; there is no `query(sql)`, `execute(sql)`,
+`raw`, `sql`, `fetch_all`, `pool()` or `Deref<Target = PgPool>` anywhere in the crate's public
+surface, and `lib.rs` re-exports no SQLx type. A named query takes a `TenantCtx`, never a pool, and
+returns an entity, never a row.
+
+Transaction boundaries — this feature defines them for the whole product:
+
+- **A single-aggregate write needs no ceremony.** A handle from `Database::repo::<S>()` opens one
+  transaction, performs the write, the audit row and the outbox row, and commits before returning.
+  Three statements, one connection, one boundary, and no caller can forget to open it.
+- **A multi-table write is one `UnitOfWork`.** `begin`, a sequence of `repo::<S>()` calls, `commit`.
+  Every write, every audit row and every outbox row in that sequence lives or dies together, which is
+  what makes a rollback remove the write, the audit trail and the event as one — the invariant the
+  conformance suite checks for every registered specification.
+- **A repository never opens a transaction it was handed one for**, because it has no method to.
+- **A replayed idempotency key is a no-op that returns the first call's result.** The unique index on
+  `(tenant_id, idempotency_key)` raises inside the write's own transaction, and the base converts it
+  into a scoped re-read of the prior aggregate row rather than a surfaced error.
+- **`purge` deletes the row and its `CO_TABLES` children in one statement batch** with an audit row
+  carrying the full pre-image and no outbox row, because consumers erase on the retention job's
+  signal rather than on an event.
 
 ### PostgreSQL/SQLx
 

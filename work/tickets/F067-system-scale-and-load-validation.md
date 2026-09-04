@@ -96,6 +96,202 @@ Canonical contract: aggregate `load-profile`; module `load`; surface `cargo xtas
 - Process control: k6 is spawned with the rendered profile JSON on a file descriptor, its stdout parsed as NDJSON summaries, and its process group killed on cancellation; Prometheus range queries use a 10-second step and are retried three times with exponential backoff before `metric.absent`.
 - Integration points: F043 `collect-artifacts` copies `testing/evidence/F067/runs/<run_id>/**` alongside lane artifacts; F044 `verify-release --milestone M#` reads `testing/evidence/F067/index.json` and the referenced `result.json` files to apply FR-F067-12.
 
+### Interface
+
+This feature has no HTTP surface, so its interface is the four shapes a run is defined and recorded
+by — the profile, the dataset, the metric catalog and the run result — plus the arguments, skip
+reasons and exit codes of `cargo xtask load-test`. Durations are seconds unless a field says
+otherwise, ratios are decimals in `[0, 1]`, timestamps are RFC 3339 UTC. An unknown key in either TOML
+file is `profile.invalid` at exit `2`, never a silently ignored setting.
+
+**`Profile`** — one file `testing/load/profiles/<name>.toml`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | matches the file stem; a duplicate across files is `profile.invalid` |
+| `dataset` | string | yes | names a file under `testing/load/datasets/`; absent → `dataset_missing` skip |
+| `executor` | `"constant-arrival-rate" \| "ramping-vus"` | yes | arrival rate for HTTP traffic so offered load does not shrink when the system slows; `ramping-vus` only for WebSocket sessions |
+| `duration_s` | integer | yes | must exceed `ramp_up_s + ramp_down_s`, else `profile.invalid` |
+| `ramp_up_s` / `ramp_down_s` | integer | yes | thresholds are evaluated over the hold window only, so ramp behaviour can neither pass nor fail a run |
+| `target_rate` | integer | yes | offered iterations per second during the hold |
+| `mix` | MixEntry[] | yes | `weight_pct` must sum to exactly 100 |
+| `thresholds` | Threshold[] | yes | every `metric` must be in the catalog below |
+| `comparison` | Comparison[] | yes | every `metric` must be in the catalog below |
+
+**`MixEntry`** — `{ weight_pct: integer, operation: string, params: map<string, value> }`. `operation`
+names a catalog route or a WebSocket session kind; an operation that no catalog row declares is
+`profile.invalid`, which is what stops a profile drifting from the product as features land.
+
+**`Threshold`** — `{ metric: string, statistic: "p95" | "p99" | "rate" | "count" | "slope",
+operator: "lt" | "lte" | "gt" | "gte" | "eq", value: decimal }`.
+
+**`Comparison`** — `{ metric: string, rule: "latency_drift" | "throughput_drop" |
+"saturation_drift" | "error_rate_drift" }`, evaluated per FR-F067-14 against the median of the last
+three `passed` runs of the same profile and dataset, or the promoted baseline when fewer than three
+exist.
+
+**`Dataset`** — one file `testing/load/datasets/<name>.toml`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `name` | string | yes | `smoke`, `tier1` or `full` |
+| `tenants` / `users` | integer | yes | |
+| `max_dimension_sheets` / `typical_sheets` | integer | yes | |
+| `rows_per_sheet` / `columns_per_sheet` | map<string, integer> | yes | keyed `max_dimension` and `typical` |
+| `cell_density` | map<string, decimal> | yes | same keys; applied per row by the seeded PRNG so the sparse cell layout is exercised realistically |
+| `expected_counts` | map<string, integer> | yes | rows per table; a produced count that differs is `dataset.count_mismatch` |
+
+**Metric catalog.** A `Threshold` or `Comparison` may name only these ids; anything else is
+`profile.invalid`. Client-side ids come from the k6 summary and its 10-second sample stream,
+server-side ids from the Prometheus range queries in `testing/load/gate/metrics.toml`, one query per
+id, evaluated over the hold window. A query returning no series is `metric.absent` at exit `2` and the
+run is `failed` — never `passed` — so a missing exporter cannot look like a clean result.
+
+| Group | Metric ids | Gate |
+|---|---|---|
+| Latency and throughput | `http_read_p95_ms`, `http_write_p95_ms`, `http_read_p99_ms`, `async_ack_p95_ms`, `achieved_rate_ratio` | `< 500`, `< 800`, `< 1500`, `< 2000`, `>= 0.99` |
+| Realtime | `ws_broadcast_p95_ms`, `ws_session_drop_rate` | `< 250`, `< 0.005`; only on `concurrent-edit` and `soak` |
+| Connection pool | `db_pool_wait_p99_ms`, `db_pool_in_use_ratio_p99` | `< 50`, `< 0.85` |
+| Outbox | `outbox_lag_seconds_p99`, `outbox_backlog_rows` | `< 5`; backlog under 1,000 within 120 s of ramp-down |
+| Jobs | `job_queue_depth_p99`, `job_oldest_age_seconds_p99` | `< 5000`, `< 60` |
+| Replication | `replication_lag_bytes_p99`, `replication_lag_seconds_p99` | `< 33554432`, `< 10` |
+| Memory | `rss_slope_mib_per_hour` | `< 2.0`, least-squares over samples after minute 30, reported with r², gated only on `soak` |
+| Correctness | `http_5xx_rate`, `dead_letter_count`, `version_conflict_rate` | `< 0.001`, `= 0`, `< 0.03` on `concurrent-edit` |
+
+**`RunResult`** — `testing/evidence/F067/runs/<run_id>/result.json`, where
+`run_id = <YYYYMMDDTHHMMSSZ>-<profile>-<dataset>-<commit12>`
+
+| Field | Type | Notes |
+|---|---|---|
+| `run_id` | string | re-running an existing one is refused with `run.exists` rather than overwriting evidence |
+| `status` | `"passed" \| "failed" \| "regressed" \| "regressed_unconfirmed" \| "skipped" \| "aborted"` | a `skipped` run satisfies no gate; an `aborted` run is never a pass and is excluded from the comparison reference set |
+| `profile` / `dataset` | string | |
+| `seed` | integer | the u64 that reproduces the dataset |
+| `commit` | string | |
+| `started_at` / `finished_at` | timestamp | `finished_at` is what the milestone gate's 14-day freshness rule reads |
+| `metrics` | MetricVerdict[] | empty for a `skipped` run, partial for an `aborted` one |
+| `reason_code` | SkipReason? | present exactly when `status` is `skipped` |
+| `reason` | string? | the human sentence beside `reason_code`, or the abort cause |
+
+**`MetricVerdict`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` / `statistic` | string | from the catalog |
+| `value` | decimal | measured over the hold window |
+| `threshold` | decimal? | the absolute bound; `null` for a metric this profile only compares |
+| `verdict` | `"pass" \| "fail"` | the absolute check; a breach fails the run immediately |
+| `baseline_value` | decimal? | the median-of-three reference, or the promoted baseline value; `null` when neither exists |
+| `comparison_verdict` | `"pass" \| "regressed" \| "not_compared"` | a regression alone is `regressed_unconfirmed` at exit `0` on its first occurrence and `regressed` at exit `1` when the next run of the same profile and dataset regresses on the same `id` |
+
+**Dataset manifest** — `testing/evidence/F067/datasets/<dataset>-<seed>.json`:
+`{ dataset, seed, built_at, generator_sha256, postgres_version, counts: map<table, integer>,
+checksums: map<table, crc32c>, duration_s }`. `generator_sha256` is what makes a generator change a
+`dataset_stale` skip rather than a silently different dataset.
+
+**Baseline** — `testing/evidence/F067/baseline/<profile>-<dataset>.json`:
+`{ profile, dataset, promoted_at, promoted_by, promoted_from: [run_id; 3], commit,
+metrics: map<metric_id, decimal>, reason }`. Promotion requires the three most recent runs of that
+profile and dataset to be `passed` and either `XTASK_ROLE=maintainer` with `XTASK_OWNER` or CI on
+`main`; otherwise exit `3` with `baseline.role_required` and nothing written. The superseded file is
+kept under `baseline/archive/`, so promotion never overwrites history.
+
+**Index** — `testing/evidence/F067/index.json`:
+`{ runs: [{ run_id, profile, dataset, status, commit, finished_at, key_metrics: map<metric_id, decimal> }] }`,
+capped at the last 30 entries per profile and dataset. It is what `verify-release --milestone` reads
+before opening any `result.json`, so a trend is queryable without unpacking a run.
+
+**Command arguments.** `cargo xtask load-test <profile|seed|report> [args]`.
+
+| Argument | Type | Required | Constraint |
+|---|---|---|---|
+| `<profile>` | string | yes, for a run | one of `steady-read`, `concurrent-edit`, `bulk-automation`, `soak` |
+| `--dataset <name>` | string | no | overrides the profile's own `dataset` |
+| `--seed <u64>` | integer | no | the same seed reproduces identical table checksums across machines and PostgreSQL patch versions |
+| `--baseline <path>` / `--compare <run_id>` | string | no | override the comparison reference |
+| `--promote-baseline` | flag | no | role-gated as above |
+| `--require-env` | flag | no | converts every skip into exit `2`, so a scheduled run pages instead of going quiet |
+| `--dry-run` | flag | no | renders the profile, resolves the dataset, prints the scenario plan and every threshold, and contacts nothing |
+| `--json` | flag | no | emits `result.json` on stdout and nothing else |
+| `seed --dataset <name> --seed <u64>` | subcommand | | adds `--verify` (re-derives checksums from a 1% seeded sample, `dataset.drift` on mismatch) and `--rebuild` (ignores the cache) |
+| `report --run <run_id>` | subcommand | | re-renders `report.md` from stored evidence |
+
+`LOAD_ENV_URL` and `LOAD_ENV_TOKEN` are the environment inputs; the token is redacted from
+`commands.log`, `report.md` and every evidence file, and a `LOAD_ENV_URL` resolving into the
+production allowlist refuses to start.
+
+**Skip reasons.** Preflight runs before any traffic and produces exactly one of these, printed as
+`load-test <profile>: skipped (<reason_code>)`, recorded in `result.json`, and accepted by no gate.
+
+| `reason_code` | Produced when |
+|---|---|
+| `env_unset` | `LOAD_ENV_URL` or `LOAD_ENV_TOKEN` is absent |
+| `env_unreachable` | the readiness probe did not return 200 within 30 s |
+| `runner_missing` | the k6 binary is absent or not the pinned version |
+| `dataset_missing` | no manifest for the profile's dataset |
+| `dataset_stale` | the manifest's `generator_sha256` differs from the current generator |
+| `concurrent_run` | another run holds the advisory lock or the lock file |
+
+**Exit codes.**
+
+| Exit | Meaning |
+|---|---|
+| `0` | `passed`, `regressed_unconfirmed`, or `skipped` without `--require-env` |
+| `1` | `failed`, `regressed`, or `aborted` |
+| `2` | usage, `profile.invalid`, `dataset.timeout`, `dataset.drift`, `dataset.count_mismatch`, `metric.absent`, `profile.script_mismatch`, `run.exists`, or any skip under `--require-env` |
+| `3` | `baseline.role_required` |
+
+Every terminal verdict prints a word — `pass`, `fail`, `skip`, `regressed` — beside any symbol, so the
+result survives a non-colour terminal and a screen reader, and the exit code distinguishes the
+outcomes without reading text at all.
+
+### Use case signatures
+
+In `automation/xtask/src/load/`. There is no `Ctx`: the `load-profile` aggregate owns no table, and
+`seed.rs` contains no SQL of its own — it writes through the `crates/persistence` repositories that
+own each schema, in dependency order.
+
+```rust
+fn load_profile(path: &Path) -> Result<Profile, LoadError>;
+fn load_dataset(path: &Path) -> Result<Dataset, LoadError>;
+fn plan_seed(dataset: &Dataset, seed: u64) -> SeedPlan;
+fn build_dataset(uow: &mut UnitOfWork, plan: &SeedPlan) -> Result<DatasetManifest, LoadError>;
+fn verify_dataset(manifest: &DatasetManifest, sampler: &Sampler) -> Result<(), LoadError>;
+fn preflight(profile: &Profile, env: &LoadEnv) -> Result<Preflight, SkipReason>;
+fn acquire_lock(env: &LoadEnv, run: &RunId) -> Result<RunLock, SkipReason>;
+fn run_profile(profile: &Profile, dataset: &Dataset, env: &LoadEnv, lock: &RunLock) -> Result<RawRun, LoadError>;
+fn collect_metrics(raw: &RawRun, queries: &MetricQueries, hold: Window) -> Result<Vec<MetricSample>, LoadError>;
+fn evaluate_thresholds(profile: &Profile, samples: &[MetricSample]) -> Vec<MetricVerdict>;
+fn reference_for(profile: &str, dataset: &str, index: &RunIndex, baseline: Option<&Baseline>) -> Reference;
+fn compare(verdicts: &mut [MetricVerdict], reference: &Reference, previous: Option<&RunResult>) -> RunStatus;
+fn write_evidence(run: &RunResult, dir: &Path) -> Result<(), LoadError>;
+fn promote_baseline(profile: &str, dataset: &str, index: &RunIndex, role: Role) -> Result<Baseline, LoadError>;
+fn render_report(run: &RunResult) -> String;
+fn load_test(args: &Args) -> Result<(), String>;
+```
+
+`evaluate_thresholds`, `compare` and `reference_for` are pure over already-collected samples, which is
+why every operator, all four comparison rules and the unconfirmed-then-confirmed sequencing are unit
+tested as values and need neither k6 nor a database. `build_dataset` is the only function here that
+takes a `UnitOfWork`, and it takes one because it writes through other features' repositories.
+
+Transaction and write boundaries:
+
+- `build_dataset` opens **one `UnitOfWork` per tenant batch of 100**, writing that batch's tenants,
+  users, groups, sheets, rows and cells in dependency order. Per batch, not per dataset: the `full`
+  dataset is roughly four million rows, and one transaction over it would hold locks for hours and
+  lose every resume point. Foreign keys are validated once at the end and secondary indexes are
+  created after the load, so the batch boundary carries no per-row constraint cost.
+- `write_evidence` writes the whole run directory or none of it, and refuses an existing `run_id` with
+  `run.exists` rather than overwriting; `result.json`, `environment.json`, `dataset.json`, `report.md`,
+  `baseline/**` and `index.json` are tracked, while `summary.json`, `metrics.ndjson.zst` and
+  `server-metrics.json` are regenerated lane artifacts and stay untracked.
+- `promote_baseline` archives the superseded file before writing the new one, so a promotion is never
+  a destructive act.
+- A cancelled or crashed run releases both locks, writes `status: "aborted"` with the partial metrics
+  it holds, and exits `1`. Nothing else in this feature writes, and it never writes outside
+  `testing/load/` and `testing/evidence/F067/`.
+
 ### PostgreSQL/SQLx
 
 - No migration is added and no table is owned; `services/api/migrations/` gains no `*_load_*.sql` file, and the database lane asserts that as a negative control.

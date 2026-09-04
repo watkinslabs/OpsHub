@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f044-contract-release-control`
 - Capability area: developer workflow control plane (spec section 8 release gates: API contract and migration tests, feature-flag/rollback plan; spec 5.9 INT-01 versioned REST API and OpenAPI; spec section 10 flags default off; decisions section 3 OpenAPI from typed contracts, section 8 MCP schema drift fails CI, section 9 one flag per suite)
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 8, 9, 10; `docs/capability-contracts.md` row F044
+- Aggregate: `release-control`
 - Module slug: `xtask-release` (Rust module `automation/xtask/src/release.rs`; evidence under `testing/evidence/<ID>/**`; inputs `docs/capability-contracts.md`, `openapi/v1.json`)
 
 - Design: this feature has no user surface; it ships tooling, runtime or contracts only.
@@ -97,6 +98,176 @@ Canonical contract: aggregate `release-control`; module `xtask-release`; surface
 - Limits: catalog ≤ 200 rows; OpenAPI ≤ 16 MiB; ≤ 2,000 migrations; flag registry ≤ 500 entries; a limit breach is `io.too_large` with the limit.
 - Optional inputs and their absence behaviour: `openapi/v1.json`, `crates/events/src/registry.rs`, `apps/web/src/api/generated/manifest.json`, `services/mcp/schemas/manifest.json`, `crates/contracts/src/feature_flags.rs`, `services/api/migrations/` each print `skipped: <path> absent` and pass until the owning feature creates them.
 - Exit codes: 0 pass, 1 findings, 2 usage or I/O, 3 refused (`release.role_required`).
+
+### Interface
+
+This feature has no HTTP surface, so its interface is the command line: the arguments each command
+accepts, the exit code each outcome produces, the exact text of every finding, and the JSON records
+`verify-release` writes. Those four are what two implementers would otherwise build differently, and
+they are fixed here. Nothing below quotes a route or an event literal, because this ticket is itself
+scanned by the gate it describes.
+
+**Command arguments.** Every command is `cargo xtask <command> [args]`. An unknown flag, a missing
+required value, or a positional argument the command does not take is exit `2` with usage on stderr.
+
+| Command | Argument | Type | Required | Constraint |
+|---|---|---|---|---|
+| `check-contracts` | `--json` | flag | no | switches stdout to the single JSON object below |
+| `check-migrations` | `--base <REF>` | string | no | git ref the branch is compared against; defaults to `origin/main`, then `main`; neither resolvable → exit `2` |
+| | `--json` | flag | no | |
+| `check-flags` | `--json` | flag | no | |
+| `verify-release` | `<ID>` | item id | yes, unless `--milestone` | `^F[0-9]{3}$`; a well-formed id with no ticket → exit `2`; mutually exclusive with `--milestone` |
+| | `--milestone <M#>` | string | no | `^M[0-9]+$`; verifies every feature whose `target_milestone` matches |
+| | `--json` | flag | no | |
+
+**Environment.** These are inputs, not flags, and they decide whether a run may record.
+
+| Variable | Type | Effect |
+|---|---|---|
+| `XTASK_ROLE` | string? | `release-manager` permits `verify-release` to write; any other value or absence makes the run a dry run |
+| `XTASK_OWNER` | string? | recorded as `verifier`; required alongside the role, absent → exit `3` |
+| `GITHUB_ACTIONS` / `GITHUB_REF` | string? | `true` with `refs/heads/main` grants the same permission as the role; `GITHUB_ACTOR` and the run URL are then recorded in `release.json` |
+| `NO_COLOR` | any | suppresses colour; state is words in every mode regardless |
+
+**Optional inputs and their absence.** Each prints `skipped: <path> absent` on stdout and does not
+fail, so E000 runs before any product code exists: `openapi/v1.json`,
+`crates/events/src/registry.rs`, `apps/web/src/api/generated/manifest.json`,
+`services/mcp/schemas/manifest.json`, `crates/contracts/src/feature_flags.rs`, and the migrations
+directory. Limits are catalog ≤ 200 rows, OpenAPI ≤ 16 MiB, ≤ 2,000 migrations, flag registry ≤ 500
+entries; a breach is `io.too_large` naming the limit.
+
+**Finding text.** Every finding is one line on stderr, sorted by path, then line, then code:
+
+```
+BLOCKED: <code> <path>[:<line>]: <message>
+```
+
+and a drift message always renders both sides in the same order, `expected: <a>, found: <b>`, so a
+diff is readable without opening either artifact. No line exceeds 200 characters and output is ASCII.
+
+| Code | Produced when |
+|---|---|
+| `contract.catalog` | a catalog row has an empty cell, a duplicate id, an event outside the event pattern, or a route outside the allowed path prefixes |
+| `contract.row_missing` / `contract.row_orphan` | a feature ticket with no catalog row / a catalog row with no feature ticket |
+| `contract.route_missing_in_ticket` / `contract.event_missing_in_ticket` | a route or event the row declares that section 4 of its ticket does not reproduce verbatim |
+| `contract.route_not_in_row` / `contract.event_not_in_row` | the reverse: section 4 names one the row does not declare |
+| `contract.route_undeclared` | a ticket names a path no row declares and that is neither a prefix nor an extension of one — the case a promised link with no row behind it produced |
+| `contract.paths_mismatch` | `owned_paths` lacks a glob the row's module slug implies, or the harness path for its id |
+| `contract.decision_link` | the ticket links neither the decision record nor its catalog row |
+| `openapi.route_missing` / `openapi.orphan_operation` / `openapi.feature_mismatch` | a declared route with no operation / an operation mapping to no row and not marked internal / an operation whose feature extension names another id |
+| `events.registry_missing` / `events.registry_orphan` / `events.payload_shape` | a catalog event absent from the registry / a registry constant absent from the catalog / a payload struct missing one of the seven envelope fields |
+| `client.stale` | the generated client manifest's OpenAPI hash differs from the document's |
+| `mcp.schema_stale` / `mcp.tool_missing` | the MCP manifest's catalog hash differs / a product row's aggregate has no tool |
+| `migration.name` / `migration.down_missing` / `migration.module_not_owned` / `migration.header` | filename outside the pattern / an `up` with no matching `down` / a module segment no feature owns / a missing or malformed header comment |
+| `migration.order` / `migration.mutated` | a new timestamp older than the newest on the base ref / a file on the base ref changed on the branch |
+| `migration.destructive` / `migration.down_incomplete` / `migration.unclassified` | an undeclared destructive statement / a `down` that is empty or does not reference every object its `up` creates / a statement the classifier does not recognise, reported at warning level in JSON and declarable in the header |
+| `flag.unregistered` / `flag.missing_ticket` / `flag.harness_mismatch` / `flag.unknown_reference` | an in-progress or archived feature with no registry entry / a registry entry with no ticket / a harness `flag` that differs from the ticket's / a code reference to an unregistered key |
+| `flag.stale` / `flag.premature_default` / `flag.removed_reference` | an archived feature still active two milestones later / a graduated flag whose feature is not archived / a reference to a removed flag |
+| `release.not_archived` / `release.child_open` | the ticket is not archived with `status: done` and `finished_at` / a story or task of it is not archived |
+| `release.lane_missing` / `release.lane_failed` | a lane absent from the evidence manifest and not listed as not applicable with a reason / a lane recorded as failed |
+| `release.gate_failed` | one of the three gates did not pass |
+| `release.rollback_missing` / `release.notes_missing` | no rollback evidence / an empty release-notes section |
+| `release.role_required` | a write was requested without the role and outside CI on `main` |
+| `io.too_large` | an input past one of the limits above, naming the limit |
+
+`release.scale_missing`, `release.scale_stale` and `release.scale_failed` are F067's additions to this
+command's milestone check; that ticket defines them and this one consumes them.
+
+**Exit codes.** One meaning each, so a caller branches on the code and never on the text.
+
+| Code | Meaning |
+|---|---|
+| `0` | no findings; every optional input either checked or `skipped` |
+| `1` | one or more findings; the summary line is `<command> failed: <n> findings` |
+| `2` | usage, I/O, or a git failure that leaves the check unable to run at all |
+| `3` | refused: `verify-release` ran every check and would have written, but the role was absent |
+
+**`--json` output.** Exactly one object on stdout and nothing else, so the text and JSON forms are
+structural equivalents.
+
+| Field | Type | Notes |
+|---|---|---|
+| `command` | string | the subcommand name |
+| `ok` | bool | `true` only on exit `0` |
+| `checked` | integer | rows, files, or features examined |
+| `findings` | `{ code, path, line?, message }[]` | in the same order as the text lines |
+| `gates` | `{ contracts, migrations, flags }` of `"pass" \| "fail" \| "skipped"` | present on `verify-release` only |
+| `duration_ms` | integer | |
+
+**`release.json`** — written to `testing/evidence/<ID>/` by temp file plus rename, so a partial write
+is impossible
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | item id | |
+| `verified_at` | timestamp | RFC 3339 UTC; with `head_commit`, the only non-deterministic field |
+| `verifier` | string | `XTASK_OWNER`, or the CI actor and run URL |
+| `head_commit` | string | full commit sha |
+| `inputs` | `{ path, sha256 }[]` | sorted by path; the set the signature is taken over |
+| `gates` | `{ contracts, migrations, flags }` | as above |
+| `lanes` | map<string, `"pass" \| "missing" \| "failed"`> | the seven lanes; `missing` only when the harness lists it as not applicable with a reason |
+| `rollback` | RollbackEvidence | see below |
+| `signature` | string | SHA-256 hex over the sorted input hashes; unchanged inputs produce the same signature, which is what makes a second run verifiable rather than merely repeatable |
+
+**`RollbackEvidence`** — read from `testing/evidence/<ID>/rollback.json`, not composed here
+
+| Field | Type | Notes |
+|---|---|---|
+| `flag_off_verified` | bool | must be `true`, else `release.rollback_missing` |
+| `migration_down_verified` | `bool \| "not_applicable"` | the string only for a feature that owns no migration |
+| `commands` | string[] | what was run to prove it |
+| `commit` | string | where it was proven |
+
+**`M#.json`** — `{ milestone, verified_at, features: [{ id, signature }], ok }`, written to
+`testing/evidence/milestones/`. Any failing feature fails the milestone and every finding is listed
+before the exit.
+
+### Use case signatures
+
+In `automation/xtask/src/release.rs`. There is no `Ctx` and no `UnitOfWork` here: this feature owns no
+table, opens no connection, and executes no statement — the migration gate is static analysis over
+text, which is why it carries no SQLx dependency at all. `Finding` is F042's finding type and
+`Reporter` is F041's; both are reused rather than redefined.
+
+```rust
+fn parse_catalog(text: &str) -> Result<Catalog, Vec<Finding>>;
+fn check_ticket_against_row(item: &WorkItem, row: &ContractRow) -> Vec<Finding>;
+fn check_openapi(catalog: &Catalog, doc: &OpenApiDoc) -> Vec<Finding>;
+fn check_event_registry(catalog: &Catalog, registry_src: &str) -> Vec<Finding>;
+fn check_generated_client(manifest: &Path, openapi: &Path) -> Vec<Finding>;
+fn check_mcp_schemas(manifest: &Path, catalog_path: &Path) -> Vec<Finding>;
+fn check_contracts(args: &Args) -> Result<(), String>;
+fn load_migrations(dir: &Path) -> Result<Vec<Migration>, Vec<Finding>>;
+fn check_migration_names(migrations: &[Migration], graph: &WorkGraph) -> Vec<Finding>;
+fn check_migration_order(migrations: &[Migration], base: &str) -> Vec<Finding>;
+fn check_migration_safety(migrations: &[Migration], graph: &WorkGraph) -> Vec<Finding>;
+fn check_migrations(args: &Args) -> Result<(), String>;
+fn load_flags(path: &Path) -> Result<Vec<FlagDef>, Vec<Finding>>;
+fn check_flag_registry(graph: &WorkGraph, flags: &[FlagDef]) -> Vec<Finding>;
+fn check_flag_references(root: &Path, flags: &[FlagDef]) -> Vec<Finding>;
+fn check_flag_lifecycle(graph: &WorkGraph, flags: &[FlagDef]) -> Vec<Finding>;
+fn check_flags(args: &Args) -> Result<(), String>;
+fn verify_release(id: &ItemId, role: Role) -> Result<ReleaseRecord, Vec<Finding>>;
+fn verify_milestone(milestone: &str, role: Role) -> Result<MilestoneRecord, Vec<Finding>>;
+fn signature(inputs: &[InputHash]) -> String;
+```
+
+Every `check_*` returning `Vec<Finding>` is pure over already-loaded inputs and touches no filesystem,
+so each rule is tested against a fixture value rather than a fixture tree; the four `check_*(args)`
+entry points are the only ones that read the repository and the only ones that map findings onto an
+exit code. `verify_release` returns the record it *would* write; the caller decides whether the role
+permits writing it, which is why a dry run is the same computation as a recorded one and cannot
+diverge from it.
+
+Write boundaries, in place of a transaction boundary this feature has no database to open:
+
+- `verify_release` writes `release.json` only after every gate and lane has passed, as one temp file
+  plus rename, so no reader ever sees a half-written record and a failed run leaves the previous
+  record intact.
+- `verify_milestone` writes `M#.json` only when every feature in the milestone verified; a single
+  failure writes nothing and lists every finding.
+- Nothing else in this feature writes. It reads repository files and `git` metadata and never
+  executes a migration, a statement, or a network call.
 
 ### PostgreSQL/SQLx
 

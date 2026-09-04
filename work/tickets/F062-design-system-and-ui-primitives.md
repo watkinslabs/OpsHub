@@ -54,7 +54,7 @@ As a product engineer building any OpsHub feature, I want a themed MUI installat
 - **FR-F062-10:** Three wrapped data surfaces serve every feature rather than hand-built equivalents per screen: the TanStack-based `DataGridPanel` of FR-F062-16 backs the sheet grid, admin tables, and every list (virtualization above 100 rows, sticky header, column resize, single and multiple selection, sorting, filtering, and server-side pagination bound to the F028 cursor), MUI X `Charts` backs every widget in F022–F024, and MUI X `DatePickers` backs every date and range field with the F049 locale and timezone. Each is wrapped once in `apps/web/src/ui/data/` to bind theme, density, locale, and empty and error states; features use the wrapper, never the raw import.
 - **FR-F062-11:** `apps/web/src/ui/patterns/` supplies the composites MUI does not have, which every feature ticket's §3 already promises: `PageHeader`, `EmptyState`, `ErrorState` (renders `correlation_id` and a retry action), `DeniedState`, `NotFoundState`, `OfflineBanner`, `StaleBanner`, `LoadingSkeleton` (list, table, tree, card, detail shapes), `ConfirmDialog`, `FormLayout`, `FilterBar`, and the locale-aware `FormattedDate`, `FormattedNumber`, and `RelativeTime`. Each takes its copy as props; none hard-codes feature wording, and none calls `toLocaleString` without an explicit locale.
 - **FR-F062-12:** `AppShell` in `apps/web/src/ui/shell/` defines the frame every route renders inside, and it permits exactly one wide navigation surface. The masthead is 56px and carries identity, the workspace switcher, global search and the account menu. The left rail is a fixed 72px **icon rail** — one entry per product area, an icon with a label beneath it and an edge bar marking the active area — and it neither expands nor resizes, so it costs the same on every screen. A section's own navigation belongs to the page, not to a second rail: it renders inside the content region as a single 236px `--section-w` sidebar, and **no screen may place two wide sidebars side by side**. Two 240px rails cost a third of a 1440px viewport before any content, which is the mistake this requirement exists to prevent. The frame also owns an optional right inspector panel and one global toast region. Breakpoints are `--bp-sm:640px`, `-md:768px`, `-lg:1024px`, `-xl:1280px`, `-2xl:1536px`; below `--bp-lg` the section sidebar collapses into a drawer while the icon rail stays, and below `--bp-sm` the inspector becomes a sheet. The shell owns skip-to-content, `[` and `]` to toggle the section sidebar and inspector, and `?` for the shortcut sheet. F005 composes this shell rather than defining its own frame.
-- **FR-F062-13:** Charts use one fixed categorical series palette of eight tokens in order, `--chart-1` through `--chart-8`, defined once in `apps/web/src/design/tokens.css` and named nowhere else. `--chart-1` … `--chart-5` are `var(--brand)`, `#0e9aa7`, `#e0930f`, `#d6558f`, `#5aa06b`. `--chart-6` … `--chart-8` are the lighter variants of slots 2, 3 and 4, each `color-mix(in oklch, <that slot> 58%, var(--surface))`, so the second four differ from the first four in lightness — the one channel deuteranopes and protanopes both retain — rather than in hue alone. A chart with more than eight series wraps the palette and must additionally distinguish the repeated slots by fill pattern; a chart with more than sixteen is rejected by the feature that builds it, not by this one. No chart uses color as its only signal: every series carries a legend entry, a direct label, or a value. Sequential scales derive from a single hue by lightness; the axis, grid, and label colors come from the border and text tokens.
+- **FR-F062-13:** Charts use one fixed categorical series palette of eight tokens in order, `--chart-1` through `--chart-8`, defined once in `apps/web/src/design/tokens.css` and named nowhere else. `--chart-1` … `--chart-5` are `var(--brand)`, `#0e9aa7`, `#e0930f`, `#d6558f`, `#5aa06b`. `--chart-6` … `--chart-8` are the lighter variants of slots 2, 3 and 4, each `color-mix(in oklch, <that slot> 58%, var(--bg-surface))`, so the second four differ from the first four in lightness — the one channel deuteranopes and protanopes both retain — rather than in hue alone. A chart with more than eight series wraps the palette and must additionally distinguish the repeated slots by fill pattern; a chart with more than sixteen is rejected by the feature that builds it, not by this one. No chart uses color as its only signal: every series carries a legend entry, a direct label, or a value. Sequential scales derive from a single hue by lightness; the axis, grid, and label colors come from the border and text tokens.
 - **FR-F062-14:** Icons come from one registry, `apps/web/src/ui/icons.ts`, exporting a stroke set on a 24px grid at sizes 14, 16, 20, and 24 aligned to the type scale. A decorative icon is `aria-hidden`; a meaningful one takes a required `title`. Importing an icon package directly from a feature module fails lint.
 - **FR-F062-16:** One visual system, one headless engine, no mixed concerns. **Every pixel comes from MUI**: MUI core for the component vocabulary and the MIT parts of MUI X — Charts and Date Pickers — for charts and dates, all under the single OpsHub theme from FR-F062-08. **TanStack contributes no markup and no styles**: `@tanstack/react-table` and `@tanstack/react-virtual` are headless state and virtualization only, and their output renders through the same themed MUI components as everything else, so the grid is not a second design system wearing a costume. No third UI library may enter `apps/web` — a component, chart or date library beyond those two MUI packages fails the dependency test — so there is one theme, one density model, one accessibility model and one set of APIs to learn. The grid carries no licence and no per-seat cost. `DataGridPanel` is built on TanStack Table v8 with TanStack Virtual (both MIT), rendered with the themed MUI Community components and the tokens above, so the grid matches the rest of the product visually while remaining free for commercial use. No `@mui/x-data-grid`, `-pro` or `-premium` package appears in the dependency tree, no licence key exists anywhere in the build or runtime, and no watermark can ship; a dependency test fails the build if a licensed grid package is added. MUI X Charts and Date Pickers are MIT and stay, keeping charts and dates inside the same MUI family as the rest of the UI rather than introducing another vendor's look.
 - **FR-F062-17:** The wrapper supplies every grid behaviour F008 requires from TanStack state plus its own rendering: virtualized rows and columns holding a 100,000-row, 500-column sheet at F008's render budget; column resize, reorder, hide and freeze bound to F008's `layout` field with a 1-second debounce (`columnSizing`, `columnOrder`, `columnVisibility` and `columnPinning` state); range selection extended by Shift+Arrow and Shift+Click with non-contiguous Ctrl+Click; clipboard copy emitting TSV that pastes into a spreadsheet with visible formatting; and inline cell editors from F007's typed columns. Because the rows are real DOM rather than a canvas, the grid carries `role="grid"` with `aria-rowindex` and `aria-colindex` on virtualized cells as F008 NFR-F008-03 requires. Server-owned capabilities stay server-owned and are rendered, never re-implemented: row grouping from F013 `settings.group_by`, tree rows from F009 `row_hierarchy`, aggregation from F022 metrics, and file export from F010 `POST /api/v1/exports`. `ui/data/` is the only place the table library is imported, so the engine can be replaced without touching a feature.
@@ -89,6 +89,127 @@ Excluded: row grouping (F013), tree data (F009), aggregation (F022) and file exp
 ### Rust backend
 
 - None. F062 is a web-only feature and owns no Rust path, no route, no event, no table, and therefore no repository class under `crates/persistence` (decision 2.1); the catalog row lists its surface as `apps/web/src/design/**`, `apps/web/src/ui/**`, `pnpm --filter web storybook`, and `pnpm --filter web test:ui`. Nothing here reaches the API, and the harness asserts that absence.
+
+### Interface
+
+F062 declares no route, so its interface is the two things fifty-nine other features consume: the
+**token names** they reference and the **component prop contracts** they compose from. Both are
+contracts in exactly the sense a request body is — a feature that guesses a token name gets a blank
+value, and a feature that guesses a prop invents a fifty-ninth button. Every variant below is a
+TypeScript literal union, never a bare `string`, and every component is a named export with an
+exported props interface, so a rename is a compile error rather than a silent divergence.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset all — `FilterBar` and `DataGridPanel` render a predicate rather than owning one, so the bar must be able to display and edit every operator in the vocabulary; the subset that is actually offered on any screen is the consuming feature's declaration, and this feature narrows nothing and names no operator of its own.
+
+**Token names.** Every one is a CSS custom property on `:root`, defined in both themes; a name present
+in one theme and not the other fails the parity test. Features reference these names and never a
+literal value.
+
+| Scale | Names | Values |
+|---|---|---|
+| Spacing | `--space-1` … `--space-12` | 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96 px |
+| Radius | `--radius-sm`, `-md`, `-lg`, `-full` | 4, 6, 10, 9999 px |
+| Elevation | `--shadow-1`, `-2`, `-3` | the three composite shadows of FR-F062-01, with dark-theme equivalents |
+| Motion | `--duration-fast`, `-base`, `-slow`; `--ease-standard`, `--ease-in`, `--ease-out` | 100, 150, 250 ms; under `prefers-reduced-motion: reduce` every duration resolves to 1 ms |
+| Layer | `--z-dropdown`, `-sticky`, `-drawer`, `-dialog`, `-popover`, `-toast`, `-tooltip` | 1000, 1100, 1200, 1300, 1400, 1500, 1600 |
+| Type | `--text-xs`, `-sm`, `-base`, `-lg`, `-xl`, `-2xl`, `-3xl`; `--font-sans`, `--font-mono` | 12/16, 13/18, 14/20, 16/24, 20/28, 24/32, 30/38 px; no size outside the scale exists |
+| Surface | `--bg-canvas`, `-surface`, `-raised`, `-sunken`, `-hover`, `-active`, `--bg-selected` | per theme, FR-F062-03 and FR-F062-04 |
+| Text | `--text-primary`, `-secondary`, `-tertiary`, `-inverse` | |
+| Border | `--border-subtle`, `-default`, `-strong` | |
+| Intent | `--{success,warning,danger}-{bg,fg,border,emphasis}` | twelve names per theme |
+| Brand | `--brand`; derived `--accent-bg`, `--accent-fg`, `--accent-border`, `--accent-emphasis`, `--bg-selected`, `--focus-ring` | the derived six come from `--brand` by `color-mix(in oklch, …)`; authoring an accent value directly fails lint |
+| Density | `--control-sm`, `-md`, `-lg`, `--row-h` | 28/32/40/36 px comfortable, 24/28/34/28 px compact; set on the app root, never passed as a prop |
+| Breakpoint | `--bp-sm`, `-md`, `-lg`, `-xl`, `-2xl` | 640, 768, 1024, 1280, 1536 px |
+| Chart | `--chart-1` … `--chart-8` | slots 1–5 are `var(--brand)`, `#0e9aa7`, `#e0930f`, `#d6558f`, `#5aa06b`; slots 6–8 are the lighter variants of 2, 3 and 4 by `color-mix(in oklch, <slot> 58%, var(--bg-surface))`. This is the whole categorical palette; a chart of more than eight series wraps it and distinguishes repeated slots by fill pattern |
+
+**Enumerated variants.** These unions are the complete set. A feature that wants a fifth kind of
+button opens a ticket against this one; it does not pass `sx` to make one, and `className` carries
+layout only — grid placement, flex growth, width — never colour, typography, border or shadow.
+
+| Prop | Union |
+|---|---|
+| `variant` (Button) | `"primary" \| "secondary" \| "ghost" \| "danger"` |
+| `size` (any control) | `"sm" \| "md" \| "lg"`, resolving to `--control-sm/-md/-lg` |
+| `intent` (Alert, Chip, Banner) | `"info" \| "success" \| "warning" \| "danger"` |
+| `theme` | `"light" \| "dark" \| "system"`, persisted in `localStorage` key `opshub.theme` |
+| `density` | `"comfortable" \| "compact"`, persisted in `opshub.density` |
+| icon `size` | `14 \| 16 \| 20 \| 24` |
+
+**Pattern prop contracts.** `apps/web/src/ui/patterns/`. Every one takes its copy as props and
+hard-codes no feature wording; every one is a named export with an exported props interface.
+
+| Component | Props |
+|---|---|
+| `PageHeader` | `{ title: string, subtitle?: string, breadcrumbs?: Crumb[], actions?: ReactNode, status?: ReactNode }` |
+| `EmptyState` | `{ icon: IconName, headline: string, body: string, action?: { label: string, onClick: () => void } }` — exactly one primary action, never two |
+| `ErrorState` | `{ headline: string, body: string, correlationId: string, onRetry?: () => void }` — `correlationId` is required, because an error a user cannot quote is an error nobody can trace |
+| `DeniedState` | `{ permission: string, body: string }` — names the missing permission and never the resource, so a denial does not leak existence |
+| `NotFoundState` | `{ headline: string, body: string, action?: { label, href } }` |
+| `OfflineBanner` | `{ since: Date, onRetry?: () => void }` |
+| `StaleBanner` | `{ changedFields?: string[], onReload: () => void }` |
+| `LoadingSkeleton` | `{ shape: "list" \| "table" \| "tree" \| "card" \| "detail", rows?: number }` |
+| `ConfirmDialog` | `{ open: boolean, title: string, body: ReactNode, confirmLabel: string, variant: "primary" \| "danger", requireTyping?: string, onConfirm, onCancel }` — `requireTyping` is what a destructive confirmation uses instead of a second dialog |
+| `FormLayout` | `{ children: ReactNode, columns?: 1 \| 2, footer?: ReactNode }` |
+| `FilterBar` | `{ fields: FilterField[], value: FilterState, onChange: (next: FilterState) => void, operators: readonly OperatorName[] }` — `operators` is the consuming feature's declared subset, passed in; this component owns none |
+| `FormattedDate` / `FormattedNumber` / `RelativeTime` | `{ value, locale: string, timeZone: string }` — `locale` and `timeZone` are required, so no component ever calls `toLocaleString` without them |
+
+**Data wrapper prop contracts.** `apps/web/src/ui/data/`. These three are the only modules permitted
+to import the table, chart and date-picker engines, which is the seam that lets an engine be replaced
+without touching a feature.
+
+| Component | Props |
+|---|---|
+| `DataGridPanel` | `{ columns: ColumnDef[], rows: Row[], rowCount: number, getRowId, sort, onSortChange, filter, onFilterChange, selection: "none" \| "single" \| "range", onSelectionChange, layout: GridLayout, onLayoutChange, page: { cursor?: string, hasMore: boolean }, onPageChange, state: "loading" \| "ready" \| "empty" \| "error", emptyState?, errorState? }` |
+| `GridLayout` | `{ columnOrder: string[], columnSizing: Record<string, number>, columnVisibility: Record<string, boolean>, columnPinning: { left: string[], right: string[] } }` — bound to F008's `layout` field with a 1-second debounce; this feature stores none of it |
+| `ChartPanel` | `{ spec: ChartSpec, data: Series[], state, emptyState?, errorState? }` — `spec` is F022–F024's and names no colour; the palette above is applied here, in order |
+| `DateField` | `{ value, onChange, granularity: "date" \| "datetime" \| "range", locale, timeZone, min?, max?, state }` |
+
+`DataGridPanel` renders real DOM through themed MUI components, so it carries `role="grid"` with
+`aria-rowindex` and `aria-colindex` on virtualized cells. Row grouping, tree rows, aggregation and
+file export are server-owned by F013, F009, F022 and F010 and are rendered here, never
+re-implemented.
+
+**Shell contract.** `AppShell` takes
+`{ masthead: ReactNode, rail: RailItem[], sidebar?: ReactNode, inspector?: ReactNode, children: ReactNode }`.
+The masthead is 56 px; the rail is a fixed 72 px icon rail that neither expands nor resizes; a
+section's own navigation is a single 236 px `--section-w` sidebar **inside the content region**, and
+no screen may place two wide sidebars side by side. Below `--bp-lg` the sidebar collapses to a drawer
+while the rail stays; below `--bp-sm` the inspector becomes a sheet. The shell owns
+skip-to-content, `[` and `]`, `?`, and the single global toast region — a feature mounts none of
+these itself.
+
+**The import surface.** `apps/web/src/ui/index.ts` re-exports the themed component set, and a feature
+imports from `apps/web/src/ui` and from nowhere else. A direct import of the component, grid, chart,
+date or icon package from `apps/web/src/features/**`, a duplicate of a component name the library
+exports, a stylesheet outside `apps/web/src/design/`, an `sx` key setting colour, typography, border
+or shadow, a raw colour, spacing, radius, type-size or duration literal, `dangerouslySetInnerHTML`,
+and `any`, `!` or a silencing `as` in application code each fail `pnpm --filter web lint` with the
+standard's section named in the message.
+
+### Use case signatures
+
+This feature owns no Rust path, no route and no repository, so it has no domain use case and takes no
+`ctx` and no `UnitOfWork`. Its equivalent surface is the four exported functions the theme is driven
+by, in `apps/web/src/design/`:
+
+```ts
+export function deriveBrand(hue: string): BrandTokens;
+export function validateBrand(hue: string): { ok: true } | { ok: false; failures: ContrastFailure[] };
+export function resolveTheme(stored: Theme | null, system: "light" | "dark"): "light" | "dark";
+export function tokenParity(light: TokenSet, dark: TokenSet): string[];
+```
+
+`deriveBrand` returns the six accent, selection and focus tokens by `color-mix`, so rebranding is one
+variable and never a repaint. `validateBrand` runs the FR-F062-06 contrast check and names every
+failing pair; tenant settings calls it **before** saving, which is why a hue that fails contrast is
+refused at save time rather than shipped to viewers. `resolveTheme` is what the pre-paint inline
+script in `apps/web/index.html` runs, so no frame renders in the wrong theme. `tokenParity` returns
+the names defined in one theme and not the other and is the parity test's whole implementation.
+
+All four are pure functions of their arguments: no module under `apps/web/src/ui/**` performs a
+network call, and the harness asserts zero `fetch` calls from it. Theme, density and brand are
+CSS-variable swaps, so applying any of them re-renders no React tree — the boundary that matters here
+is a style recalculation, not a transaction.
 
 ### PostgreSQL/SQLx
 
@@ -198,6 +319,7 @@ Every change made to this ticket after it was first accepted, newest first.
 
 | Date | Caused by | What changed | Why |
 |---|---|---|---|
+| 2026-09-04 | F062 interface work | FR-F062-13's derivation base corrected from `var(--surface)` to `var(--bg-surface)` | No `--surface` token exists in either theme: FR-F062-03 names the surface token `--bg-surface`, so the three derived chart slots would have mixed against a blank value and resolved to their own undiluted hue, defeating the lightness separation the amendment was made for |
 | 2026-09-04 | F024 interface work | FR-F062-13 extended from five literal colours to eight named tokens `--chart-1`…`--chart-8`, the last three derived by lightness from slots 2–4, with a wrap-and-pattern rule beyond eight | F024 §3 already named `--chart-1` to `--chart-8`; five colours cannot draw a chart with six series, and the palette belongs to this ticket, so the shortfall is fixed at the owner rather than worked around at the consumer |
 
 ## 7.1 Agent handoff

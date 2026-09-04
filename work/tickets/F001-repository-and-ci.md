@@ -50,7 +50,7 @@ As a maintainer, I want a clean checkout to build both the Rust workspace and th
 - **FR-F001-04:** `pnpm install --frozen-lockfile && pnpm --filter web build` exits 0 and writes `apps/web/dist/index.html`; `pnpm --filter web typecheck` runs `tsc --noEmit` under `strict: true`.
 - **FR-F001-05:** `pnpm --filter web dev` serves the app on port 5173 with route `/status` rendering the `StatusPage` that calls `GET /readyz` — not `/healthz`, which carries only a process-level status — and renders each component F004 reports with its state and latency, showing `ok`, `degraded`, or `unreachable`.
 - **FR-F001-06:** `.github/workflows/gates.yml` defines five jobs named `validate-work`, `rust`, `web`, `policy`, and `line-limit`; all five are required status checks and a pull request into `main` cannot merge while any of them is failing or missing.
-- **FR-F001-07:** The `validate-work` job runs `cargo xtask validate-work`, `validate-plan`, `validate-tickets`, `check-contracts`, `check-migrations`, `check-persistence`, `check-roles`, `check-design`, `check-references`, and `check-order` in that order and exits 1 with the `BLOCKED:` lines from the first failing command.
+- **FR-F001-07:** The `validate-work` job runs `cargo xtask validate-work`, `validate-plan`, `validate-tickets`, `check-contracts`, `check-migrations`, `check-persistence`, `check-roles`, `check-design`, `check-references`, `check-order`, `check-filters`, and `check-completeness` in that order and exits 1 with the `BLOCKED:` lines from the first failing command.
 - **FR-F001-08:** The `policy` job runs `cargo xtask self-test`, `cargo xtask audit-range origin/main..HEAD`, and `cargo xtask audit-pr title.txt body.txt`; a commit message, title, or body containing a forbidden attribution token fails the job with output starting `BLOCKED:`.
 - **FR-F001-15:** A `supply-chain` job runs on every pull request and nightly on `main`: `cargo audit` against the RustSec advisory database and `pnpm audit --audit-level=high`, both failing the build on a high or critical advisory with no fix available marked as an explicit, expiring exception rather than a silent ignore; a licence check refusing any dependency outside the allow-list (MIT, Apache-2.0, BSD-2/3, ISC, Unicode, Zlib) so a copyleft or unlicensed package cannot arrive unnoticed; and an SBOM in CycloneDX format generated for both workspaces and uploaded as a release artifact, because answering "are we affected by this CVE" requires knowing what shipped. Version pins and lockfiles are already enforced by FR-F001-04; this job covers what pinning cannot, which is that a pinned version became vulnerable after it was pinned.
 - **FR-F001-09:** The `line-limit` job fails with `<path>: <n> lines; limit is 500` for any tracked text file over 500 lines and passes otherwise.
@@ -178,6 +178,14 @@ Scenario: Non-maintainer cannot bypass gates
 - External dependencies: GitHub Actions runners, `postgres:18` and `nats:2.11` images, crates.io and npm registries
 - Risks and mitigations: dependency drift breaks builds, so all versions are pinned and Renovate-style bumps go through the same gates; cold cache builds exceed the budget, so registry and target caches are keyed by lockfile hash and restored per job; a workflow edit in the same PR could weaken gates, so branch protection requires the five named checks and workflow files require maintainer review.
 - Open questions: none
+
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | Interface and vocabulary passes | FR-F001-07's gate list gained `check-filters` and `check-completeness` | Both gates existed and passed but ran nowhere; a gate not in the CI job is documentation |
 
 ## 7.1 Agent handoff
 

@@ -27,7 +27,11 @@ pub(crate) fn check_contracts() -> Result<(), String> {
         let cols = row.split('|').map(str::trim).collect::<Vec<_>>();
         if cols.len() < 8 { errors.push(format!("catalog row {id} malformed")); continue; }
         let (aggregate, module) = (cols[2].trim_matches('`'), cols[3].trim_matches('`'));
-        if !text.contains(&format!("`{aggregate}`")) { errors.push(format!("{label}: aggregate `{aggregate}` not named")); }
+        // Naming the aggregate anywhere is not enough: section 1 is where a reader looks for a
+        // feature's identity, and 24 tickets had it only buried in section 4 prose.
+        if !text.contains(&format!("- Aggregate: `{aggregate}`")) {
+            errors.push(format!("{label}: section 1 does not declare `- Aggregate: `{aggregate}``"));
+        }
         if !text.contains(module) { errors.push(format!("{label}: module slug `{module}` not used")); }
         for column in [4usize, 5] {
             for token in backtick_tokens(cols[column]) {
