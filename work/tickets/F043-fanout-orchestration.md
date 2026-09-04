@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f043-fanout-orchestration`
 - Capability area: developer workflow control plane (spec section 8 release gates; decisions section 9 fixture isolation: isolated tenant IDs, deterministic seeds, UTC, fixed clocks, unique worker IDs; plan build order rule: never start an item with unresolved dependencies or overlapping `owned_paths`)
 - Decision references: `docs/architecture-decisions.md` sections 7, 9, 10; `docs/capability-contracts.md` row F043
+- Aggregate: `execution-lane`
 - Module slug: `xtask-lanes` (Rust module `automation/xtask/src/lanes.rs`; lane state `.lanes/<ID>.toml`; worktrees `.worktrees/<branch>`; build targets `.agent-target/<branch>`)
 
 - Design: this feature has no user surface; it ships tooling, runtime or contracts only.

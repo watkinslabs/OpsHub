@@ -25,6 +25,7 @@ finished_at: null
 
 - Branch: `f004-runtime-operations`
 - Capability area: platform runtime (spec section 3 architecture, section 6 reliability and observability, 5.5 AUTO-03 queue bullet, 5.8 secrets bullet, section 10 PostgreSQL 18 decision)
+- Aggregate: `runtime`
 - Module slug: `runtime`
 
 ### Decision references

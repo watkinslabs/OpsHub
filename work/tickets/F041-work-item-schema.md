@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f041-work-item-schema`
 - Capability area: developer workflow control plane (spec section 7 Phase 0 exit criteria, section 8 release gates; plan rules in `work/plan.md`)
 - Decision references: `docs/architecture-decisions.md` sections 1, 9, 10; `docs/capability-contracts.md` row F041
+- Aggregate: `work-item`
 - Module slug: `xtask-schema` (Rust module `automation/xtask/src/backlog.rs`, templates in `content.rs`, shared helpers in `support.rs`, dispatch in `main.rs`)
 
 - Design: this feature has no user surface; it ships tooling, runtime or contracts only.

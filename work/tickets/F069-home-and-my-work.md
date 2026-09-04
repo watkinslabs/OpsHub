@@ -96,6 +96,171 @@ Excluded: the approvals, mentions, and assigned-rows providers themselves, which
 - Validation: `target_kind` in the eight-kind enum, `target_id` a UUID, `limit` 1–100, `filter` in `available` or `unavailable`, favourites per user ≤ 200, recents per user ≤ 100, `label_cache` ≤ 200 chars truncated on write.
 - Error mapping: `HomeError::UnknownTargetKind` and `::InvalidCursor` map to `invalid`; `::TargetNotReadable`, `::NotOwned`, and `::Missing` map to `not_found`; `::AlreadyFavorited` and `::FavoriteLimit` map to `conflict`; `::RateLimited` maps to `rate_limited`; `::ProviderTimeout` maps to no status at all because it degrades one section inside a `200`.
 
+### Interface
+
+Exact shapes. A type written `T?` is nullable; a missing optional field and an explicit `null` are the
+same thing. Timestamps are RFC 3339 UTC, ids are UUIDv7 strings, `version` increments by one per
+write. Unlisted request fields are rejected with `400 invalid`. `Page<T>` and the error body
+(including its optional `reason`) are F028's and are not restated here; `ActorContext` is F038's; the
+permission vocabulary is `docs/authorization-model.md`.
+
+- Filter operators: `docs/filter-vocabulary.md`, subset `eq` — the only caller-supplied predicate in this module is the `filter=available|unavailable` switch on a favourite's resolved state, which is one equality on one derived field; home sections are fixed queries with no operator surface at all.
+
+**`TargetKind`** — the closed eight-member enum of FR-F069-05, shared by every shape below:
+`"workspace" | "folder" | "sheet" | "row" | "view" | "dashboard" | "report" | "document"`. Any other
+value is `400 invalid` with `field_errors.target_kind`.
+
+**`HomeResponse`** — `GET /api/v1/home` (no `cursor`, `filter` or `sort`; any of them is `400 invalid`)
+
+| Field | Type | Notes |
+|---|---|---|
+| `generated_at` | timestamp | when the aggregator assembled this envelope; never cached across requests |
+| `budget_ms` | integer | the per-provider timeout in force, 150 |
+| `onboarding` | Onboarding | always present |
+| `sections` | HomeSection[] | exactly five, always in the order `assigned`, `approvals`, `mentions`, `recents`, `favorites` |
+
+**`HomeSection`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `key` | `"assigned" \| "approvals" \| "mentions" \| "recents" \| "favorites"` | |
+| `title` | string | supplied by the provider; the client renders it, never invents it |
+| `state` | `"ready" \| "empty" \| "degraded" \| "unavailable"` | `unavailable` when no provider is registered for the key, `degraded` when its provider timed out or failed |
+| `empty_reason` | `"none_yet" \| "all_clear" \| "no_access"`? | present only when `state` is `empty` |
+| `correlation_id` | uuid? | present only when `state` is `degraded`, so the retry action can quote it; this is a `200`, so the F028 error body never appears here |
+| `cap` | integer | `assigned` 10, `approvals` 10, `mentions` 10, `recents` 12, `favorites` 20 |
+| `truncated` | bool | `true` when the provider's underlying set was larger than `cap` |
+| `items` | HomeItem[] | at most `cap`; empty for every state other than `ready` |
+
+**`HomeItem`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `target_kind` | TargetKind | |
+| `target_id` | uuid | |
+| `label` | string | resolved now by `TargetResolver`, never the stored `label_cache` |
+| `path` | string | the target's readable location, e.g. `Northfield / Migration / Cutover plan` |
+| `badge` | string? | provider-supplied status word, e.g. `Overdue`; never colour alone in the client |
+| `due_at` | timestamp? | present when the provider's source carries one |
+| `actor_id` | uuid? | who caused the item (the mentioner, the requester); absent for `recents` and `favorites` |
+| `occurred_at` | timestamp? | when it happened; the section's sort key where the provider defines one |
+| `favorite_id` | uuid? | present when this target is already pinned, so the star renders without a second request |
+
+**`Onboarding`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `state` | `"new" \| "returning"` | `new` only when the caller has no favourites, no recents, and every registered section is empty |
+| `suggestions` | OnboardingSuggestion[] | empty when `state` is `returning`; at most five |
+
+**`OnboardingSuggestion`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `kind` | `"workspace" \| "create_sheet" \| "request_access"` | at most three `workspace` entries; `create_sheet` only when the caller may create a sheet in one of them; `request_access` only when the caller can read no workspace |
+| `workspace_id` | uuid? | present exactly when `kind` is `workspace` |
+| `label` | string | the workspace name, or the copy key the client renders for the other two kinds |
+
+**`CreateFavoriteRequest`** — `POST /api/v1/favorites`
+
+| Field | Type | Required | Constraint |
+|---|---|---|---|
+| `target_kind` | TargetKind | yes | outside the eight → `400 invalid` with `field_errors.target_kind` |
+| `target_id` | uuid | yes | must resolve and be readable by the caller now, else `404 not_found`; already pinned → `409 conflict` with the existing `id`; the caller's 201st live favourite → `409 conflict` with `field_errors.limit` |
+
+`Idempotency-Key` is required; a replay with the same body returns the original response, and the same
+key with a different body is `409 conflict`.
+
+**`FavoriteResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid | |
+| `target_kind` | TargetKind | |
+| `target_id` | uuid | |
+| `label` | string | the resolved label when `state` is `live`; the stored `label_cache` when `unavailable` |
+| `path` | string? | `null` when `state` is `unavailable`, because a path the caller may not read must not leak |
+| `state` | `"live" \| "unavailable"` | resolved per request, never cached across requests (FR-F069-09) |
+| `created_at` | timestamp | the pin order; the list sort key, newest first |
+| `version` | integer | pass as `If-Match` on `DELETE` |
+
+**`RecentResponse`**
+
+| Field | Type | Notes |
+|---|---|---|
+| `target_kind` | TargetKind | |
+| `target_id` | uuid | with `target_kind` and the caller, the row's identity; a recent has no id of its own |
+| `label` | string | resolved now |
+| `path` | string | resolved now; an unresolvable recent is dropped from the page rather than returned |
+| `visit_count` | integer | ≥ 1 |
+| `last_visited_at` | timestamp | the sort key, most recent first |
+
+**List parameters**
+
+| Route | Parameter | Type | Constraint |
+|---|---|---|---|
+| `GET /api/v1/favorites` | `cursor` | string? | F028's opaque signed cursor |
+| | `limit` | integer? | 1–100, default 20 |
+| | `filter` | `"available" \| "unavailable"`? | default `available`; any other value → `400 invalid` |
+| | `fields` | string? | F028 projection; `id` and `version` are always returned |
+| `GET /api/v1/recents` | `cursor` | string? | as above |
+| | `limit` | integer? | 1–100, default 12 |
+
+Both list routes return F028's `Page<T>` over the response type above, sorted as their `Notes` column
+states. `include_total` is not accepted on either: both sets are capped per user at 200 and 100, so a
+count is the page itself.
+
+**Status codes**
+
+| Status | Produced by |
+|---|---|
+| `200` | `GET /api/v1/home`, both list routes, and a replayed `POST` |
+| `201` | a new favourite |
+| `204` | `DELETE /api/v1/favorites/{id}` |
+| `400 invalid` | unknown `target_kind`, malformed body, unlisted field, `limit` or `filter` out of range, a malformed or foreign cursor, or `cursor`/`filter`/`sort` on `GET /api/v1/home` |
+| `403 denied` | never returned by this feature: home is readable by any authenticated principal, and every other refusal is an invisibility, which is `404` |
+| `404 not_found` | a target the caller may not read, a favourite belonging to another user, and any id from another tenant — all three indistinguishable, per FR-F069-14 |
+| `409 conflict` | a duplicate pin, the 200-favourite limit, a stale `If-Match`, or an `Idempotency-Key` replayed with a different body |
+| `429 rate_limited` | more than 60 favourite mutations per user per minute, with `Retry-After` |
+
+A registry with no providers is still `200` with five `unavailable` sections; a provider timeout is a
+`degraded` section inside a `200`. Neither is ever a `503`.
+
+### Use case signatures
+
+In `crates/domain/src/home/service.rs`. `Ctx` is F038's `ActorContext`; `DomainError` is the shared
+error whose mapping to the table above is in the error-mapping bullet of the Rust backend section.
+
+```rust
+fn load_home(ctx: &Ctx, registry: &HomeRegistry, favorites: &dyn FavoriteRepository, recents: &dyn RecentItemRepository, workspaces: &dyn WorkspaceRepository) -> Result<Home, DomainError>;
+fn list_favorites(ctx: &Ctx, repo: &dyn FavoriteRepository, registry: &HomeRegistry, filter: FavoriteFilter, page: Cursor) -> Result<Page<Favorite>, DomainError>;
+fn add_favorite(ctx: &Ctx, uow: &mut UnitOfWork, registry: &HomeRegistry, req: AddFavorite) -> Result<Favorite, DomainError>;
+fn remove_favorite(ctx: &Ctx, uow: &mut UnitOfWork, id: FavoriteId, expected: Version) -> Result<(), DomainError>;
+fn list_recents(ctx: &Ctx, repo: &dyn RecentItemRepository, registry: &HomeRegistry, page: Cursor) -> Result<Page<RecentItem>, DomainError>;
+fn record_visits(ctx: &JobCtx, uow: &mut UnitOfWork, batch: Vec<Visit>) -> Result<VisitReport, DomainError>;
+fn prune_home(ctx: &JobCtx, uow: &mut UnitOfWork, registry: &HomeRegistry, batch: usize) -> Result<PruneReport, DomainError>;
+```
+
+`FavoriteFilter` is `{ availability: Available | Unavailable }` — the whole of this feature's filter
+surface. `AddFavorite` is the deserialized `CreateFavoriteRequest`. A use case never takes a pool or a
+connection and never returns a database row type.
+
+Transaction boundaries:
+
+- `add_favorite` writes the `favorites` row, the `count_for_user` check that enforces the 200 cap, the
+  audit row and the `favorite.added.v1` outbox row in **one `UnitOfWork`**. The count and the insert
+  must share the boundary or two concurrent pins both read 200 and both insert.
+- `remove_favorite` writes the soft delete under `If-Match`, its audit row and the
+  `favorite.removed.v1` outbox row in one `UnitOfWork`.
+- `record_visits` runs the batched upsert and `trim_to_newest(user, 100)` in **one `UnitOfWork` per
+  flush**, so a user never observes more than 100 recents and a crash mid-flush leaves neither the
+  upsert nor a partial trim.
+- `prune_home` opens **one `UnitOfWork` per batch of 500 ids per `target_kind`**, not one per run: the
+  batch is the resume checkpoint, and a 10,000-row run in one transaction would hold locks across the
+  whole hour's sweep.
+- `load_home`, `list_favorites` and `list_recents` are reads and take repositories, never a
+  `UnitOfWork`; resolution happens outside any transaction because nothing it learns is written.
+
 ### PostgreSQL/SQLx
 
 - Migration `*_home_*.sql` creates `favorites(id uuid pk, tenant_id uuid not null references tenants(id) on delete restrict, user_id uuid not null references users(id) on delete cascade, target_kind text not null check (target_kind in ('workspace','folder','sheet','row','view','dashboard','report','document')), target_id uuid not null, label_cache text not null, version bigint not null default 1, created_by uuid not null, created_at timestamptz not null, updated_by uuid, updated_at timestamptz not null, deleted_at timestamptz)` and `recent_items(tenant_id uuid not null references tenants(id) on delete restrict, user_id uuid not null references users(id) on delete cascade, target_kind text not null check (target_kind in ('workspace','folder','sheet','row','view','dashboard','report','document')), target_id uuid not null, label_cache text not null, visit_count integer not null default 1 check (visit_count > 0), first_visited_at timestamptz not null, last_visited_at timestamptz not null, primary key (tenant_id, user_id, target_kind, target_id))`.

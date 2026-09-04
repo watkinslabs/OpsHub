@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f059-publishing-embedding`
 - Capability area: published and embedded views, reports, and dashboards (spec 5.1 "Published and embedded views use scoped, revocable access tokens, preserve permission filtering, and expose stale/error state"; 5.6 REPORT-03 sharing; section 10 "links expire within 30 days, are revocable, never grant tenant discovery, and cannot perform writes except through published forms or explicitly scoped views")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 7; `docs/capability-contracts.md` row F059
+- Aggregate: `publication`
 - Module slug: `publishing`
 
 ## 2. Requirement specification

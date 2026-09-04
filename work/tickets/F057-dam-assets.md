@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f057-dam-assets`
 - Capability area: advanced modules, digital asset management (spec 5.11 "assets, metadata, renditions, approvals, collections, and usage rights"; 5.4b COLLAB-04 approval instance; 5.8 files scanned, checksummed, versioned, served by expiring URLs; section 10 entitlement records plus feature flags)
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 5, 7; `docs/capability-contracts.md` row F057
+- Aggregate: `asset`
 - Module slug: `assets`
 
 ## 2. Requirement specification

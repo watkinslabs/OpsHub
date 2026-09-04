@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f056-pivot-app`
 - Capability area: advanced modules, Pivot App (spec 5.11 "configurable pivot dimensions/measures with saved outputs"; 5.6 REPORT-01, REPORT-04 permission-filtered aggregation and refresh state; section 10 entitlement records plus feature flags)
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 9; `docs/capability-contracts.md` row F056
+- Aggregate: `pivot`
 - Module slug: `pivots`
 
 ## 2. Requirement specification

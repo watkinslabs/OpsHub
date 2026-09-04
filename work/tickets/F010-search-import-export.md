@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f010-search-import-export`
 - Capability area: core work record engine (spec 5.1 search and import/export bullets; 5.2 DATA-04 and import bullets; 5.6 export attribution; section 6 async job, consistency, and reliability targets)
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 5, 6, 7, 9; `docs/capability-contracts.md` row F010
+- Aggregate: `data-job`
 - Module slug: `dataio`; aggregate: `data-job`
 
 ## 2. Requirement specification

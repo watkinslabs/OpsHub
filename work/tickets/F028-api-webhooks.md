@@ -111,6 +111,7 @@ in `field_errors`.
 
 | Field | Type | Required | Constraint |
 |---|---|---|---|
+| 2026-09-04 | F065 interface work | `410 gone` recorded as the second and last status outside the six-code mapping, scoped to F065's unauthenticated signup routes | F065 returned a status the shared table did not contain, so a client branching on this table would not have handled it |
 | `X-Correlation-Id` | uuid | no | echoed on the response and in the error body; a generated UUIDv7 when absent, `400 invalid` when present and not a UUID (FR-F028-06) |
 | `Idempotency-Key` | string | on every mutation | 1–255 chars; replay with the same body returns the original response, a different body returns `409 conflict` |
 | `If-Match` | integer | on every update of a versioned aggregate | the `version` last read; a mismatch is `409 conflict` carrying the current version |
@@ -172,6 +173,13 @@ concatenated with the tag; a client treats the whole string as opaque and never 
 application is `suspended` or deleted is rejected at authentication with `401` and a body whose
 `code` is `denied` (FR-F028-03). Authentication failure is not authorization failure, which is why
 the status differs from the `denied → 403` row above.
+
+One further status sits outside the mapping, and only there: `410 gone` on the unauthenticated
+signup routes of F065, which owns it. A signup token that expired, was consumed, or never existed all
+return the same `410` with a `reason`, because `404` would let a caller tell a real token from an
+invented one and `403` would confirm one existed. No authenticated route returns `410`; a feature
+wanting a seventh status needs an amendment here first, since the shared client branches on this
+table.
 
 **Rate-limit headers** — on every response to a token-authenticated request (FR-F028-07)
 

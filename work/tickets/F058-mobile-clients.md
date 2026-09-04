@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f058-mobile-clients`
 - Capability area: work management on mobile (spec 5.1 "Mobile clients support responsive work editing, push/deep links, queued offline mutations, reconnect reconciliation, and secure local-session handling"; 5.3 FORM-03 mobile submission; section 10 "responsive web plus installable PWA, offline queued row edits/forms, push notifications, and reconnect reconciliation; offline document co-editing is excluded")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 5, 6; `docs/capability-contracts.md` row F058
+- Aggregate: `mobile-session`
 - Module slug: `mobile`
 
 ## 2. Requirement specification

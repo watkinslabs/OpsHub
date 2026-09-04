@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f052-data-shuttle`
 - Capability area: advanced modules (spec 5.11 Data Shuttle, 5.2 DATA-04 and the import low-level bullets, 5.1 import/export bullet, section 6 async acknowledgement, section 10 "Advanced modules use entitlement records plus feature flags")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 9, 10; `docs/capability-contracts.md` row F052
+- Aggregate: `shuttle-flow`
 - Module slug: `data-shuttle`
 
 ## 2. Requirement specification

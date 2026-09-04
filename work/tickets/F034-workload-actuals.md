@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f034-workload-actuals`
 - Capability area: workload balancing and actuals (spec 5.7 PPM-03 workload balancing and planned versus actual effort; low-level bullets on allocation actuals and allocation conflicts; section 10 "Resource actuals are native OpsHub time entries; imported actuals are marked external and cannot overwrite native entries without an audited reconciliation"; 5.6 REPORT-04 workload widget data)
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 9; `docs/capability-contracts.md` row F034
+- Aggregate: `workload`
 - Module slug: `workload`
 
 ## 2. Requirement specification

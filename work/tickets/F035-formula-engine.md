@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f035-formula-engine`
 - Capability area: core work record engine (spec 5.2 DATA-02, DATA-03, low-level formula bullets; section 4 Column `formula` type and stable-ID rule; section 10 formula decision: function groups of 5.2, 10,000-AST-node limit, 2-second evaluation budget, cycle detection, explicit unsupported-function errors)
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 6, 9; `docs/capability-contracts.md` row F035
+- Aggregate: `formula`
 - Module slug: `formulas`; aggregate: `formula`
 
 ## 2. Requirement specification

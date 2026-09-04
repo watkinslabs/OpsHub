@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f055-calendar-app`
 - Capability area: advanced modules (spec 5.11 Calendar App "multi-source calendar aggregation and publishing"; 5.1 WORK-03, WORK-05 and the calendar/timeline bullet "date or date-range mapping, timezone-aware rendering, drag-to-reschedule, recurrence display"; section 6 internationalization "locale-aware dates/numbers, timezones"; section 10 external sharing decision)
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 9, 10; `docs/capability-contracts.md` row F055
+- Aggregate: `calendar`
 - Module slug: `calendar-app`
 
 ## 2. Requirement specification

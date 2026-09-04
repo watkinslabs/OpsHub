@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f049-localization`
 - Capability area: cross-cutting internationalization (spec section 6 Internationalization; 5.1 timezone-aware calendar/timeline rendering; 5.6 chart timezone declaration)
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 6; `docs/capability-contracts.md` row F049
+- Aggregate: `locale`
 - Module slug: `i18n`
 
 ## 2. Requirement specification

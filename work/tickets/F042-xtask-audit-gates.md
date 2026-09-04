@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f042-xtask-audit-gates`
 - Capability area: developer workflow control plane (spec section 8 release gates, section 7 Phase 0; plan rules on owned paths and build order; `automation/README.md` policy statement)
 - Decision references: `docs/architecture-decisions.md` sections 9, 10; `docs/capability-contracts.md` row F042
+- Aggregate: `policy-gate`
 - Module slug: `xtask-policy` (Rust module `automation/xtask/src/policy.rs`; hook scripts `.githooks/pre-commit`, `commit-msg`, `pre-push`)
 
 - Design: this feature has no user surface; it ships tooling, runtime or contracts only.

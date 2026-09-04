@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f008-grid-editing`
 - Capability area: core work record engine (spec 5.1 WORK-01, WORK-02, grid low-level bullet; 5.2 DATA-01 change events; section 4 record rules; section 6 scale targets)
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 6; `docs/capability-contracts.md` row F008
+- Aggregate: `cell-edit`
 - Module slug: `grid`; aggregate: `cell-edit`
 
 ## 2. Requirement specification

@@ -25,6 +25,7 @@ finished_at: null
 
 - Branch: `f001-repository-and-ci`
 - Capability area: platform foundation (spec section 7 Phase 0, section 8 release gates)
+- Aggregate: `repository`
 - Module slug: `platform`; aggregate `repository`
 - Kind: tooling feature; no HTTP routes and no domain events
 

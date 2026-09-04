@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f053-datamesh`
 - Capability area: advanced modules (spec 5.11 DataMesh, 5.2 DATA-02 and "Cross-sheet references resolve by stable sheet/column/row IDs", 5.9 connector mapping contract "source/target IDs, direction, conflict policy, field transforms, deletion policy, and sync cursor", section 10 "Advanced modules use entitlement records plus feature flags")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 7, 9, 10; `docs/capability-contracts.md` row F053
+- Aggregate: `datamesh-mapping`
 - Module slug: `datamesh`
 
 ## 2. Requirement specification

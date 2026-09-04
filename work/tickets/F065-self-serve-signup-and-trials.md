@@ -390,6 +390,14 @@ Scenario: A trial expires, then converts without data loss
 - Risks and mitigations: the public routes are the most exposed surface in the product, mitigated by three-layer rate limits, the bot check, the constant-time absorption of every rejection, and the burst test in NFR-F065-05; duplicating tenant creation would split the source of truth, mitigated by the `TenantProvisioner` port and a fixture spy that fails the suite if any signup code path writes `tenants` directly; a Turnstile outage would close the front door, mitigated by a documented degraded mode that falls back to the honeypot, timing, and rate checks and records a `botcheck_unavailable` flag row rather than rejecting everyone; trial abuse through repeated free tenants is bounded by the per-`email_hash` and per-network limits and visible through `tenants_provisioned_total{source}`; the pre-tenant personal data in `signup_requests` is bounded by the fixed 7-day scrub and 30-day delete of FR-F065-14
 - Open questions: none
 
+## 7.1 Amendments
+
+Every change made to this ticket after it was first accepted, newest first.
+
+| Date | Caused by | What changed | Why |
+|---|---|---|---|
+| 2026-09-04 | F028 status table | `410 gone` is now declared in F028's status table as a scoped carve-out rather than an undeclared seventh status | The shared client branches on F028's table; a status only this ticket described would have gone unhandled |
+
 ## 7.1 Agent handoff
 
 Recorded at implementation: implemented summary, files changed, commands and evidence, known issues, follow-up tickets, migration and rollback status.

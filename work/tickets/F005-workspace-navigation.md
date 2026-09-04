@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f005-workspace-navigation`
 - Capability area: core work record engine (spec 5.1 WORK-01, section 4 entity Workspace, 5.4a DOC-01 folder hierarchy rules, 5.8 SEC tenant isolation)
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 6; `docs/capability-contracts.md` row F005
+- Aggregate: `workspace`
 - Module slug: `workspaces`
 
 ## 2. Requirement specification

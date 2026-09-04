@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f060-conditional-formatting`
 - Capability area: advanced modules (spec 5.1 low-level bullet "conditional formatting evaluates typed rules against current values and exposes deterministic visual states in every supported view")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 6, 9; `docs/capability-contracts.md` row F060
+- Aggregate: `formatting-rule`
 - Module slug: `formatting`; aggregate: `formatting-rule`
 
 ## 2. Requirement specification

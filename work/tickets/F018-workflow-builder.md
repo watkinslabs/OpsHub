@@ -108,6 +108,7 @@ the `draft` on create and update, and the frozen body of a published version.
 
 | Field | Type | Required | Constraint |
 |---|---|---|---|
+| 2026-09-04 | F054 action-name alignment | F054's `opshub_action` steps now name four of this ticket's twelve `ActionKind` members verbatim; adding a fifth is an amendment to both tickets | F054 carried its own spelling of two of these actions |
 | `trigger` | Trigger | yes | exactly one, per the trigger table below |
 | `condition` | ConditionNode? | no | absent or `null` means "always"; an empty group is `400 invalid` |
 | `actions` | ActionSpec[] | yes | 1–25 entries, executed in array order (FR-F018-01); 0 or 26 → `400 invalid` with `field_errors.actions` |

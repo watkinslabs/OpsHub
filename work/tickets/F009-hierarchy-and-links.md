@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f009-hierarchy-and-links`
 - Capability area: core work record engine (spec 5.1 WORK-02 subtasks, WORK-04 WBS hierarchy, hierarchy low-level bullet; 5.2 DATA-02 cross-sheet references and linked records; section 4 Link entity and row rules "moves and hierarchy changes are events")
 - Decision references: `docs/architecture-decisions.md` sections 2, 3, 4, 6, 9; `docs/capability-contracts.md` row F009
+- Aggregate: `row-link`
 - Module slug: `links`; aggregate: `row-link`
 
 ## 2. Requirement specification

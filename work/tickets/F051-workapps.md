@@ -26,6 +26,7 @@ finished_at: null
 - Branch: `f051-workapps`
 - Capability area: advanced modules (spec 5.11 WorkApps "no-code app shell with navigation, role-specific pages, embedded sheets/forms/reports, and app permissions"; 1.1 "an external or role-specific experience is a filtered presentation/editing surface, not a second source of truth"; 5.1 WORK-05 permission-aware views; 5.4b COLLAB-03 granular roles)
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6, 10; `docs/capability-contracts.md` row F051
+- Aggregate: `work-app`
 - Module slug: `workapps`
 
 ## 2. Requirement specification

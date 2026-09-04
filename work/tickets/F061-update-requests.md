@@ -31,6 +31,7 @@ finished_at: null
 - Branch: `f061-update-requests`
 - Capability area: collaboration intake (spec 5.5 update requests bullet: "Update requests target selected fields or rows, record requester/recipient/due date/status, send configurable reminders, and preserve the response audit trail")
 - Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6; `docs/capability-contracts.md` row F061
+- Aggregate: `update-request`
 - Module slug: `update-requests`; aggregate `update-request`
 
 ## 2. Requirement specification
