@@ -1,597 +1,507 @@
 {
-  "pages": [
-    {
-      "id": "page-1",
-      "name": "Core work"
-    },
-    {
-      "id": "page-2",
-      "name": "Plan & report"
-    },
-    {
-      "id": "page-3",
-      "name": "Enterprise"
-    },
-    {
-      "id": "page-6",
-      "name": "Advanced modules"
-    },
-    {
-      "id": "page-5",
-      "name": "Public surfaces"
-    },
-    {
-      "id": "page-4",
-      "name": "Design system"
-    }
-  ],
   "artboards": [
     {
-      "file": "Main.dc.html",
+      "file": "Board.dc.html",
       "x": 0,
       "y": 0,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
-      "title": "Sheet \u2014 grid view"
-    },
-    {
-      "file": "Board.dc.html",
-      "x": 1560,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
       "title": "Sheet \u2014 board view"
     },
     {
-      "file": "Timeline.dc.html",
-      "x": 3120,
+      "file": "ColumnEditor.dc.html",
+      "x": 1580,
       "y": 0,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
-      "title": "Sheet \u2014 timeline (dark)"
+      "title": "Typed column editor (dark)"
+    },
+    {
+      "file": "Comments.dc.html",
+      "x": 3160,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Comments & activity"
     },
     {
       "file": "Document.dc.html",
-      "x": 0,
-      "y": 1020,
+      "x": 4740,
+      "y": 0,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
       "title": "Document \u2014 live collaboration"
     },
     {
       "file": "Forms.dc.html",
-      "x": 1560,
-      "y": 1020,
+      "x": 6320,
+      "y": 0,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
       "title": "Form builder"
     },
     {
-      "file": "Workflow.dc.html",
-      "x": 3120,
-      "y": 1020,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
-      "title": "Workflow builder"
-    },
-    {
-      "file": "Dashboard.dc.html",
+      "file": "FormulaEditor.dc.html",
       "x": 0,
-      "y": 0,
+      "y": 1160,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
-      "title": "Dashboard (dark)"
+      "title": "Formula editor (dark)"
     },
     {
-      "file": "Report.dc.html",
-      "x": 1560,
-      "y": 0,
+      "file": "Main.dc.html",
+      "x": 1580,
+      "y": 1160,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
-      "title": "Report builder (dark)"
+      "title": "Sheet \u2014 grid view"
     },
     {
-      "file": "Portfolio.dc.html",
-      "x": 3120,
-      "y": 0,
+      "file": "Notifications.dc.html",
+      "x": 3160,
+      "y": 1160,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
-      "title": "Portfolio rollup"
+      "title": "Notifications & preferences (dark)"
     },
     {
-      "file": "Workload.dc.html",
-      "x": 0,
-      "y": 1020,
+      "file": "Proofing.dc.html",
+      "x": 4740,
+      "y": 1160,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
-      "title": "Workload (dark)"
+      "title": "Files & proofing"
     },
     {
-      "file": "Approvals.dc.html",
-      "x": 1560,
-      "y": 1020,
+      "file": "Schedules.dc.html",
+      "x": 6320,
+      "y": 1160,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
-      "title": "Approvals inbox"
-    },
-    {
-      "file": "Insights.dc.html",
-      "x": 3120,
-      "y": 1020,
-      "w": 1440,
-      "h": 900,
-      "page": "page-2",
-      "title": "AI insights + proposal diff"
-    },
-    {
-      "file": "Login.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Sign in"
-    },
-    {
-      "file": "Admin.dc.html",
-      "x": 1560,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 users & groups"
-    },
-    {
-      "file": "Entra.dc.html",
-      "x": 3120,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 Microsoft Entra"
-    },
-    {
-      "file": "Billing.dc.html",
-      "x": 0,
-      "y": 1020,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 billing (dark)"
-    },
-    {
-      "file": "Sharing.dc.html",
-      "x": 1560,
-      "y": 1020,
-      "w": 1440,
-      "h": 1120,
-      "page": "page-3",
-      "title": "Sharing & distribution"
-    },
-    {
-      "file": "Mobile.dc.html",
-      "x": 3120,
-      "y": 1020,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Mobile"
-    },
-    {
-      "file": "Tokens.dc.html",
-      "x": 0,
-      "y": 0,
-      "w": 1440,
-      "h": 1560,
-      "page": "page-4",
-      "title": "Design tokens"
-    },
-    {
-      "file": "Components.dc.html",
-      "x": 1560,
-      "y": 0,
-      "w": 1440,
-      "h": 1180,
-      "page": "page-4",
-      "title": "Component library"
-    },
-    {
-      "file": "Charts.dc.html",
-      "x": 3120,
-      "y": 0,
-      "w": 1440,
-      "h": 1180,
-      "page": "page-4",
-      "title": "Chart & data widgets"
+      "title": "Working calendars & schedules"
     },
     {
       "file": "Search.dc.html",
       "x": 0,
-      "y": 2040,
+      "y": 2320,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
       "title": "Global search"
     },
     {
-      "file": "Notifications.dc.html",
-      "x": 1560,
-      "y": 2040,
+      "file": "Timeline.dc.html",
+      "x": 1580,
+      "y": 2320,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
-      "title": "Notifications & preferences (dark)"
+      "title": "Sheet \u2014 timeline (dark)"
     },
     {
-      "file": "Resources.dc.html",
+      "file": "Workflow.dc.html",
+      "x": 3160,
+      "y": 2320,
+      "w": 1440,
+      "h": 900,
+      "title": "Workflow builder"
+    },
+    {
+      "file": "Workspace.dc.html",
+      "x": 4740,
+      "y": 2320,
+      "w": 1440,
+      "h": 900,
+      "title": "Workspace home"
+    },
+    {
+      "file": "Approvals.dc.html",
       "x": 0,
-      "y": 2040,
+      "y": 3900,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
-      "title": "Resources & allocations"
+      "title": "Approvals inbox"
     },
     {
-      "file": "Signup.dc.html",
-      "x": 0,
-      "y": 2160,
+      "file": "Dashboard.dc.html",
+      "x": 1580,
+      "y": 3900,
       "w": 1440,
       "h": 900,
-      "page": "page-3",
-      "title": "Self-serve signup & trial"
+      "title": "Dashboard (dark)"
     },
     {
-      "file": "Audit.dc.html",
-      "x": 1560,
-      "y": 2160,
+      "file": "Exports.dc.html",
+      "x": 3160,
+      "y": 3900,
       "w": 1440,
       "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 audit log"
+      "title": "Exports & drill-through"
     },
     {
-      "file": "Api.dc.html",
-      "x": 3120,
-      "y": 2160,
+      "file": "Insights.dc.html",
+      "x": 4740,
+      "y": 3900,
       "w": 1440,
       "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 API & webhooks (dark)"
-    },
-    {
-      "file": "Publishing.dc.html",
-      "x": 1560,
-      "y": 2040,
-      "w": 1440,
-      "h": 900,
-      "page": "page-2",
-      "title": "Publishing & embeds"
+      "title": "AI insights + proposal diff"
     },
     {
       "file": "Intake.dc.html",
-      "x": 3120,
-      "y": 2040,
+      "x": 6320,
+      "y": 3900,
       "w": 1440,
       "h": 900,
-      "page": "page-2",
       "title": "Project intake"
     },
     {
-      "file": "Proofing.dc.html",
+      "file": "Metrics.dc.html",
       "x": 0,
-      "y": 3060,
+      "y": 5060,
       "w": 1440,
       "h": 900,
-      "page": "page-1",
-      "title": "Files & proofing"
+      "title": "Metric builder"
+    },
+    {
+      "file": "Portfolio.dc.html",
+      "x": 1580,
+      "y": 5060,
+      "w": 1440,
+      "h": 900,
+      "title": "Portfolio rollup"
+    },
+    {
+      "file": "Publishing.dc.html",
+      "x": 3160,
+      "y": 5060,
+      "w": 1440,
+      "h": 900,
+      "title": "Publishing & embeds"
+    },
+    {
+      "file": "Report.dc.html",
+      "x": 4740,
+      "y": 5060,
+      "w": 1440,
+      "h": 900,
+      "title": "Report builder (dark)"
+    },
+    {
+      "file": "Resources.dc.html",
+      "x": 6320,
+      "y": 5060,
+      "w": 1440,
+      "h": 900,
+      "title": "Resources & allocations"
+    },
+    {
+      "file": "WorkflowRuns.dc.html",
+      "x": 0,
+      "y": 6220,
+      "w": 1440,
+      "h": 900,
+      "title": "Workflow run console"
+    },
+    {
+      "file": "Workload.dc.html",
+      "x": 1580,
+      "y": 6220,
+      "w": 1440,
+      "h": 900,
+      "title": "Workload (dark)"
+    },
+    {
+      "file": "Admin.dc.html",
+      "x": 0,
+      "y": 7800,
+      "w": 1440,
+      "h": 900,
+      "title": "Admin \u2014 users & groups"
+    },
+    {
+      "file": "Api.dc.html",
+      "x": 1580,
+      "y": 7800,
+      "w": 1440,
+      "h": 900,
+      "title": "Admin \u2014 API & webhooks (dark)"
+    },
+    {
+      "file": "Audit.dc.html",
+      "x": 3160,
+      "y": 7800,
+      "w": 1440,
+      "h": 900,
+      "title": "Admin \u2014 audit log"
+    },
+    {
+      "file": "Billing.dc.html",
+      "x": 4740,
+      "y": 7800,
+      "w": 1440,
+      "h": 900,
+      "title": "Admin \u2014 billing (dark)"
+    },
+    {
+      "file": "Entra.dc.html",
+      "x": 6320,
+      "y": 7800,
+      "w": 1440,
+      "h": 900,
+      "title": "Admin \u2014 Microsoft Entra"
     },
     {
       "file": "Integrations.dc.html",
       "x": 0,
-      "y": 3180,
+      "y": 8960,
       "w": 1440,
       "h": 900,
-      "page": "page-3",
       "title": "Admin \u2014 integrations (dark)"
     },
     {
-      "file": "UpdateRequest.dc.html",
-      "x": 0,
-      "y": 0,
+      "file": "Localization.dc.html",
+      "x": 1580,
+      "y": 8960,
       "w": 1440,
       "h": 900,
-      "page": "page-5",
-      "title": "Update request \u2014 recipient"
+      "title": "Admin \u2014 localization"
     },
     {
-      "file": "PublicView.dc.html",
-      "x": 1560,
-      "y": 0,
+      "file": "Login.dc.html",
+      "x": 3160,
+      "y": 8960,
       "w": 1440,
       "h": 900,
-      "page": "page-5",
-      "title": "Published dashboard (dark)"
+      "title": "Sign in"
+    },
+    {
+      "file": "Mobile.dc.html",
+      "x": 4740,
+      "y": 8960,
+      "w": 1440,
+      "h": 900,
+      "title": "Mobile"
+    },
+    {
+      "file": "Sharing.dc.html",
+      "x": 6320,
+      "y": 8960,
+      "w": 1440,
+      "h": 1120,
+      "title": "Sharing & distribution"
+    },
+    {
+      "file": "Signup.dc.html",
+      "x": 0,
+      "y": 10340,
+      "w": 1440,
+      "h": 900,
+      "title": "Self-serve signup & trial"
+    },
+    {
+      "file": "Sso.dc.html",
+      "x": 1580,
+      "y": 10340,
+      "w": 1440,
+      "h": 900,
+      "title": "Admin \u2014 SSO & SCIM"
+    },
+    {
+      "file": "Status.dc.html",
+      "x": 3160,
+      "y": 10340,
+      "w": 1440,
+      "h": 900,
+      "title": "Status page"
+    },
+    {
+      "file": "Assets.dc.html",
+      "x": 0,
+      "y": 11920,
+      "w": 1440,
+      "h": 900,
+      "title": "DAM assets (dark)"
+    },
+    {
+      "file": "Bridge.dc.html",
+      "x": 1580,
+      "y": 11920,
+      "w": 1440,
+      "h": 900,
+      "title": "Bridge (dark)"
+    },
+    {
+      "file": "Calendar.dc.html",
+      "x": 3160,
+      "y": 11920,
+      "w": 1440,
+      "h": 900,
+      "title": "Calendar app"
+    },
+    {
+      "file": "DataMesh.dc.html",
+      "x": 4740,
+      "y": 11920,
+      "w": 1440,
+      "h": 900,
+      "title": "DataMesh"
+    },
+    {
+      "file": "DataShuttle.dc.html",
+      "x": 6320,
+      "y": 11920,
+      "w": 1440,
+      "h": 900,
+      "title": "Data Shuttle (dark)"
+    },
+    {
+      "file": "DynamicView.dc.html",
+      "x": 0,
+      "y": 13080,
+      "w": 1440,
+      "h": 900,
+      "title": "Dynamic View \u2014 scoped external editing (dark)"
     },
     {
       "file": "Entitlements.dc.html",
-      "x": 1560,
-      "y": 1020,
+      "x": 1580,
+      "y": 13080,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
       "title": "Admin \u2014 entitlements"
     },
     {
-      "file": "Mcp.dc.html",
-      "x": 3120,
-      "y": 1020,
+      "file": "Formatting.dc.html",
+      "x": 3160,
+      "y": 13080,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
+      "title": "Conditional formatting"
+    },
+    {
+      "file": "Governance.dc.html",
+      "x": 4740,
+      "y": 13080,
+      "w": 1440,
+      "h": 900,
+      "title": "Governance & compliance"
+    },
+    {
+      "file": "Mcp.dc.html",
+      "x": 6320,
+      "y": 13080,
+      "w": 1440,
+      "h": 900,
       "title": "Admin \u2014 MCP access (dark)"
     },
     {
       "file": "Pivot.dc.html",
       "x": 0,
-      "y": 0,
+      "y": 14240,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
       "title": "Pivot app"
     },
     {
-      "file": "DynamicView.dc.html",
-      "x": 1560,
-      "y": 0,
-      "w": 1440,
-      "h": 900,
-      "page": "page-6",
-      "title": "Dynamic View \u2014 scoped external editing (dark)"
-    },
-    {
       "file": "Templates.dc.html",
-      "x": 3120,
-      "y": 0,
+      "x": 1580,
+      "y": 14240,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
       "title": "Templates gallery (dark)"
     },
     {
-      "file": "Governance.dc.html",
-      "x": 0,
-      "y": 1020,
-      "w": 1440,
-      "h": 900,
-      "page": "page-6",
-      "title": "Governance & compliance"
-    },
-    {
-      "file": "Workspace.dc.html",
-      "x": 0,
-      "y": 4080,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
-      "title": "Workspace home"
-    },
-    {
-      "file": "ColumnEditor.dc.html",
-      "x": 1560,
-      "y": 4080,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
-      "title": "Typed column editor (dark)"
-    },
-    {
-      "file": "Schedules.dc.html",
-      "x": 3120,
-      "y": 4080,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
-      "title": "Working calendars & schedules"
-    },
-    {
-      "file": "FormulaEditor.dc.html",
-      "x": 0,
-      "y": 5100,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
-      "title": "Formula editor (dark)"
-    },
-    {
-      "file": "Comments.dc.html",
-      "x": 1560,
-      "y": 5100,
-      "w": 1440,
-      "h": 900,
-      "page": "page-1",
-      "title": "Comments & activity"
-    },
-    {
-      "file": "WorkflowRuns.dc.html",
-      "x": 0,
-      "y": 3060,
-      "w": 1440,
-      "h": 900,
-      "page": "page-2",
-      "title": "Workflow run console"
-    },
-    {
-      "file": "Metrics.dc.html",
-      "x": 1560,
-      "y": 3060,
-      "w": 1440,
-      "h": 900,
-      "page": "page-2",
-      "title": "Metric builder"
-    },
-    {
-      "file": "Exports.dc.html",
-      "x": 3120,
-      "y": 3060,
-      "w": 1440,
-      "h": 900,
-      "page": "page-2",
-      "title": "Exports & drill-through"
-    },
-    {
-      "file": "Sso.dc.html",
-      "x": 0,
-      "y": 4200,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 SSO & SCIM"
-    },
-    {
-      "file": "Localization.dc.html",
-      "x": 1560,
-      "y": 4200,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Admin \u2014 localization"
-    },
-    {
-      "file": "Status.dc.html",
-      "x": 3120,
-      "y": 4200,
-      "w": 1440,
-      "h": 900,
-      "page": "page-3",
-      "title": "Status page"
-    },
-    {
       "file": "WorkApps.dc.html",
-      "x": 0,
-      "y": 2040,
+      "x": 3160,
+      "y": 14240,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
       "title": "WorkApps"
     },
     {
-      "file": "DataShuttle.dc.html",
-      "x": 1560,
-      "y": 2040,
-      "w": 1440,
-      "h": 900,
-      "page": "page-6",
-      "title": "Data Shuttle (dark)"
-    },
-    {
-      "file": "DataMesh.dc.html",
-      "x": 3120,
-      "y": 2040,
-      "w": 1440,
-      "h": 900,
-      "page": "page-6",
-      "title": "DataMesh"
-    },
-    {
-      "file": "Bridge.dc.html",
+      "file": "PublicView.dc.html",
       "x": 0,
-      "y": 3060,
+      "y": 15820,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
-      "title": "Bridge (dark)"
+      "title": "Published dashboard (dark)"
     },
     {
-      "file": "Calendar.dc.html",
-      "x": 1560,
-      "y": 3060,
+      "file": "UpdateRequest.dc.html",
+      "x": 1580,
+      "y": 15820,
       "w": 1440,
       "h": 900,
-      "page": "page-6",
-      "title": "Calendar app"
+      "title": "Update request \u2014 recipient"
     },
     {
-      "file": "Assets.dc.html",
-      "x": 3120,
-      "y": 3060,
-      "w": 1440,
-      "h": 900,
-      "page": "page-6",
-      "title": "DAM assets (dark)"
-    },
-    {
-      "file": "Formatting.dc.html",
+      "file": "Charts.dc.html",
       "x": 0,
-      "y": 4080,
+      "y": 17400,
       "w": 1440,
-      "h": 900,
-      "page": "page-6",
-      "title": "Conditional formatting"
+      "h": 1180,
+      "title": "Chart & data widgets"
+    },
+    {
+      "file": "Components.dc.html",
+      "x": 1580,
+      "y": 17400,
+      "w": 1440,
+      "h": 1180,
+      "title": "Component library"
+    },
+    {
+      "file": "Tokens.dc.html",
+      "x": 3160,
+      "y": 17400,
+      "w": 1440,
+      "h": 1560,
+      "title": "Design tokens"
     }
   ],
   "annotations": [
     {
-      "id": "core-note",
+      "id": "band-1",
       "x": 0,
       "y": -150,
-      "w": 760,
-      "page": "page-1",
-      "text": "One record set, many presentations.\nGrid, board and timeline are the same rows under different view settings (F013). Brand hue and light/dark are live tweaks on every artboard."
+      "w": 1100,
+      "text": "Core work \u2014 sheets, views, documents, forms, automation"
     },
     {
-      "id": "plan-note",
+      "id": "band-2",
       "x": 0,
-      "y": -150,
-      "w": 760,
-      "page": "page-2",
-      "text": "Reporting reads across sources; it never copies them.\nEvery number traces to rows the viewer is allowed to see. AI proposals stop at a diff and change nothing until approved."
+      "y": 3750,
+      "w": 1100,
+      "text": "Plan & report \u2014 dashboards, reports, portfolio, resources, AI"
     },
     {
-      "id": "ent-note",
+      "id": "band-3",
       "x": 0,
-      "y": -150,
-      "w": 760,
-      "page": "page-3",
-      "text": "Enterprise surfaces.\nEntra sign-in sits beside password and SAML, never replacing them. Billing credit applies before any charge. Mobile is a submission and review surface, not a second product."
+      "y": 7650,
+      "w": 1100,
+      "text": "Enterprise \u2014 identity, admin, billing, sharing, mobile"
     },
     {
-      "id": "system-note",
+      "id": "band-4",
       "x": 0,
-      "y": -150,
-      "w": 760,
-      "page": "page-4",
-      "text": "Build order: tokens -> MUI theme -> components.\nTanStack Table supplies headless grid state and renders through themed MUI components; MUI X Charts and Date Pickers are MIT. No paid grid package and no second UI library."
+      "y": 11770,
+      "w": 1100,
+      "text": "Advanced modules \u2014 entitled add-ons"
     },
     {
-      "id": "public-note",
+      "id": "band-5",
       "x": 0,
-      "y": -150,
-      "w": 760,
-      "page": "page-5",
-      "text": "Unauthenticated surfaces.\nNo session, no account, no tenant discovery. A recipient sees only the fields shared with them; a published page renders as the publisher's permissions at request time and shows an error state, never stale data, if that access is lost."
+      "y": 15670,
+      "w": 1100,
+      "text": "Public surfaces \u2014 no session, no account"
     },
     {
-      "id": "mod-note",
+      "id": "band-6",
       "x": 0,
-      "y": -150,
-      "w": 760,
-      "page": "page-6",
-      "text": "Modules and administration.\nEach advanced module is entitled, permission-aware, audited and reversible. Dynamic View shows the rule the whole tier depends on: a recipient sees three fields of eighteen and one row of 1,284, and can never infer the shape of what is withheld."
+      "y": 17250,
+      "w": 1100,
+      "text": "Design system \u2014 tokens, components, chart widgets"
     }
   ],
   "launch": {
-    "view": "canvas",
-    "page": "page-1"
+    "view": "canvas"
   }
 }
