@@ -82,7 +82,7 @@ Excluded: metrics and KPI values (F022), dashboards and widgets (F023), charts a
 - Restricted sources: an info bar "Rows from 1 sheet you cannot open are hidden" lists `restricted_sources` names the viewer can see and hides the rest.
 - Responsive: the editor stacks panels under 1024 px; the viewer freezes the first column under 768 px.
 - Keyboard: join and filter builders are lists of rows with `Enter` to edit, `Delete` to remove, arrows to move; group headers toggle with `Space`; focus ring from shared tokens; `prefers-reduced-motion` respected.
-- Font/icon/design tokens: Inter variable; Lucide `FileBarChart`, `GitMerge`, `Filter`, `Layers`, `Sigma`, `RefreshCw`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `FileBarChart`, `GitMerge`, `Filter`, `Layers`, `Sigma`, `RefreshCw`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

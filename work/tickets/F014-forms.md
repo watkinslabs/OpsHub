@@ -84,7 +84,7 @@ Excluded: routing and approval after submission (F018, F019, F020), update reque
 - Permission-denied: `form-submitter` never sees builder routes; admin routes return `denied` inline; an unknown or revoked token renders the public not-found page without tenant details.
 - Responsive: single-column public form under 640 px with sticky submit; builder collapses the palette into a drawer under 1,024 px.
 - Keyboard: palette items insert with `Enter`, fields reorder with `Alt+Arrow`, condition editor is a form, not a canvas; public form uses native controls with visible focus rings; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `FormInput`, `Eye`, `Send`, `Link`, `Code2`, `ShieldCheck`; spacing and colour from `apps/web/src/design/tokens.css`; accent colour is validated for 4.5:1 contrast on the button label.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `FormInput`, `Eye`, `Send`, `Link`, `Code2`, `ShieldCheck`; spacing and colour from `apps/web/src/design/tokens.css`; accent colour is validated for 4.5:1 contrast on the button label.
 
 ## 4. Technical specification
 

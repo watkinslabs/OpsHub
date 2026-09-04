@@ -75,7 +75,7 @@ Excluded: offline document co-editing (section 10), native app stores, offline a
 - Permission-denied: rows the user lost access to are removed on pull with a dismissible notice; deep links to unreadable targets render not-found.
 - Responsive: layouts are designed at 360 px first; grid shows the primary column plus one chosen column with horizontal swipe; row detail is a full-screen page; tablets over 768 px show the desktop grid.
 - Keyboard and touch: all controls reachable by external keyboard; touch targets ≥ 44 px; `Escape` or back gesture closes row detail; focus moves to the conflict card when one appears; reduced motion disables queue badge animation.
-- Font/icon/design tokens: Inter variable; Lucide `WifiOff`, `CloudUpload`, `GitMerge`, `Bell`, `Smartphone`; tokens from `apps/web/src/design/tokens.css` with the compact density scale.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `WifiOff`, `CloudUpload`, `GitMerge`, `Bell`, `Smartphone`; tokens from `apps/web/src/design/tokens.css` with the compact density scale.
 
 ## 4. Technical specification
 

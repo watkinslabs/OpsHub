@@ -87,7 +87,7 @@ Excluded: OAuth authorization, the token vault, connection lifecycle, and the th
 - Conflict queue: one row per record with the field diff expanded inline, `Keep OpsHub`, `Keep external`, `Merge` (opens a per-field chooser), bulk `Keep external` limited to 100 selected rows, and a filter for `open` and `resolved`.
 - Responsive: the mapping editor becomes a stacked card list under 900 px; the conflict diff stacks OpsHub above external under 768 px; the wizard fits 320 px.
 - Keyboard: mapping rows move with `Alt+ArrowUp`/`Alt+ArrowDown`; the wizard traps focus per step and restores it to the invoking control; `Escape` closes the merge chooser without applying; reduced motion disables the run-state pulse.
-- Font/icon/design tokens: Inter variable; Lucide icons `RefreshCcw`, `ArrowLeftRight`, `Columns3`, `History`, `GitMerge`, `AlertTriangle`, `Database`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `RefreshCcw`, `ArrowLeftRight`, `Columns3`, `History`, `GitMerge`, `AlertTriangle`, `Database`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

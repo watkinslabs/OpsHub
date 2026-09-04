@@ -80,7 +80,7 @@ Excluded: workspace and folder records themselves (F005), sharing grants, guests
 - Destructive actions: removing an ACL entry or adding a deny shows a confirm that names the principal; deleting a custom role that still has bindings is blocked with the count of bindings.
 - Responsive: the matrix scrolls horizontally with the role column frozen under 768 px; `AclEditor` becomes a full-screen sheet under 640 px.
 - Keyboard: arrow keys move through matrix cells, `Space` toggles, `Enter` saves, `Escape` closes the drawer and returns focus; the diff viewer is navigable with `Tab` between changed fields.
-- Font/icon/design tokens: Inter variable; Lucide icons `ShieldCheck`, `Lock`, `UserCheck`, `Ban`, `History`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `ShieldCheck`, `Lock`, `UserCheck`, `Ban`, `History`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

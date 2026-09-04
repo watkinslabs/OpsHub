@@ -80,7 +80,7 @@ Excluded: share links, guest invitations, and every unauthenticated token route 
 - Permission-denied: viewers see cards, events, and bars without drag handles; share button hidden for non-owners; unshared private view URL renders the not-found page.
 - Responsive: lanes scroll horizontally with snap under 768 px; calendar switches to agenda list under 640 px; timeline shows a day zoom with a pinned row label column under 640 px.
 - Keyboard: `Tab` reaches switcher, settings, share, then each lane, event, or bar; `Space` picks up, arrows move by lane, day, or zoom unit, `Enter` drops, `Escape` cancels; `FilterBuilder` rows are reachable and deletable by keyboard; focus returns to the trigger after dialogs close.
-- Font/icon/design tokens: Inter variable, Lucide icons `LayoutGrid`, `Kanban`, `CalendarDays`, `GanttChart`, `Filter`, `Share2`, `Download`, `Star`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `LayoutGrid`, `Kanban`, `CalendarDays`, `GanttChart`, `Filter`, `Share2`, `Download`, `Star`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

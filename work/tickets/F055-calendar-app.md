@@ -74,7 +74,7 @@ Excluded: recurring-event authoring (recurrence display comes from F011 row recu
 - Permission-denied: viewers see no `Add source`, `Publish`, or drag handles; hidden sources show `2 sources hidden by permissions`; no-access renders not-found.
 - Responsive: month grid becomes a stacked agenda under 768 px; week view scrolls horizontally with the time gutter frozen; publish dialog full-screen under 640 px.
 - Keyboard: arrows move between days and events, `Enter` opens event details, `Space` picks up an event, arrows move by day (week/month) or 15 minutes (week), `Enter` drops, `Escape` cancels; `T` jumps to today; `1/2/3` switch layouts; focus ring from shared tokens; `prefers-reduced-motion` disables drag animation.
-- Font/icon/design tokens: Inter variable, Lucide icons `CalendarDays`, `CalendarRange`, `List`, `Globe`, `Share2`, `Link`, `EyeOff`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `CalendarDays`, `CalendarRange`, `List`, `Globe`, `Share2`, `Link`, `EyeOff`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

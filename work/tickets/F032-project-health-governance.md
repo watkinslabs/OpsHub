@@ -75,7 +75,7 @@ Excluded: portfolio rollup storage (F031 consumes `project_health`), approval ro
 - Permission-denied: viewers see read-only health and gates; non-approvers see the decision as pending without `Approve`/`Reject`; non-members get not-found.
 - Responsive: health indicators stack vertically under 640 px; gate timeline becomes a vertical list.
 - Keyboard: tab through indicator rows, `Enter` opens override dialog, gate timeline items are buttons, dialogs trap focus and `Escape` cancels; `prefers-reduced-motion` disables the score animation.
-- Font/icon/design tokens: Inter variable, Lucide icons `HeartPulse`, `ShieldCheck`, `Flag`, `FileCheck`, `Inbox`, `AlertOctagon`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `HeartPulse`, `ShieldCheck`, `Flag`, `FileCheck`, `Inbox`, `AlertOctagon`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

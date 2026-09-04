@@ -76,7 +76,7 @@ Excluded: REST list, filter, error, and rate-limit conventions and the OpenAPI d
 - Diff viewer: a description list of `field`, `before`, `after`; creates render the proposed record as the same list with `before` empty; long values collapse at 5 lines with `Show more`.
 - Responsive: tables collapse to cards under 768 px; the detail drawer becomes a full-screen sheet under 640 px.
 - Keyboard: table rows are focusable and `Enter` opens the drawer; `Escape` closes the drawer and dialog; the countdown never steals focus; reduced motion disables the drawer slide and the countdown pulse.
-- Font/icon/design tokens: Inter variable; Lucide icons `PlugZap`, `ShieldCheck`, `FileDiff`, `CheckCheck`, `Clock`, `ScrollText`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `PlugZap`, `ShieldCheck`, `FileDiff`, `CheckCheck`, `Clock`, `ScrollText`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

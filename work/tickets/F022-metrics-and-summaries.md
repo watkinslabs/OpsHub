@@ -79,7 +79,7 @@ Excluded: dashboards and widget placement (F023), time-series projection and cha
 - Loading: card skeleton; Empty: `No data yet` when `series` is empty; Error: card shows `Unavailable` with `correlation_id` on hover and a retry; Computing: badge with spinner; Stale: badge `Updated {computed_at}` with `Recompute`; Denied: editor read-only; Offline: recompute disabled.
 - Responsive: cards are 2 columns under 640 px and 1 column under 400 px; the editor stacks under 1024 px.
 - Keyboard: card is a focusable region with `Enter` opening the source report; editor fields in tab order; comparison arrows are `aria-hidden` with visible text `up`/`down`; focus ring tokens; reduced motion disables the sparkline draw animation.
-- Font/icon/design tokens: Inter variable; Lucide `Gauge`, `TrendingUp`, `TrendingDown`, `Minus`, `Target`, `RefreshCw`; color tokens `--kpi-better`, `--kpi-worse`, `--kpi-flat` from `apps/web/src/design/tokens.css` meeting 4.5:1 contrast.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Gauge`, `TrendingUp`, `TrendingDown`, `Minus`, `Target`, `RefreshCw`; color tokens `--kpi-better`, `--kpi-worse`, `--kpi-flat` from `apps/web/src/design/tokens.css` meeting 4.5:1 contrast.
 
 ## 4. Technical specification
 

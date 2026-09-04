@@ -75,7 +75,7 @@ Excluded: new connector adapters (F029/F030 own adapters; Bridge consumes `jira`
 - Permission-denied: viewers see flows and runs read-only; `Retry step`, `Cancel run`, `Publish` hidden; API `denied` shows an inline explanation.
 - Responsive: builder canvas becomes a vertical list under 768 px; console timeline stacks steps with collapsible payloads under 640 px.
 - Keyboard: `Tab` between steps, `Enter` opens the step form, `Escape` closes, `Alt+ArrowUp/Down` reorders a step, `R` on a failed step focuses `Retry step`; focus ring from shared tokens.
-- Font/icon/design tokens: Inter variable, Lucide icons `Workflow`, `Play`, `RotateCcw`, `XCircle`, `Clock`, `GitBranch`, `Plug`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Workflow`, `Play`, `RotateCcw`, `XCircle`, `Clock`, `GitBranch`, `Plug`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

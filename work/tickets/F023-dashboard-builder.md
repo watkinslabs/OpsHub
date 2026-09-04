@@ -79,7 +79,7 @@ Excluded: KPI, metric comparison, chart, burndown, timeline, and workload resolv
 - Loading: grid skeleton with widget outlines; Empty: "Add your first widget" with the palette open; Error: widget tile shows `correlation_id` and retry without affecting other tiles; Denied: tile "You do not have access to this source"; Unavailable: tile "Widget type not enabled"; Stale: badge with `Refresh`; Computing: badge with spinner; Conflict: banner "Dashboard changed" with reload; Offline: editing disabled.
 - Responsive: 12 columns above 1024 px, 6 columns 640..1024 px (widths halved, rounded up), single column under 640 px in saved `y` order.
 - Keyboard: `Tab` between widgets, `Enter` selects, arrows move by one cell, `Shift+Arrow` resizes, `Escape` deselects, `Delete` removes with confirm; live region announces "Table moved to column 4 row 2"; focus ring tokens; reduced motion respected.
-- Font/icon/design tokens: Inter variable; Lucide `LayoutDashboard`, `Plus`, `Move`, `Share2`, `RefreshCw`, `Image`, `Type`, `Table`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `LayoutDashboard`, `Plus`, `Move`, `Share2`, `RefreshCw`, `Image`, `Type`, `Table`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

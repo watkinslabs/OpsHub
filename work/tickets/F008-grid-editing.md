@@ -81,7 +81,7 @@ Excluded: column definitions and validation rules (F007), row hierarchy and link
 - Bulk edit dialog: choose target column(s), mode set/clear, value editor matching the column type, preview count "Will update 812 rows", confirm; results toast with counts and a `Show invalid` filter.
 - Responsive: the primary column and frozen columns stay pinned horizontally; under 768 px only the primary column is frozen and the bulk dialog is full screen.
 - Keyboard: arrows move focus, Enter or F2 edits, Escape cancels, Tab moves right, Shift+Arrow extends selection, Ctrl+A selects all, Ctrl+C/Ctrl+V copy and paste, Ctrl+D fills down, Ctrl+Z/Ctrl+Y undo and redo, Delete clears the selection, Alt+Shift+H hides the focused column; focus ring uses the shared token; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `Pencil`, `Undo2`, `Redo2`, `History`, `Columns3`, `Snowflake`, `EyeOff`, `ListChecks`; spacing and color from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Pencil`, `Undo2`, `Redo2`, `History`, `Columns3`, `Snowflake`, `EyeOff`, `ListChecks`; spacing and color from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

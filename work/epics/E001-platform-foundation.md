@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 1, 2, 3, 4, 7, 9, 10
-- Capability contract: `docs/capability-contracts.md` rows F001, F062, F002, F038, F003, F004
+- Capability contract: `docs/capability-contracts.md` rows F001, F062, F002, F038, F003, F004, F066
 - Product spec: `docs/product-capability-spec.md` sections 3, 4, 5.8, 6, 7 (Phase 0 and Phase 1), 10
 
 # E001 — Platform foundation
@@ -33,6 +33,7 @@ A clean checkout boots the complete multi-tenant runtime (API, web, worker, real
 - F002 Tenant, users, and groups: `tenants`, `users`, `groups`, `group_members` tables, twelve admin routes, seven events, the reusable two-tenant fixture. Depends on F001.
 - F038 Authentication and MFA: OIDC login, sessions, refresh tokens, TOTP and WebAuthn factors, API tokens, rate-limit buckets, tenant security policy, gateway `ActorContext`. Depends on F002.
 - F003 Authorization and audit: roles, role bindings, resource ACLs, policy engine, `RequirePermission` middleware, append-only `audit_events`, audit query API. Depends on F002, F038.
+- F066 Service levels and error budgets: the availability and latency objectives from spec section 6 expressed as measured SLOs with burn-rate alerts and a release gate (`slo` module).
 - F004 Runtime operations: compose baseline, `RuntimeConfig` and `SecretSource`, transactional outbox, JetStream job transport, worker skeleton, tracing, metrics, health, readiness, backups, PITR. Depends on F001.
 
 ## Exit criteria

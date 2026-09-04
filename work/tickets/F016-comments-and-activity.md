@@ -75,7 +75,7 @@ Excluded: notification delivery for mentions (F037 consumes `mention.created.v1`
 - Permission-denied: viewers see threads read-only with the composer replaced by `You can view but not comment`; users without target access see the not-found page; edit and delete menu items are hidden when the 24-hour author window has passed and the actor is not an admin.
 - Responsive: the drawer becomes a full-screen sheet under 768 px; the activity filter chips scroll horizontally.
 - Keyboard: `Ctrl+Enter` submits, `Escape` closes the combobox then the drawer, arrow keys move through suggestions, `R` on a focused thread toggles resolve; focus returns to the composer after submit; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide `MessageSquare`, `AtSign`, `CheckCircle2`, `History`, `Pencil`, `Trash2`; spacing and colors from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `MessageSquare`, `AtSign`, `CheckCircle2`, `History`, `Pencil`, `Trash2`; spacing and colors from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

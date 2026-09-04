@@ -76,7 +76,7 @@ Excluded: comment body attachments UI (F016 references file IDs), document revis
 - Permission-denied: viewers see cards without upload, delete, or version controls; a quarantined file shows a red `Quarantined` badge with the reason and no download for anyone; non-members see the not-found page.
 - Responsive: cards become a single column under 640 px; the version drawer becomes full-screen under 768 px.
 - Keyboard: `Enter` or `Space` on the drop zone opens the file picker; arrow keys move between cards; `Delete` prompts for delete; proof decisions are buttons in a labelled group; focus returns to the card after dialogs; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide `Paperclip`, `Upload`, `ShieldCheck`, `ShieldAlert`, `History`, `Download`, `CheckCircle2`, `XCircle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Paperclip`, `Upload`, `ShieldCheck`, `ShieldAlert`, `History`, `Download`, `CheckCircle2`, `XCircle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

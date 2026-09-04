@@ -79,7 +79,7 @@ Excluded: working calendars and holidays (F011), user-translated column names or
 - Timezone picker groups by region, searches by city and by UTC offset, shows the current offset (`Europe/Berlin (UTC+02:00)`), and lists the browser-detected timezone first.
 - Responsive: form and preview stack vertically under 768 px; timezone list uses a full-screen sheet on mobile.
 - Keyboard: comboboxes support type-ahead, `ArrowUp`/`ArrowDown`, `Enter`, `Escape`; `Save` is reachable by `Tab`; focus returns to the changed control after save; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable with CJK fallback stack `Noto Sans JP`; Lucide icons `Globe`, `Clock`, `Languages`, `Save`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062) with CJK fallback stack `Noto Sans JP`; Lucide icons `Globe`, `Clock`, `Languages`, `Save`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

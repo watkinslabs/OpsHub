@@ -74,7 +74,7 @@ Excluded: notification channel delivery and preferences (F037); workflow authori
 - Permission-denied: non-approvers see read-only detail with an explanation; no target access renders not-found.
 - Responsive: inbox becomes cards under 768 px; detail stacks target summary above decisions.
 - Keyboard: arrow keys move between inbox items, `Enter` opens, `A` approve, `R` reject, `S` reassign on a focused approval, `Escape` closes dialogs; focus ring from shared token; `prefers-reduced-motion` disables badge pulse.
-- Font/icon/design tokens: Inter variable; Lucide icons `CheckCircle2`, `XCircle`, `UserRoundCog`, `Clock`, `AlertTriangle`, `Ban`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `CheckCircle2`, `XCircle`, `UserRoundCog`, `Clock`, `AlertTriangle`, `Ban`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

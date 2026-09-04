@@ -74,7 +74,7 @@ Excluded: allocation editing itself (F033 API, called from the UI), capacity ari
 - Permission-denied: viewers see workload, conflicts, and effort without cost columns; non-viewers see only their own row and their own entries; non-members see not-found.
 - Responsive: under 768 px the heatmap shows one week at a time and the time sheet becomes a day list.
 - Keyboard: heatmap is a grid with arrow navigation and `Enter` opening the resource's conflicts; the time sheet supports `Tab` between day cells and `Enter` to save; dialogs trap focus; `prefers-reduced-motion` disables cell transitions.
-- Font/icon/design tokens: Inter variable, Lucide icons `Activity`, `AlertTriangle`, `Clock`, `Upload`, `GitMerge`, `Lock`, `CheckCircle2`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Activity`, `AlertTriangle`, `Clock`, `Upload`, `GitMerge`, `Lock`, `CheckCircle2`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

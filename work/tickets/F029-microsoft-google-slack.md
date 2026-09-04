@@ -76,7 +76,7 @@ Excluded: API applications and webhooks (F028); notification preferences and dig
 - Binding dialog: connection picker, sheet columns for start, end, title, assignee, conflict policy radio group with one-line explanations, `Preview` showing the first 5 rows as events.
 - Responsive: provider cards stack under 768 px; binding dialog fits 320 px.
 - Keyboard: popup hand-off returns focus to the `Connect` button and announces the result; all dialogs trap focus; reduced motion disables the status transition.
-- Font/icon/design tokens: Inter variable; Lucide icons `Plug`, `CalendarSync`, `MessageSquare`, `RefreshCw`, `Unplug`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Plug`, `CalendarSync`, `MessageSquare`, `RefreshCw`, `Unplug`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

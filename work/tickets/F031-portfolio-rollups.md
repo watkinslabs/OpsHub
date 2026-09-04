@@ -75,7 +75,7 @@ Excluded: health computation and override (F032), portfolio dashboards and chart
 - Permission-denied: viewers see no `Refresh`, `Add projects`, or edit affordances; non-members see the not-found page.
 - Responsive: under 768 px the table becomes stacked cards per project with measure labels; totals header collapses into a summary strip.
 - Keyboard: arrow keys move through cells, `Enter` on a project name opens the drill link, `R` triggers refresh for administrators, sortable headers are buttons; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `Briefcase`, `RefreshCw`, `AlertTriangle`, `Lock`, `ExternalLink`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Briefcase`, `RefreshCw`, `AlertTriangle`, `Lock`, `ExternalLink`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

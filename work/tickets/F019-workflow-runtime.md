@@ -75,7 +75,7 @@ Excluded: workflow authoring and validation (F018); approval quorum and escalati
 - Permission-denied: workflow viewers see runs read-only with `Retry` and `Cancel` hidden; no-access renders not-found.
 - Responsive: table collapses to cards under 768 px with status, trigger, and duration; step timeline stacks vertically.
 - Keyboard: arrow keys move between runs, `Enter` opens detail, `R` opens retry dialog, `C` opens cancel dialog on a focused run, `Escape` closes; focus ring from shared token; `prefers-reduced-motion` disables status pulse.
-- Font/icon/design tokens: Inter variable; Lucide icons `Play`, `RotateCcw`, `XCircle`, `AlertTriangle`, `Clock`, `CheckCircle2`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Play`, `RotateCcw`, `XCircle`, `AlertTriangle`, `Clock`, `CheckCircle2`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

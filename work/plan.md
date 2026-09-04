@@ -29,6 +29,7 @@ Outcome: agents and humans can create, claim, validate, fan out, integrate, and 
 |---|---|---|---|
 | F041 Work-item schema | S081 epic/feature schema; S082 story/task schema | T161 YAML front matter; T162 hierarchy/reference checks; T163 branch/file checks; T164 line-limit check | — |
 | F042 xtask audit/gates | S083 staged/commit/PR audit; S084 ticket/ownership audit | T165 forbidden-token gate; T166 dependency/conflict gate; T167 owned-path gate; T168 positive-control self-test | F041 |
+| F067 System scale and load validation | S133 load profiles and seeds; S134 scale gate and evidence | T265 seed generator; T266 load profiles; T267 load-test gate; T268 scale evidence tests | F043, F044 |
 | F043 Fanout orchestration | S085 lane claiming; S086 isolated execution | T169 worktree allocator; T170 target-dir allocator; T171 fixture/tenant allocator; T172 artifact collector | F041, F042 |
 | F044 Contract/release control | S087 contract drift; S088 release evidence | T173 OpenAPI/event drift; T174 migration safety; T175 feature-flag lifecycle; T176 release/rollback verifier | F041, F042 |
 
@@ -40,6 +41,7 @@ Outcome: secure, observable, reproducible multi-tenant runtime. Milestone M1.
 
 | Feature | Stories | Tasks | Depends on |
 |---|---|---|---|
+| F066 Service levels and error budgets | S131 objectives and measurement; S132 burn alerts and reporting | T261 objective definitions; T262 recording rules and burn alerts; T263 verify-slo gate; T264 SLO harness | F004 |
 | F001 Repository and CI | S001 workspace; S002 quality gates | T001 Rust workspace; T002 React app; T003 CI matrix; T004 line/attribution gates | F041, F042 |
 | F062 Design system and UI primitives | S123 design tokens and theming; S124 UI primitives and patterns | T245 token scales and themes; T246 MUI theme and component surface; T247 pattern components and app shell layout; T248 visual and accessibility harness | F001 |
 | F002 Tenant, users, and groups | S003 tenant lifecycle; S004 users and groups | T005 tenant schema; T006 user/group API; T007 membership state; T008 tenant harness | F001 |
@@ -122,6 +124,9 @@ Outcome: organizations can administer and connect OpsHub safely. Milestone M5.
 | F027 Governance/compliance | S053 retention/export; S054 access review | T105 retention and legal hold; T106 tenant export/purge; T107 access reports; T108 compliance tests | F003, F010 |
 | F028 API/webhooks | S055 REST API; S056 event delivery | T109 OpenAPI generation; T110 pagination/errors; T111 signed webhooks; T112 contract harness | F003, F038, F004 |
 | F029 Microsoft/Google/Slack | S057 OAuth connections; S058 notifications/sync | T113 OAuth vault; T114 provider adapters; T115 conflict policy; T116 mocked connector tests | F028, F037 |
+| F064 Billing and subscriptions | S127 subscription and plan lifecycle; S128 usage metering and invoicing | T253 billing schema and provider adapter; T254 plan lifecycle API; T255 usage metering and invoices; T256 billing negative tests | F002, F048 |
+| F065 Self-serve signup and trials | S129 public signup and verification; S130 trial provisioning and conversion | T257 signup schema and public API; T258 verification and anti-abuse; T259 tenant provisioning; T260 signup negative tests | F002, F038, F064 |
+| F063 Microsoft Entra integration | S125 Entra sign-in and directory; S126 Graph mail and group sync | T249 Entra connection and app registration; T250 OIDC sign-in and claims; T251 Graph mail transport; T252 group sync and negative tests | F026, F037, F038 |
 | F030 Jira/Salesforce/files | S059 work sync; S060 CRM/file sync | T117 connector framework; T118 field mapping; T119 cursor/retry state; T120 replay tests | F029 |
 | F047 MCP access server | S093 MCP resources; S094 MCP tools and safety | T185 MCP server boundary; T186 resource adapters; T187 mutation approval; T188 protocol harness | F028, F045 |
 

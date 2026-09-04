@@ -77,7 +77,7 @@ Excluded: formula parsing and recalculation itself (F035), saved-view definition
 - Explanation popover: lists the applied rules in order with each rule's name, matched leaves, and which property it won, plus `hidden_inputs` rendered as `Uses a column you cannot read`.
 - Responsive: the panel becomes a full-screen sheet below 768 px; the legend collapses to a summary button below 640 px.
 - Keyboard and screen reader: every formatted row exposes `aria-describedby` pointing to a visually hidden `Formatted by Late tasks, Mine`; icons carry `aria-hidden` and their meaning comes from the description; the signal mode switch is a labelled two-option radio group.
-- Font/icon/design tokens: Inter variable; Lucide icons `Palette`, `ListOrdered`, `Eye`, `EyeOff`, `AlertTriangle`, `CircleHelp`; all fills, text colours, and focus rings from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Palette`, `ListOrdered`, `Eye`, `EyeOff`, `AlertTriangle`, `CircleHelp`; all fills, text colours, and focus rings from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

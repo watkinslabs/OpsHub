@@ -76,7 +76,7 @@ Excluded: session login and API token issuance (F038); role and ACL evaluation (
 - Delivery detail drawer: envelope preview (payload redacted to the first 4 KB), attempts table, `Replay` button, curl sample for signature verification.
 - Responsive: tables collapse to cards under 768 px; the delivery drawer becomes a full-screen sheet under 640 px.
 - Keyboard: tab order follows tables and drawers; `Escape` closes; copy buttons announce; reduced motion disables drawer slide.
-- Font/icon/design tokens: Inter variable; Lucide icons `Code2`, `Webhook`, `KeyRound`, `RotateCw`, `Power`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Code2`, `Webhook`, `KeyRound`, `RotateCw`, `Power`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

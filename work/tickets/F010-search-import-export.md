@@ -81,7 +81,7 @@ Excluded: report and dashboard exports (F025), tenant-wide compliance exports an
 - Permission-denied: import entry hidden for viewers and commenters; export dialog visible to viewers but only for columns they can read; download by a non-requester shows `denied` explanation.
 - Responsive: palette becomes a full-screen sheet under 640 px; wizard steps stack vertically with a sticky action bar; preview table scrolls horizontally in its own container.
 - Keyboard: `Ctrl+K` opens, arrows move, `Enter` opens, `Escape` closes; wizard steps are reachable with `Tab`, `Enter` advances, `Shift+Enter` goes back; mapping selects are native comboboxes; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `Search`, `Upload`, `Download`, `FileSpreadsheet`, `FileText`, `AlertCircle`, `CheckCircle2`; spacing and color from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Search`, `Upload`, `Download`, `FileSpreadsheet`, `FileText`, `AlertCircle`, `CheckCircle2`; spacing and color from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

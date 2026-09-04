@@ -75,7 +75,7 @@ Excluded: new file-format parsers beyond F010 CSV/XLSX; connector authentication
 - Run drawer: status, timestamps, counts as labelled numbers, rejected rows table with reason column, `Replay` (disabled with tooltip when archive purged), `Download archive`, `Download validation report`.
 - Responsive: mapping table scrolls horizontally under 768 px with the source column frozen; drawer becomes a full-screen sheet under 640 px.
 - Keyboard: `Tab` order covers list, filters, rows, actions; mapping rows are edited with arrow keys and `Enter`; `Escape` closes the drawer and returns focus; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `Truck`, `Upload`, `Download`, `Play`, `RotateCcw`, `Archive`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Truck`, `Upload`, `Download`, `Play`, `RotateCcw`, `Archive`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

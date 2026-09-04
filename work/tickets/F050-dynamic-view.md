@@ -74,7 +74,7 @@ Excluded: multi-sheet dynamic views (reports are F021), publishing dashboards or
 - Permission-denied: non-shared users see the not-found page; a shared user with `edit_mode: none` sees read-only cells with a lock icon; not-entitled tenants see the shared `ModuleNotEntitled` panel from F048.
 - Responsive: restricted grid freezes the first visible column under 768 px; the policy editor stacks its three columns under 960 px.
 - Keyboard: arrow keys move between cells, `Enter` edits an editable cell, `Escape` cancels, `Tab` moves through policy editor controls; focus ring token; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `EyeOff`, `Lock`, `Link`, `Filter`, `UserCheck`, `Ban`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `EyeOff`, `Lock`, `Link`, `Filter`, `UserCheck`, `Ban`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

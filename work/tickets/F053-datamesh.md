@@ -75,7 +75,7 @@ Excluded: file-based ingestion (F052); external system sync (F030); new formula 
 - Preview table: sample rows with per-cell markers `create`, `update`, `clear`, `conflict` shown as icon plus text; a counts bar above the table.
 - Responsive: tables scroll horizontally under 768 px with the key column frozen; tabs become a select under 640 px.
 - Keyboard: `Tab` order covers tabs, tables, and actions; arrow keys move within map tables; `Enter` opens a column picker; `Escape` closes pickers and dialogs and restores focus; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `GitMerge`, `Link2`, `Play`, `Eye`, `AlertTriangle`, `Check`, `ArrowLeftRight`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `GitMerge`, `Link2`, `Play`, `Eye`, `AlertTriangle`, `Check`, `ArrowLeftRight`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

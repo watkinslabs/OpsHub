@@ -82,7 +82,7 @@ Excluded: SAML 2.0, SCIM provisioning, group mapping (F026); role and permission
 - Destructive actions: `Revoke session`, `Remove factor`, and `Revoke token` open confirm dialogs naming the item; removing the last factor under a required policy is disabled with the explanation.
 - Responsive: forms are single column under 640 px; the token panel wraps the token in a monospace block with a copy button.
 - Keyboard: the 6-digit input accepts paste and auto-advances, `Enter` submits, `Escape` closes dialogs and returns focus; the QR code has an accessible label and a text alternative.
-- Font/icon/design tokens: Inter variable; Lucide icons `LogIn`, `KeyRound`, `Fingerprint`, `Smartphone`, `MonitorSmartphone`, `ShieldCheck`, `Trash2`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `LogIn`, `KeyRound`, `Fingerprint`, `Smartphone`, `MonitorSmartphone`, `ShieldCheck`, `Trash2`, `Copy`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

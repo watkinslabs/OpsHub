@@ -75,7 +75,7 @@ Excluded: document metadata, revisions, folders, and search (F045); grid editing
 - Permission-denied: viewers see `Read-only` badge, presence, and live changes; revoked editors are downgraded live with a toast; foreign targets render not-found.
 - Responsive: avatars collapse to `+N` over 5 collaborators under 768 px; conflict banner stacks values vertically under 640 px.
 - Keyboard: `Alt+Shift+P` opens the presence list, `Alt+Shift+C` focuses the conflict banner, `Enter` on `Keep mine` / `Take theirs`, `Escape` closes; focus ring from shared token; cursor animation off under `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `Users`, `Wifi`, `WifiOff`, `RefreshCw`, `Eye`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Users`, `Wifi`, `WifiOff`, `RefreshCw`, `Eye`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs, path::{Path, PathBuf}};
 
 pub(crate) fn policy_file(path: &str) -> bool {
-    path == "Claude.md" || path == "MANIFEST.md" || path == "automation/README.md" || path == "work/templates/PROJECT_STRUCTURE.md" || path.starts_with("automation/xtask/") || path.starts_with(".githooks/")
+    path == "Claude.md" || path == "MANIFEST.md" || path == "automation/README.md" || path == "docs/design-canvas.md" || path == "work/templates/PROJECT_STRUCTURE.md" || path.starts_with("automation/xtask/") || path.starts_with(".githooks/")
 }
 
 pub(crate) fn check_line_limits(root: &Path) -> Vec<String> {

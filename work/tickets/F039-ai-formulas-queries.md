@@ -81,7 +81,7 @@ Excluded: insight generation, scheduled scans, evidence records, and assisted wr
 - States: loading skeleton for the panel; empty prompt box with three example prompts per surface; error banner with `correlation_id` and `Retry`; denied page for actors without `resource-viewer`; `AI is turned off for this tenant` when `ai_settings.enabled` is false; `Your plan does not include AI assist` when the F048 entitlement is missing; `You have used 50 of 50 requests today, resets 00:00 UTC` on `rate_limited`; `This suggestion expired` with `Regenerate` on an expired proposal.
 - Responsive: the panel is a right-hand drawer above 1024 px and a full-height sheet below; the diff stacks to one column below 768 px and fits 320 px.
 - Keyboard: the prompt box submits on `Ctrl+Enter`; the proposal card is a labelled region; `Apply` opens a focus-trapped confirmation naming the target column or report; cancelling generation returns focus to the prompt box; `prefers-reduced-motion` removes the generating shimmer.
-- Font/icon/design tokens: Inter variable; Lucide icons `Sparkles`, `FunctionSquare`, `Search`, `GitCompare`, `Check`, `X`, `RotateCcw`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Sparkles`, `FunctionSquare`, `Search`, `GitCompare`, `Check`, `X`, `RotateCcw`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

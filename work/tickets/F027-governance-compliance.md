@@ -75,7 +75,7 @@ Excluded: per-sheet CSV/XLSX export (F010); audit log storage and query (F003); 
 - Purge confirmation dialog: shows scope, kinds, candidate and held counts, proposer, expiry countdown, and a text field for the code; the button is labelled `Permanently delete 12,090 records` and is disabled until the code matches.
 - Responsive: tables collapse to cards under 768 px; the confirmation dialog fits 320 px.
 - Keyboard: all tables and dialogs are keyboard operable; `Escape` cancels; focus returns to the trigger; reduced motion disables progress animation.
-- Font/icon/design tokens: Inter variable; Lucide icons `Archive`, `Gavel`, `Download`, `Trash2`, `ClipboardCheck`, `AlertOctagon`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Archive`, `Gavel`, `Download`, `Trash2`, `ClipboardCheck`, `AlertOctagon`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

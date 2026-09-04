@@ -81,7 +81,7 @@ Excluded: automation expression evaluation (F018 reuses the parser), report calc
 - Permission-denied: `Set formula` hidden for viewers and commenters; cross-sheet picker lists only sheets the actor can read.
 - Responsive: the editor panel becomes a bottom sheet under 768 px; the formula graph renders as a list under 640 px.
 - Keyboard: `Ctrl+Space` opens autocomplete, arrows and `Enter` pick, `Escape` closes, `Ctrl+Enter` saves; focus returns to the column header after save; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `Sigma`, `FunctionSquare`, `AlertTriangle`, `RefreshCw`, `GitBranch`; error colors from `apps/web/src/design/tokens.css` with 4.5:1 contrast.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Sigma`, `FunctionSquare`, `AlertTriangle`, `RefreshCw`, `GitBranch`; error colors from `apps/web/src/design/tokens.css` with 4.5:1 contrast.
 
 ## 4. Technical specification
 

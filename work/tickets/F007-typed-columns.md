@@ -83,7 +83,7 @@ Excluded: inline cell editing, undo, and bulk edits (F008), link targets and rol
 - Permission-denied: viewers and commenters see headers without the menu and cannot open the drawer; `denied` responses render an inline explanation; no access to the sheet renders the not-found page.
 - Responsive: the drawer becomes a full-screen sheet under 768 px; header menus open as bottom sheets under 640 px.
 - Keyboard: header receives focus in the tab order, `Enter` opens the menu, `Alt+ArrowLeft/Right` reorders, `Delete` prompts removal; drawer traps focus, `Escape` closes without saving; option list supports `Alt+ArrowUp/Down` reorder; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `Type`, `Hash`, `DollarSign`, `Calendar`, `Clock`, `ToggleLeft`, `User`, `Link`, `Paperclip`, `List`, `Sigma`, `Timer`, `AlertCircle`, `EyeOff`, `GripVertical`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Type`, `Hash`, `DollarSign`, `Calendar`, `Clock`, `ToggleLeft`, `User`, `Link`, `Paperclip`, `List`, `Sigma`, `Timer`, `AlertCircle`, `EyeOff`, `GripVertical`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

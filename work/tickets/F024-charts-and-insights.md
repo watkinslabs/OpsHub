@@ -78,7 +78,7 @@ Excluded: metric definitions (F022), dashboard layout and sharing (F023), export
 - Loading: chart skeleton; Empty: `empty_state.message` centered with an icon; Error: `error_state.message`, `correlation_id`, retry; Denied: tile from F023; Stale: badge from F023; Truncated: note "Showing first 1,000 points"; Offline: cached render with an offline badge.
 - Responsive: charts fill the widget frame; legends move below the plot under 480 px; the workload heatmap scrolls horizontally with a frozen person column.
 - Keyboard: `Tab` into the chart, arrows move between points and announce "Dana, 7 risks", `T` toggles the table alternative, `Escape` leaves; focus ring tokens; reduced motion disables bar growth and line draw animations.
-- Font/icon/design tokens: Inter variable; Lucide `BarChart3`, `LineChart`, `PieChart`, `TrendingDown`, `GanttChart`, `Users`, `Table`; series colors `--chart-1` to `--chart-8` and patterns from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `BarChart3`, `LineChart`, `PieChart`, `TrendingDown`, `GanttChart`, `Users`, `Table`; series colors `--chart-1` to `--chart-8` and patterns from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

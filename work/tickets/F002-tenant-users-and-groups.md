@@ -80,7 +80,7 @@ Excluded: login and sessions (F038), roles and ACLs (F003), SAML/SCIM provisioni
 - Destructive actions: `Deactivate user` opens a confirm dialog that names the user and states that sessions and tokens are revoked; the last active admin sees the disabled button with the `last_admin` explanation.
 - Responsive: tables collapse to cards under 768 px; the members editor becomes a full-screen sheet under 640 px.
 - Keyboard: `Tab` order follows table order, `Enter` opens a row, `Space` toggles a member checkbox, `Escape` closes dialogs and returns focus to the trigger; focus ring uses the shared token.
-- Font/icon/design tokens: Inter variable; Lucide icons `Building2`, `Users`, `UserPlus`, `UserX`, `ShieldAlert`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Building2`, `Users`, `UserPlus`, `UserX`, `ShieldAlert`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

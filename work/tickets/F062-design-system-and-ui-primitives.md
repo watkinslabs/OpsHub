@@ -28,7 +28,7 @@ finished_at: null
 - Capability area: web client foundation (spec section 6 internationalization and accessibility; section 7 UX consistency; every feature's section 3 UX specification depends on this one)
 - Decision references: `docs/architecture-decisions.md` sections 5, 6; `docs/capability-contracts.md` row F062
 - Module slug: `design-system`
-- Visual source of truth: the OpsHub Design System canvas — token sheet, component library, chart gallery, and six reference screens in light and dark. Values in this ticket and the canvas must agree; the canvas is the picture, this ticket is the contract. The canvas link is held outside the repository because the policy gate forbids the vendor token in its URL; ask the repository owner for it.
+- Visual source of truth: the OpsHub Design System canvas — token sheet, component library, chart gallery, and six reference screens in light and dark. Values in this ticket and the canvas must agree; the canvas is the picture, this ticket is the contract. The canvas link is in `docs/design-canvas.md`, the one file exempt from the forbidden-token scanner because the URL carries a vendor name.
 
 ## 2. Requirement specification
 

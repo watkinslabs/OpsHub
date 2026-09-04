@@ -75,7 +75,7 @@ Excluded: charts over pivot outputs (F024), export of outputs (F025), calculated
 - Permission-denied: no entitlement renders the module upsell state with the admin contact; viewers see the latest output read-only without builder controls.
 - Responsive: builder panel collapses to an accordion under 768 px; pivot grid scrolls horizontally with the first dimension column frozen.
 - Keyboard: `Tab` through source, dimensions, measures; `Enter` adds the focused column; `Delete` removes a chip; `Alt+ArrowUp/Down` reorders dimensions; focus returns to the list after removal; reduced motion disables status chip animation.
-- Font/icon/design tokens: Inter variable; Lucide `Table2`, `SigmaSquare`, `RefreshCw`, `FileOutput`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Table2`, `SigmaSquare`, `RefreshCw`, `FileOutput`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

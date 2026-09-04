@@ -75,7 +75,7 @@ Excluded: typed columns beyond the primary text column (F007), inline cell editi
 - Permission-denied: edit affordances hidden for viewers and `denied` responses show an inline explanation; no-access renders the not-found page.
 - Responsive: grid scrolls horizontally with the primary column frozen under 768 px; board lanes stack vertically under 640 px.
 - Keyboard: arrow keys move focus between rows and lanes, `Enter` opens a row, `Space` picks up a card, arrows move it, `Enter` drops it, `Escape` cancels; focus ring uses the shared token; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `Table`, `Kanban`, `Plus`, `RotateCcw`, `Trash2`; spacing and color from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `Table`, `Kanban`, `Plus`, `RotateCcw`, `Trash2`; spacing and color from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

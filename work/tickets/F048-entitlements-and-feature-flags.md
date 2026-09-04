@@ -76,7 +76,7 @@ Excluded: plan catalogs and billing (administration concern per spec section 10)
 - Disable flow: choosing `Override: off` or `Kill` opens a confirmation dialog listing affected modules and the flag's `disable_procedure`; confirmation requires typing the flag key.
 - Responsive: tables collapse to stacked cards under 768 px; the edit drawer becomes a full-screen sheet under 640 px.
 - Keyboard: tab order covers filter, rows, edit buttons; `Enter` opens the drawer; `Escape` closes without saving; focus returns to the triggering row; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `ToggleLeft`, `ToggleRight`, `ShieldCheck`, `Lock`, `AlertTriangle`, `Power`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `ToggleLeft`, `ToggleRight`, `ShieldCheck`, `Lock`, `AlertTriangle`, `Power`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

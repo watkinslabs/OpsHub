@@ -82,7 +82,7 @@ Excluded: working calendars and schedule settings themselves (F011), row hierarc
 - Shift preview: `ShiftDialog` lists affected rows, old dates, new dates, and shows `Too many rows to shift (10,000 limit)` when the API returns `unavailable`.
 - Responsive: under 1,024 px the row label column collapses to 160 px and the timeline scrolls horizontally; under 640 px the chart lists rows with date text and hides arrows.
 - Keyboard: arrow keys move focus between bars, `Shift+ArrowRight/Left` opens the shift dialog pre-filled with ±1 day, `L` opens the add-dependency dialog for the focused row, `Enter` opens row details, `Escape` cancels a drag; focus ring uses the shared token; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `GanttChart`, `Link2`, `Diamond`, `MoveHorizontal`, `Route`, `AlertTriangle`; colours from `apps/web/src/design/tokens.css` including `--color-critical`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `GanttChart`, `Link2`, `Diamond`, `MoveHorizontal`, `Route`, `AlertTriangle`; colours from `apps/web/src/design/tokens.css` including `--color-critical`.
 
 ## 4. Technical specification
 

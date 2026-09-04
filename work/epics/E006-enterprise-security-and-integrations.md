@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 3, 4, 7, 8
-- Capability contract: `docs/capability-contracts.md` rows F026, F027, F028, F029, F030, F047
+- Capability contract: `docs/capability-contracts.md` rows F026, F063, F064, F065, F027, F028, F029, F030, F047
 - Product spec: `docs/product-capability-spec.md` sections 5.8 (SEC-01..03), 5.9 (INT-01..03), 5.9a (MCP-01..03), Phase 5
 
 # E006 — Enterprise security and integrations
@@ -29,6 +29,9 @@ An enterprise tenant can federate login through SAML 2.0, provision and deprovis
 ## Child features
 
 - F026 SSO/SCIM: SAML 2.0 login with signed assertions and SCIM 2.0 lifecycle sync with group-to-role mapping (`sso` module).
+- F063 Microsoft Entra integration: an optional tenant-level Entra ID connection adding Microsoft sign-in, directory group sync, and Graph mail delivery alongside the existing password, OIDC and SAML methods (`entra` module).
+- F064 Billing and subscriptions: plan lifecycle, usage metering, invoices, payment-failure handling, and the provider adapter behind one billing port (`billing` module).
+- F065 Self-serve signup and trials: public signup with verified email, anti-abuse, reserved slugs, and trial tenant provisioning that hands off to F064 (`signup` module).
 - F027 Governance/compliance: retention, legal hold, tenant export, verified purge, and access-review reports (`compliance` module).
 - F028 API/webhooks: generated OpenAPI 3.1, API applications, list conventions, rate-limit headers, and signed webhook delivery (`public-api` module).
 - F029 Microsoft/Google/Slack: OAuth vault with envelope-encrypted refresh tokens and notification/sync adapters for three providers (`integrations` module).

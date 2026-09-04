@@ -75,7 +75,7 @@ Excluded: uploading files (F017 owns uploads and versions), proofing markup (F01
 - Permission-denied: unentitled tenants see the module upsell; viewers see the library without register, rights, or approval controls; assets outside the actor's ACL never render.
 - Responsive: grid shows 2 columns under 640 px and 4 under 1024 px; the detail drawer becomes a full-screen sheet under 768 px; collection tree collapses to a drawer.
 - Keyboard: arrow keys move between tiles, `Enter` opens the drawer, `Escape` closes it, `Tab` cycles renditions and actions; collection tree uses `ArrowRight/Left` to expand and collapse; reduced motion disables tile fade-in.
-- Font/icon/design tokens: Inter variable; Lucide `Image`, `Film`, `FolderTree`, `BadgeCheck`, `ShieldAlert`, `Archive`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Image`, `Film`, `FolderTree`, `BadgeCheck`, `ShieldAlert`, `Archive`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

@@ -81,7 +81,7 @@ Excluded: workflow, report, and dashboard instantiation (F018, F021, F023), port
 - Permission-denied: non-admins see the catalog read-only with `Provision` hidden and an explanation; users outside the workspace see not-found for runs and baselines.
 - Responsive: catalog grid collapses to one column under 640 px; variance table scrolls horizontally with the row name frozen.
 - Keyboard: catalog cards are focusable with `Enter` to open; provision dialog traps focus; status steps are a list with `aria-current` on the running step; variance table supports arrow navigation and `Enter` to open the row.
-- Font/icon/design tokens: Inter variable; Lucide icons `LayoutTemplate`, `Rocket`, `ListChecks`, `Flag`, `GitCompare`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `LayoutTemplate`, `Rocket`, `ListChecks`, `Flag`, `GitCompare`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

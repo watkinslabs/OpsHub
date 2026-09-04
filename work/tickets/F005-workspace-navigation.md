@@ -80,7 +80,7 @@ Excluded: sheets and rows (F006), sharing links and guests (F036), documents ins
 - Permission-denied: viewers and commenters see no create, move, delete, or members controls; a `denied` response shows an inline explanation; non-members and cross-tenant IDs render the not-found page.
 - Responsive: sidebar collapses to a drawer under 1,024 px; tree drawer is full-height under 640 px with a close button.
 - Keyboard: arrow keys move focus in the tree, `Right` expands, `Left` collapses, `Enter` opens, `F2` renames, `Space` picks up a folder for move, arrows choose the target, `Enter` drops, `Escape` cancels; moves are announced through a live region; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `Folder`, `FolderOpen`, `FolderPlus`, `Users`, `Move`, `RotateCcw`, `Trash2`; spacing and color from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Folder`, `FolderOpen`, `FolderPlus`, `Users`, `Move`, `RotateCcw`, `Trash2`; spacing and color from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

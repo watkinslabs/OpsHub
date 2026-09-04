@@ -73,7 +73,7 @@ Excluded: new data surfaces (every page embeds an existing F006/F013/F014/F021/F
 - Permission-denied: non-members get the not-found page for the slug; workspace members without `app-admin` cannot open the builder; not-entitled tenants see the shared `ModuleNotEntitled` panel.
 - Responsive: navigation collapses to a drawer under 960 px; embedded surfaces inherit their own responsive rules; builder page list stacks above the editor under 768 px.
 - Keyboard: `Alt+ArrowUp/Down` reorders the focused page in the builder, `Enter` opens a page, navigation is a `nav` with arrow-key roving focus, `Escape` closes the drawer; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable, Lucide icons `LayoutGrid`, `Layers`, `Users`, `Rocket`, `History`, `EyeOff`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062), Lucide icons `LayoutGrid`, `Layers`, `Users`, `Rocket`, `History`, `EyeOff`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

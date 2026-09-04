@@ -81,7 +81,7 @@ Excluded: formula functions `CHILDREN`/`PARENT`/`ANCESTORS`/`DESCENDANTS` (F035 
 - Permission-denied: link picker lists only sheets the actor can read; redacted targets render as `Restricted` chips with no value.
 - Responsive: indent guides collapse to a depth badge under 768 px; link picker becomes a full-screen sheet under 640 px.
 - Keyboard: `Tab` and `Shift+Tab` on a focused row (not in cell edit) indent and outdent; `ArrowRight`/`ArrowLeft` expand and collapse; `Enter` on a link cell opens the picker; `Escape` closes; focus returns to the originating cell; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `IndentIncrease`, `IndentDecrease`, `ChevronRight`, `Link2`, `Unlink`, `Sigma`; colors and spacing from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `IndentIncrease`, `IndentDecrease`, `ChevronRight`, `Link2`, `Unlink`, `Sigma`; colors and spacing from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

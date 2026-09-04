@@ -75,7 +75,7 @@ Excluded: queueing and executing runs, retries, dead letters, inbound webhook to
 - Permission-denied: non-editors see the definition read-only with `Publish`, `Disable`, and `Delete` hidden and an explanation; no-access renders not-found.
 - Responsive: stepper stacks vertically under 768 px; condition tree indents with 16 px per level and scrolls horizontally inside its container.
 - Keyboard: `Tab` between steps, `Enter` expands a step, `Alt+ArrowUp/Down` reorders actions, `Delete` removes a focused action after confirmation, `Escape` closes pickers; focus ring from shared token; `prefers-reduced-motion` disables step transitions.
-- Font/icon/design tokens: Inter variable; Lucide icons `Zap`, `GitBranch`, `Play`, `Send`, `Pause`, `Trash2`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Zap`, `GitBranch`, `Play`, `Send`, `Pause`, `Trash2`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

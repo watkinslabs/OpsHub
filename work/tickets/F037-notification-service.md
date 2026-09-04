@@ -75,7 +75,7 @@ Excluded: producers' content decisions (F016, F017, F020, F036, F061 own their e
 - Permission-denied: the bell is hidden for link principals and shown for guests; a delivery detail for another user renders not-found; push button shows `Blocked in browser settings` when permission is denied.
 - Responsive: drawer becomes a full-screen sheet under 640 px; the channel matrix becomes stacked cards per category under 768 px.
 - Keyboard: `Alt+N` opens the drawer, arrow keys move between items, `Enter` opens, `R` marks read, `Escape` closes and returns focus to the bell; matrix checkboxes are in Tab order with row headers; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide `Bell`, `BellOff`, `AtSign`, `UserCheck`, `CheckSquare`, `Share2`, `FileCheck`, `Workflow`, `Moon`, `Mail`, `Smartphone`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Bell`, `BellOff`, `AtSign`, `UserCheck`, `CheckSquare`, `Share2`, `FileCheck`, `Workflow`, `Moon`, `Mail`, `Smartphone`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

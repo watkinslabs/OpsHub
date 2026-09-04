@@ -80,7 +80,7 @@ Excluded: new-row intake and form building (F014 owns forms, tokens, and CAPTCHA
 - Permission-denied: a member without `sheet.admin` who opens another person's request sees the denied state; the grid action is hidden without `requester`; expired, cancelled, and completed links render distinct terminal screens that name the requester and offer no data.
 - Responsive: recipient form is single-column under 640 px with a sticky submit bar showing `9 of 12 filled`; the requester dialog becomes a full-screen sheet under 640 px; the detail drawer stacks recipients above changes under 768 px.
 - Keyboard: the scope picker moves with arrow keys and toggles with `Space`; the recipient form is a native `<form>` with per-row `<fieldset>`/`<legend>`; `Ctrl+Enter` submits; `Escape` closes the dialog and returns focus to the grid action; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `MailQuestion`, `CalendarClock`, `BellRing`, `Ban`, `CheckCheck`, `Link2Off`; spacing, colour, and elevation from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `MailQuestion`, `CalendarClock`, `BellRing`, `Ban`, `CheckCheck`, `Link2Off`; spacing, colour, and elevation from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

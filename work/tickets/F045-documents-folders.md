@@ -75,7 +75,7 @@ Excluded: live co-editing sessions, presence, and CRDT change replay (F046); cre
 - Permission-denied: viewers and commenters see no create, move, trash, or save controls and an inline `Read only` label; link principals see only the granted subtree with no workspace breadcrumb; non-members get the not-found page.
 - Responsive: tree collapses into a drawer under 768 px; editor toolbar wraps under 640 px; history panel becomes a bottom sheet.
 - Keyboard: tree follows the ARIA tree pattern (Up/Down move, Right expands, Left collapses, Enter opens, `F2` renames); `Ctrl+S` saves a revision; `Escape` closes dialogs and returns focus; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide icons `Folder`, `FolderOpen`, `FileText`, `History`, `Move`, `Archive`, `Trash2`, `RotateCcw`, `Search`; spacing and color from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Folder`, `FolderOpen`, `FileText`, `History`, `Move`, `Archive`, `Trash2`, `RotateCcw`, `Search`; spacing and color from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

@@ -1,0 +1,6 @@
+feature = "F066"
+flag = "F066_FEATURE"
+fixture_scope = "temp-tree"
+parallel_safe = true
+targeted_command = "cargo xtask test-feature F066"
+full_command = "cargo xtask test-all"

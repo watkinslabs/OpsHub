@@ -83,7 +83,7 @@ Excluded: sheet and view exports and the import pipeline (F010), report definiti
 - Success: completion toast with `Download`; download starts and the row records `Last downloaded`.
 - Responsive: the drill panel is a right side sheet at 480 px and full-screen under 768 px; the export dialog fits 320 px; the export center table collapses to cards.
 - Keyboard: `Enter` on a chart point or group row opens the panel, focus moves to the panel heading and is trapped, `Escape` returns focus to the originating element, `Ctrl+Shift+E` opens the export dialog from report and dashboard toolbars.
-- Font/icon/design tokens: Inter variable; Lucide icons `SquareArrowOutUpRight`, `Download`, `FileSpreadsheet`, `FileText`, `Image`, `Lock`, `RefreshCw`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `SquareArrowOutUpRight`, `Download`, `FileSpreadsheet`, `FileText`, `Image`, `Lock`, `RefreshCw`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

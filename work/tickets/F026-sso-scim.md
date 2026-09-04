@@ -77,7 +77,7 @@ Excluded: OIDC login, sessions, MFA, API tokens (F038); user and group tables an
 - Login failure page: `/auth/saml/error?code=` renders a human message per reason code and the `correlation_id`, never assertion contents.
 - Responsive: the connection form stacks to one column under 768 px; the SCIM token dialog fits 320 px width.
 - Keyboard: tab order follows form order; `Escape` closes dialogs and returns focus; the one-time token field is selectable and has a `Copy` button with a live-region confirmation; reduced motion disables the status transition animation.
-- Font/icon/design tokens: Inter variable; Lucide icons `ShieldCheck`, `KeyRound`, `RefreshCw`, `Users`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `ShieldCheck`, `KeyRound`, `RefreshCw`, `Users`, `AlertTriangle`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

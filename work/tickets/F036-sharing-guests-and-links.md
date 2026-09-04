@@ -76,7 +76,7 @@ Excluded: role definitions and ACL storage for roles (F003), workspace membershi
 - Permission-denied: editors see a read-only people list with `Only owners and admins can change sharing`; guests never see the `Share` button; a link holder sees the landing page without navigation, search, or workspace chrome; a revoked or expired link shows the not-found page with `This link is no longer valid`.
 - Responsive: dialog becomes a full-screen sheet under 640 px; the landing page reuses the responsive grid or form.
 - Keyboard: Tab through people rows, arrow keys change role in the select, `Delete` on a row prompts revoke, `Escape` closes; copy button is a real button with announced result; focus returns to the `Share` button on close; motion respects `prefers-reduced-motion`.
-- Font/icon/design tokens: Inter variable; Lucide `Share2`, `Link`, `UserPlus`, `Ban`, `Copy`, `Clock`, `ShieldOff`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Share2`, `Link`, `UserPlus`, `Ban`, `Copy`, `Clock`, `ShieldOff`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

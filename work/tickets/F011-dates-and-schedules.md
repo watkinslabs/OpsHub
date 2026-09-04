@@ -81,7 +81,7 @@ Excluded: dependencies, critical path, and multi-row shift propagation (F012), c
 - Responsive: settings form stacks to one column under 640 px; the calendar week editor becomes a per-day accordion.
 - Keyboard: date picker uses arrow keys for days, `PageUp`/`PageDown` for months, `T` for today, `Enter` to confirm, `Escape` to cancel; duration field accepts `3d` or `12h`; focus ring uses the shared token.
 - Screen reader: the date editor exposes `role="dialog"` named by the column label, the resolved working day is announced through `aria-live="polite"`, and the timezone label is part of the field description.
-- Font/icon/design tokens: Inter variable; Lucide icons `CalendarDays`, `Clock`, `Globe`, `Flag`, `Settings2`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `CalendarDays`, `Clock`, `Globe`, `Flag`, `Settings2`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

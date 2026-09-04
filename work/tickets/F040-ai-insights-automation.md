@@ -82,7 +82,7 @@ Excluded: the AI provider abstraction, model selection, redaction rules, and the
 - Action review: diff table with `Target`, `Field`, `Before`, `After`; a risk banner for `high` naming the approver group; the confirm dialog restates target count and risk class and requires an explicit button press, never an auto-submit.
 - Responsive: insight cards stack under 768 px; the diff table scrolls horizontally with a sticky `Target` column at 320 px.
 - Keyboard: list is a single tab stop with arrow-key roving focus; `Confirm` is never the default focused control in the dialog; dialogs trap focus and restore it to the invoking button; reduced motion disables the run timeline animation.
-- Font/icon/design tokens: Inter variable; Lucide icons `Sparkles`, `AlertTriangle`, `TrendingUp`, `FileSearch`, `ShieldCheck`, `Gavel`; tokens from `apps/web/src/design/tokens.css`.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide icons `Sparkles`, `AlertTriangle`, `TrendingUp`, `FileSearch`, `ShieldCheck`, `Gavel`; tokens from `apps/web/src/design/tokens.css`.
 
 ## 4. Technical specification
 

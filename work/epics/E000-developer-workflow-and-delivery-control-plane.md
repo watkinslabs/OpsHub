@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 1, 3, 8, 9, 10
-- Capability contract: `docs/capability-contracts.md` tooling rows F041, F042, F043, F044
+- Capability contract: `docs/capability-contracts.md` tooling rows F041, F042, F043, F044, F067
 - Product spec: `docs/product-capability-spec.md` section 7 Phase 0, section 8 release gates, section 10 flag decision
 
 # E000 — Developer workflow and delivery control plane
@@ -29,6 +29,7 @@ Before any product code exists, the repository must be able to police itself. Th
 ## Child features
 
 - F041 Work-item schema: front matter, hierarchy, dependency, branch, filename, section, and line-limit validation of `work/**` and `work/plan.md`.
+- F067 System scale and load validation: composite load profiles and seed generators proving the spec section 6 scale target for the whole system, wired into the release gate (`load` module).
 - F042 xtask audit/gates: forbidden-token policy over staged files, commit messages, pushed history, and PR text; owned-path, dependency, and conflict gates; positive-control self-test; `.githooks` wiring.
 - F043 Fanout orchestration: lane claiming into `work/inprogress/` with git worktrees, per-lane build target directories, deterministic fixture tenants, and artifact collection.
 - F044 Contract/release control: OpenAPI, event, generated-client, and MCP schema drift; migration naming, ordering, and destructive-change safety; feature-flag lifecycle; release and rollback evidence verification.

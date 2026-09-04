@@ -75,7 +75,7 @@ Excluded: published forms (F014 owns `/public/forms`), share links to identities
 - Permission-denied: non-publishers do not see `Publish`; a publisher who lost target access sees the publication with an `Access lost` badge.
 - Responsive: public page renders dashboards as a single column under 768 px and views as a card list under 640 px; embed page fills the iframe and posts its height through `postMessage` to the parent origin.
 - Keyboard: publish dialog traps focus, `Escape` closes, token copy button announces `Copied`; public page supports `Tab` across widgets and `Enter` on nothing (no interactive elements except pagination); reduced motion disables refresh spinner.
-- Font/icon/design tokens: Inter variable; Lucide `Globe`, `Link2`, `RotateCw`, `Ban`, `Clock`; tokens from `apps/web/src/design/tokens.css` with a neutral public theme.
+- Font/icon/design tokens: Plus Jakarta Sans with JetBrains Mono for numerics (F062); Lucide `Globe`, `Link2`, `RotateCw`, `Ban`, `Clock`; tokens from `apps/web/src/design/tokens.css` with a neutral public theme.
 
 ## 4. Technical specification
 
