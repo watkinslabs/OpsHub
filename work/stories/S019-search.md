@@ -46,8 +46,8 @@ Story split: this story owns the search index, search route, and the import job 
 ## Surfaces
 
 - Infrastructure/container: MinIO bucket prefix per test worker from F004 compose baseline
-- Rust service/API: `crates/domain/src/dataio/{mod.rs, errors.rs, search/indexer.rs, search/query.rs, search/acl_filter.rs, import/parser_csv.rs, import/parser_xlsx.rs, import/type_detect.rs, import/mapping.rs, import/dedupe.rs, import/service.rs}`; `services/api/src/dataio/{mod.rs, routes.rs, handlers_search.rs, handlers_import.rs, dto.rs}`; `services/worker/src/dataio/{mod.rs, index_consumer.rs}`
-- Data/migration: `services/api/migrations/<ts>_dataio_create_tables.sql` creating `search_documents`, `import_jobs`, `import_rows`, `export_jobs` with the constraints and indexes from ticket section 4
+- Rust service/API: `crates/domain/src/dataio/{mod.rs, errors.rs, search/indexer.rs, search/query.rs, search/acl_filter.rs, import/parser_csv.rs, import/parser_xlsx.rs, import/type_detect.rs, import/mapping.rs, import/dedupe.rs, import/service.rs}`; `services/api/src/dataio/{mod.rs, routes.rs, handlers_search.rs, handlers_import.rs, dto.rs}`; `services/worker/src/dataio/{mod.rs, index_consumer.rs}`; every table is reached through `SearchDocumentRepository`, `ImportJobRepository`, `ImportRowRepository`, and `ExportJobRepository` in `crates/persistence/src/dataio/`, so the indexer, the query module, the handlers, the worker, and the tests hold no SQL or `tsquery` string of their own (decision 2.1)
+- Data/migration: `services/api/migrations/<ts>_dataio_create_tables.sql` creating `search_documents`, `search_document_principals`, `import_jobs`, `import_column_mappings`, `import_rows`, `import_row_errors`, `export_jobs`, `export_job_columns`, and `export_job_filters` with the constraints and indexes from ticket section 4
 - React/UI: none in this story (S020 and T039 cover the palette, wizard, and export UI)
 - Mocks/fixtures: `testing/fixtures/dataio.rs` tenants A and B, `Plan` and restricted `Payroll` sheets, seeded comments and attachment metadata, `plan.csv` and `plan.xlsx`; in-memory outbox recorder; stubbed F017 file fixture
 

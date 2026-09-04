@@ -24,19 +24,19 @@ finished_at: null
 
 ## Objective
 
-Implement row and group services and the seven row routes, including fractional positioning, moves, soft delete/restore, and the paged row list that the grid and board consume.
+Implement `RowRepository` and `CellRepository`, the row and group services, and the seven row routes, including fractional positioning, moves, soft delete/restore, and the paged row list that the grid and board consume.
 
 ## Specification
 
-- Owned paths: `crates/domain/src/sheets/{row.rs, position.rs, service_rows.rs, service_groups.rs}`, `services/api/src/sheets/{handlers_row.rs, handlers_group.rs}`
+- Owned paths: `crates/persistence/src/sheets/{row_repository.rs, cell_repository.rs}` holding every SQL statement for `rows` and `cells` plus the named queries `list_rows_by_position` and `load_cells_for_rows`, `crates/domain/src/sheets/{row.rs, position.rs, service_rows.rs, service_groups.rs}`, `services/api/src/sheets/{handlers_row.rs, handlers_group.rs}`
 - Contract/input: `CreateRowRequest { group_id?, after_row_id?, cells: Map<ColumnId, Value> }`, `UpdateRowRequest { cells }`, `MoveRowRequest { group_id?, after_row_id? }`, list query `{ cursor?, limit? ≤ 500, group_id? }`.
-- Output/behavior: routes `GET/POST /api/v1/sheets/{id}/rows`, `GET/PATCH/DELETE /api/v1/rows/{id}`, `POST /api/v1/rows/{id}/restore`, `POST /api/v1/rows/{id}/move` return `RowResponse { id, sheet_id, group_id, position, version, cells: { column_id: { raw, display, validation } }, created_at, updated_at, deleted_at }`; `position.rs` implements fractional index generation and rebalancing when any key in a group exceeds 64 chars; group delete moves rows to the default group; events `row.created.v1`, `row.updated.v1`, `row.deleted.v1`, `row.restored.v1`, `row.moved.v1`.
-- Dependencies: T022 sheet service and router; F007 will later validate typed cells, so this task validates only that keys are column IDs of the sheet.
+- Output/behavior: routes `GET/POST /api/v1/sheets/{id}/rows`, `GET/PATCH/DELETE /api/v1/rows/{id}`, `POST /api/v1/rows/{id}/restore`, `POST /api/v1/rows/{id}/move` return `RowResponse { id, sheet_id, group_id, position, version, cells: { column_id: { raw, display, validation_state, validation_code, validation_message } }, created_at, updated_at, deleted_at }` read through `list_rows_by_position` and `load_cells_for_rows`; the services, handlers, and api and performance lanes call `RowRepository` and `CellRepository` and contain no SQL (decision 2.1); `position.rs` implements fractional index generation and rebalancing when any key in a group exceeds 64 chars; group delete moves rows to the default group through `RowRepository` in the group's transaction; events `row.created.v1`, `row.updated.v1`, `row.deleted.v1`, `row.restored.v1`, `row.moved.v1`.
+- Dependencies: T022 sheet service, repositories, and router; F007 will later validate typed cells and fold `validation_state`, `validation_code`, and `validation_message` into `cell_validation_states` through `CellRepository`, so this task writes those columns as `valid` and validates only that keys are column IDs of the sheet.
 - Feature flag: `F006_FEATURE`
 
 ## TDD
 
-- Failing test first: `testing/features/F006/api/row_tests.rs::row_create_assigns_position`, `::row_list_pages_by_position`, `::row_move_between_groups_emits_event`, `::row_move_rebalances_long_keys`, `::group_delete_moves_rows_to_default`, `::row_cross_tenant_not_found`; `testing/features/F006/performance/row_list_bench.rs::row_list_100k_p95`
+- Failing test first: `testing/features/F006/api/row_tests.rs::row_create_assigns_position`, `::row_list_pages_by_position`, `::row_move_between_groups_emits_event`, `::row_move_rebalances_long_keys`, `::group_delete_moves_rows_to_default`, `::row_cells_return_typed_validation_state`, `::row_cross_tenant_not_found`; `testing/features/F006/performance/row_list_bench.rs::row_list_100k_p95`
 - Targeted command: `cargo xtask test-feature F006`
 - Full command: `cargo xtask test-all`
 - Fixtures/mocks: seeded 3-group/50-row sheet; 100,000-row generator with fixed seed
@@ -45,6 +45,7 @@ Implement row and group services and the seven row routes, including fractional 
 
 - [ ] Tests written before implementation and observed failing
 - [ ] p95 targets from NFR-F006-01 met in the performance lane
+- [ ] `cargo xtask check-persistence` passes: `rows` and `cells` are each written by exactly one repository
 - [ ] Owned-path check passes
 - [ ] File limit and lint gates pass
 - [ ] Handoff evidence recorded in S012

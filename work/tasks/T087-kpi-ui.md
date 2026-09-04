@@ -6,7 +6,7 @@ parent_epic: E005
 parent_feature: F022
 parent_story: S044
 depends_on: [S044]
-owned_paths: [crates/domain/src/metrics/**, services/api/src/metrics/**, services/worker/src/metrics/**, apps/web/src/features/metrics/**, testing/features/F022/api/**, testing/features/F022/frontend/**]
+owned_paths: [crates/domain/src/metrics/**, crates/persistence/src/metrics/**, services/api/src/metrics/**, services/worker/src/metrics/**, apps/web/src/features/metrics/**, testing/features/F022/api/**, testing/features/F022/frontend/**]
 feature_flag: F022_FEATURE
 branch: t087-kpi-ui
 started_at: null
@@ -33,9 +33,9 @@ Add grain rollups, comparisons, stale sweeping, and the KPI card and metric edit
 
 ## Specification
 
-- Owned paths: `crates/domain/src/metrics/{rollup.rs, stale.rs}`, `services/api/src/metrics/handlers_values.rs` (grain and comparison), `services/worker/src/metrics/stale_sweeper.rs`, `apps/web/src/features/metrics/{MetricEditor.tsx, MeasurePicker.tsx, PeriodForm.tsx, FormatForm.tsx, TargetForm.tsx, KpiCard.tsx, KpiDelta.tsx, Sparkline.tsx, MetricPreview.tsx, api.ts, hooks.ts, routes.ts}`
+- Owned paths: `crates/domain/src/metrics/{rollup.rs, stale.rs}` (no SQL), `crates/persistence/src/metrics/{metric_value_repository.rs, metric_run_repository.rs}` for `list_values`, `prune_runs_older_than`, `prune_unread_scopes`, `services/api/src/metrics/handlers_values.rs` (grain and comparison), `services/worker/src/metrics/stale_sweeper.rs`, `apps/web/src/features/metrics/{MetricEditor.tsx, MeasurePicker.tsx, PeriodForm.tsx, FormatForm.tsx, TargetForm.tsx, KpiCard.tsx, KpiDelta.tsx, Sparkline.tsx, MetricPreview.tsx, api.ts, hooks.ts, routes.ts}`
 - Contract/input: generated `MetricsApi` client; `values` query `grain` coarser than or equal to the metric grain; `comparison` per metric; tenant locale from F049 for `formatted`.
-- Output/behavior: `rollup.rs` re-buckets by timezone and `week_start`, sums `count`/`sum`, weights `avg` by `sample_count`, recomputes `count_distinct` from the snapshot, and rejects finer grains with `400 invalid`; `compare.rs` produces `delta_abs`, `delta_pct`, `direction` with `flat` under 0.5%; `stale.rs` marks values stale from `source_versions` and the newest snapshot; `stale_sweeper.rs` runs every 5 minutes, enqueues at most one recompute per stale `scope_key`, and prunes scopes unread for 14 days; `KpiCard` shows `formatted`, `KpiDelta` text (`down 2 vs last week`), target progress bar, `Sparkline` with an `aria-label` summary (`52 weeks, low 3, high 11, latest 7`), and badges for computing and stale with `Recompute`; `MetricEditor` validates inline from `field_errors` and previews the card; states per ticket section 3; telemetry `metric_created`, `metric_recompute_requested`, `kpi_card_rendered`, `kpi_card_opened_source`.
+- Output/behavior: `rollup.rs` re-buckets by the `period_timezone` and `week_start` columns, sums `count`/`sum`, weights `avg` by `sample_count`, recomputes `count_distinct` from the snapshot, and rejects finer grains with `400 invalid`; `compare.rs` produces `delta_abs`, `delta_pct`, `direction` with `flat` under 0.5%; `stale.rs` marks values stale by joining `metric_run_sources` against current source versions and the newest snapshot; `stale_sweeper.rs` runs every 5 minutes, enqueues at most one recompute per stale `scope_key`, and calls `prune_runs_older_than` and `prune_unread_scopes` for scopes unread for 14 days, holding no SQL itself; `KpiCard` shows `formatted`, `KpiDelta` text (`down 2 vs last week`), target progress bar, `Sparkline` with an `aria-label` summary (`52 weeks, low 3, high 11, latest 7`), and badges for computing and stale with `Recompute`; `MetricEditor` validates inline from `field_errors` and previews the card; states per ticket section 3; telemetry `metric_created`, `metric_recompute_requested`, `kpi_card_rendered`, `kpi_card_opened_source`.
 - Dependencies: T086 values route and worker; F005 workspace shell; F049 locale hook.
 - Feature flag: `F022_FEATURE` read through the flag hook; editor routes are not registered when off.
 

@@ -5,7 +5,7 @@ status: planned
 parent_epic: E005
 parent_feature: F021
 depends_on: [S041]
-owned_paths: [crates/domain/src/reports/**, services/api/src/reports/**, apps/web/src/features/reports/**, testing/features/F021/**]
+owned_paths: [crates/domain/src/reports/**, crates/persistence/src/reports/**, services/api/src/reports/**, apps/web/src/features/reports/**, testing/features/F021/**]
 feature_flag: F021_FEATURE
 branch: s042-filters-joins
 started_at: null
@@ -32,10 +32,10 @@ As a report editor, I want to join my selected sheets by stable column IDs, filt
 
 ## Requirements
 
-- **SR-S042-01:** `definition.joins` builds a tree from `sources[0]` where `link` columns match the right source row `id` and typed columns match by normalized value; cycles, disconnected sources, and type mismatches return `400 invalid` naming `definition.joins[i]` (FR-F021-03).
-- **SR-S042-02:** `definition.filters` accepts the `and`/`or` tree with the 13 operators and relative date tokens resolved in `refresh_policy.timezone`; depth over 4 or more than 50 predicates returns `400 invalid` (FR-F021-04).
-- **SR-S042-03:** `definition.group_by` up to 3 levels and `aggregates` up to 20 produce group header rows with `depth`, `key`, `aggregates`, and `row_count` computed at read time over the viewer-visible rows (FR-F021-05, FR-F021-11).
-- **SR-S042-04:** `definition.calculated_fields` are parsed at save with the F035 parser and evaluated per row at refresh within the 2 second budget; a row exceeding budget shows display `#BUDGET` (FR-F021-06).
+- **SR-S042-01:** `definition.joins` builds a tree from `sources[0]` where `link` columns match the right source row `id` and typed columns match by normalized value, persisted one per `report_joins` row referencing `report_sources` on both sides; cycles, disconnected sources, and type mismatches return `400 invalid` naming `definition.joins[i]` (FR-F021-03).
+- **SR-S042-02:** `definition.filters` accepts the `and`/`or` tree with the 13 operators and relative date tokens resolved in `reports.refresh_timezone`, stored as `report_filters` rows keyed by `node_path` and rebuilt into the tree by `load_definition`; depth over 4 or more than 50 predicates returns `400 invalid` (FR-F021-04).
+- **SR-S042-03:** `definition.group_by` up to 3 levels (`report_group_by` keyed `(report_id, level)`) and `aggregates` up to 20 (`report_aggregates` with unique `(report_id, position)` and `(report_id, lower(label))`) produce group header rows with `depth`, `key`, `aggregates`, and `row_count` computed at read time over the viewer-visible rows (FR-F021-05, FR-F021-11).
+- **SR-S042-04:** `definition.calculated_fields` are stored in `report_calculated_fields`, parsed at save with the F035 parser, and evaluated per row at refresh within the 2 second budget; a row exceeding budget shows display `#BUDGET` (FR-F021-06).
 - **SR-S042-05:** With `aggregate_policy: "owner"` and tenant policy `reports.aggregate_hidden_values = true`, aggregates come from the owner-scope snapshot and `meta.aggregate_scope` is `owner`; otherwise hidden values are excluded (FR-F021-11).
 - **SR-S042-06:** `ReportEditor` (sources, joins, filters, grouping, calculated fields, refresh policy) and `ReportViewer` (rows, group headers, stale banner, restricted-sources bar, refresh button) render loading, empty, error, denied, stale, computing, and offline states (FR-F021-15, NFR-F021-03).
 - **SR-S042-07:** A 500-row page of a 100,000-row snapshot with permission filtering responds under 500 ms p95 and a three-sheet refresh completes under 60 s (NFR-F021-01).
@@ -43,8 +43,8 @@ As a report editor, I want to join my selected sheets by stable column IDs, filt
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/reports/{joins.rs, filters.rs, grouping.rs, calc.rs}` extending `compiler.rs` and `validate.rs`; `services/api/src/reports/handlers_rows.rs` group-at-read path
-- Data/migration: none new; `report_filters` projection rows written by the service on save
+- Rust service/API: `crates/domain/src/reports/{joins.rs, filters.rs, grouping.rs, calc.rs}` extending `compiler.rs` and `validate.rs` with no SQL; `crates/persistence/src/reports/{mod.rs, report_repository.rs, report_snapshot_repository.rs}` extended with the join, filter, group-by, aggregate and calculated-field reads and writes behind `load_definition`/`replace_definition` and the `ViewerScope`-aware `page_snapshot_rows`; `services/api/src/reports/handlers_rows.rs` group-at-read path
+- Data/migration: none new; `report_joins`, `report_filters`, `report_group_by`, `report_aggregates`, and `report_calculated_fields` rows are written by `ReportRepository::replace_definition` in one `UnitOfWork` on save
 - React/UI: `apps/web/src/features/reports/{ReportPage.tsx, ReportViewer.tsx, ReportTable.tsx, GroupHeaderRow.tsx, StaleBanner.tsx, RestrictedSourcesBar.tsx, ReportEditor.tsx, SourcePicker.tsx, JoinBuilder.tsx, FilterBuilder.tsx, GroupingPanel.tsx, CalculatedFieldEditor.tsx, RefreshPolicyForm.tsx, NewReportDialog.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: three-sheet fixture with link column `Risks.project`; 100,000-row generator per sheet for the performance lane; MSW handlers for component tests
 

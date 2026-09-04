@@ -29,14 +29,14 @@ Build the sheet page with grid and board modes, the new-sheet and restore dialog
 ## Specification
 
 - Owned paths: `apps/web/src/features/sheets/{SheetPage.tsx, SheetHeader.tsx, GridView.tsx, GroupSection.tsx, RowLine.tsx, BoardView.tsx, BoardLane.tsx, RowCard.tsx, NewSheetDialog.tsx, RestoreSheetDialog.tsx, api.ts, hooks.ts, routes.ts}`
-- Contract/input: generated `SheetsApi` client; route params `workspaceId`, `sheetId`, query `mode=grid|board`.
-- Output/behavior: grid lists groups as sections and rows by position with the primary column frozen; board renders groups as lanes; drag or keyboard move calls `moveRow` optimistically and rolls back on `conflict` with the stale banner; states: loading skeleton, empty call to action, error banner with correlation ID, denied affordances for viewers, not-found page, offline badge; Lucide icons and design tokens per ticket section 3; telemetry events `sheet_opened`, `row_created`, `row_moved`, `sheet_mode_changed`.
-- Dependencies: T023 routes; F005 workspace shell for navigation and the `New sheet` entry point.
+- Contract/input: generated `SheetsApi` client; route params `workspaceId`, `sheetId`, query `mode=grid|board`; `SheetResponse.settings` is the typed `{ row_numbering, default_view, board_lane_column_id }` triple from `sheet_settings`, and each cell carries `validation_state`, `validation_code`, and `validation_message` as separate fields.
+- Output/behavior: grid lists groups as sections and rows by position with the primary column frozen; board renders groups as lanes keyed by `settings.board_lane_column_id`, and the initial mode falls back to `settings.default_view` when no `mode` query is present; a cell with `validation_state` `invalid` shows its `validation_message` inline; drag or keyboard move calls `moveRow` optimistically and rolls back on `conflict` with the stale banner; states: loading skeleton, empty call to action, error banner with correlation ID, denied affordances for viewers, not-found page, offline badge; Lucide icons and design tokens per ticket section 3; telemetry events `sheet_opened`, `row_created`, `row_moved`, `sheet_mode_changed`.
+- Dependencies: T023 row routes and their `RowRepository`/`CellRepository` queries; F005 workspace shell for navigation and the `New sheet` entry point.
 - Feature flag: `F006_FEATURE` read through the flag hook; routes are not registered when off.
 
 ## TDD
 
-- Failing test first: `testing/features/F006/frontend/GridView.test.tsx::renders_groups_and_rows`, `::shows_denied_state_for_viewer`, `BoardView.test.tsx::keyboard_move_calls_api`, `::rolls_back_on_conflict`; `testing/features/F006/e2e/sheet.spec.ts::create_sheet_add_row_move_card`, `::restore_deleted_sheet`; `testing/features/F006/accessibility/sheet.a11y.spec.ts::grid_and_board_have_no_serious_axe_violations`
+- Failing test first: `testing/features/F006/frontend/GridView.test.tsx::renders_groups_and_rows`, `::shows_denied_state_for_viewer`, `::shows_invalid_cell_validation_message`, `BoardView.test.tsx::keyboard_move_calls_api`, `::uses_default_view_from_settings`, `::rolls_back_on_conflict`; `testing/features/F006/e2e/sheet.spec.ts::create_sheet_add_row_move_card`, `::restore_deleted_sheet`; `testing/features/F006/accessibility/sheet.a11y.spec.ts::grid_and_board_have_no_serious_axe_violations`
 - Targeted command: `cargo xtask test-feature F006`
 - Full command: `cargo xtask test-all`
 - Fixtures/mocks: MSW handlers from the seeded sheet fixture; Playwright uses the real API against a seeded tenant

@@ -44,8 +44,8 @@ As a sheet editor, I want to attach a formula to a column and have only the affe
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/formulas/{graph.rs, recalc.rs, consumer.rs, service.rs, functions/cross_sheet.rs}`; `services/api/src/formulas/{handlers_column.rs, handlers_graph.rs, handlers_recalculate.rs}`
-- Data/migration: none new; uses tables from S069
+- Rust service/API: `crates/domain/src/formulas/{graph.rs, recalc.rs, consumer.rs, service.rs, functions/cross_sheet.rs}`; `services/api/src/formulas/{handlers_column.rs, handlers_graph.rs, handlers_recalculate.rs}`. These modules and the handlers hold no SQL (decision 2.1): the graph load, the reverse-dependency walk and the batched result write are the named queries `load_graph_for_sheet`, `dependents_of_column` and `upsert_results_batch` on `FormulaDependencyRepository` and `FormulaResultRepository`, definitions go through `FormulaDefinitionRepository`, recalculated cell values are written through the F006 `CellRepository`, and `row_hierarchy` is read through the F009 `RowHierarchyRepository` behind `HierarchyReader`.
+- Data/migration: none new; uses the S069 tables through the `crates/persistence/src/formulas/` repositories, with the definition rewrite, edge replacement and result writes of one recalculation batch in a single `UnitOfWork` so the tenant predicate, version check, audit row and outbox enqueue are applied by the base contract.
 - React/UI: `apps/web/src/features/formulas/{FormulaEditor.tsx, FormulaAutocomplete.tsx, ReferenceChips.tsx, FormulaPreviewRow.tsx, FormulaErrorPopover.tsx, FormulaCellBadge.tsx, FormulaGraphPanel.tsx, RecalculateButton.tsx, api.ts, hooks.ts}`
 - Mocks/fixtures: `Plan` sheet with a 3-level hierarchy and `Rates` sheet; 100,000-row generator for performance lane; MSW handlers for component tests
 

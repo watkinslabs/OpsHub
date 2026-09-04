@@ -5,7 +5,7 @@ status: planned
 parent_epic: E005
 parent_feature: F022
 depends_on: [S043]
-owned_paths: [crates/domain/src/metrics/**, services/api/src/metrics/**, services/worker/src/metrics/**, apps/web/src/features/metrics/**, testing/features/F022/**]
+owned_paths: [crates/domain/src/metrics/**, crates/persistence/src/metrics/**, services/api/src/metrics/**, services/worker/src/metrics/**, apps/web/src/features/metrics/**, testing/features/F022/**]
 feature_flag: F022_FEATURE
 branch: s044-rollups-trends
 started_at: null
@@ -32,10 +32,10 @@ As a leader, I want a KPI card that shows the current value, how it compares to 
 
 ## Requirements
 
-- **SR-S044-01:** `values?grain=` rolls daily buckets into week, month, or quarter aligned to `period.timezone` and `week_start`, summing `count`/`sum`, weighting `avg` by `sample_count`, and recomputing `count_distinct` from the source; a finer grain returns `400 invalid` (FR-F022-08).
-- **SR-S044-02:** `comparison` yields `delta_abs`, `delta_pct`, and `direction` per FR-F022-09 for `previous_period`, `same_period_last_year`, and `target`, with `flat` under 0.5% (FR-F022-09).
+- **SR-S044-01:** `values?grain=` rolls daily buckets read by `MetricValueRepository::list_values` into week, month, or quarter aligned to the `period_timezone` and `week_start` columns, summing `count`/`sum`, weighting `avg` by `sample_count`, and recomputing `count_distinct` from the source; a finer grain returns `400 invalid` (FR-F022-08).
+- **SR-S044-02:** `comparison` yields `delta_abs`, `delta_pct`, and `direction` per FR-F022-09 for `previous_period`, `same_period_last_year`, and `target`, with `flat` under 0.5%, reading `target_value` and `target_direction` for `target` (FR-F022-09).
 - **SR-S044-03:** `formatted` follows the viewer locale for `number`, `currency`, `percent`, and `duration` via the F049 formatter (FR-F022-10).
-- **SR-S044-04:** `meta.stale` is derived from `source_versions` and the newest report snapshot; the stale sweeper enqueues at most one recompute per `scope_key` per 5 minutes and prunes scopes unread for 14 days (FR-F022-07).
+- **SR-S044-04:** `meta.stale` is derived by joining the run's `metric_run_sources` rows against the current sheet version and the newest succeeded report snapshot; the stale sweeper enqueues at most one recompute per `scope_key` per 5 minutes and calls `prune_runs_older_than` and `prune_unread_scopes` for scopes unread for 14 days, holding no SQL itself (FR-F022-07).
 - **SR-S044-05:** `KpiCard` renders `formatted`, delta text, direction color, target progress, and `Sparkline`, with loading, empty, error, computing, stale, denied, and offline states, and exposes value and direction as text for assistive technology (FR-F022-13, NFR-F022-03).
 - **SR-S044-06:** `MetricEditor` builds the metric from a report or sheet with source, measure, filters, period, format, target, comparison, and scope policy, shows field errors inline, and previews the card (FR-F022-13).
 - **SR-S044-07:** `values` responds under 300 ms p95 from cache and a 100,000-row recompute completes under 30 s (NFR-F022-01).
@@ -43,7 +43,7 @@ As a leader, I want a KPI card that shows the current value, how it compares to 
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/metrics/{rollup.rs, stale.rs}`; `services/api/src/metrics/handlers_values.rs` grain and comparison parameters; `services/worker/src/metrics/stale_sweeper.rs`
+- Rust service/API: `crates/domain/src/metrics/{rollup.rs, stale.rs}` (no SQL); `crates/persistence/src/metrics/{metric_value_repository.rs, metric_run_repository.rs}` for `list_values`, `prune_runs_older_than`, `prune_unread_scopes` and the `metric_run_sources` staleness join; `services/api/src/metrics/handlers_values.rs` grain and comparison parameters; `services/worker/src/metrics/stale_sweeper.rs`
 - Data/migration: none new
 - React/UI: `apps/web/src/features/metrics/{MetricEditor.tsx, MeasurePicker.tsx, PeriodForm.tsx, FormatForm.tsx, TargetForm.tsx, KpiCard.tsx, KpiDelta.tsx, Sparkline.tsx, MetricPreview.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: 52-week value series with DST weeks; MSW handlers for `values` in computing, stale, and denied states; 100,000-row source for the performance lane

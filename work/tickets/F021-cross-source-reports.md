@@ -11,7 +11,7 @@ depends_on: [F008, F035, F003]
 blocks: [F022, F023, F031, F039, F056]
 conflicts_with: []
 parallel_safe: true
-owned_paths: [crates/domain/src/reports/**, services/api/src/reports/**, services/worker/src/reports/**, apps/web/src/features/reports/**, services/api/migrations/*_reports_*.sql, testing/features/F021/**]
+owned_paths: [crates/domain/src/reports/**, crates/persistence/src/reports/**, services/api/src/reports/**, services/worker/src/reports/**, apps/web/src/features/reports/**, services/api/migrations/*_reports_*.sql, testing/features/F021/**]
 feature_flag: F021_FEATURE
 flag_default: off
 branch: f021-cross-source-reports
@@ -52,19 +52,19 @@ As a report editor, I want to define a report over several sheets with joins, fi
 - **FR-F021-05:** `ReportDefinition.group_by` lists 0 to 3 `{ alias, column_id, order: asc|desc }` levels and `ReportDefinition.aggregates` lists up to 20 `{ label, alias, column_id, fn: count|count_distinct|sum|avg|min|max }`; stored as `report_group_by` rows keyed `(report_id, level)` and `report_aggregates` rows keyed `(report_id, position)` with unique `(report_id, lower(label))`; `sum` and `avg` require `number`, `currency`, or `duration` columns; the rows endpoint returns group header rows with `kind: "group"`, `depth`, `key`, `aggregates`, and `row_count`.
 - **FR-F021-06:** `ReportDefinition.calculated_fields` lists up to 25 `{ label, expression, result_type }` stored one per `report_calculated_fields` row with unique `(report_id, position)` and `(report_id, lower(label))`, where `expression` is an F035 formula over references `{alias.column_id}` and earlier calculated fields; each expression is parsed at save time with the F035 parser (10,000 AST nodes, no cycles) and evaluated per row at refresh under the 2 second per-report formula budget; parse failure returns `400 invalid` with `field_errors["definition.calculated_fields[i].expression"]` and the parser message.
 - **FR-F021-07:** `POST /api/v1/reports/{id}/refresh` enqueues a `reports.refresh` job and returns `202` within 2 seconds with `{ run_id, status: "queued" }`; the worker executes the definition, writes a `report_snapshots` row with `status succeeded|failed`, `row_count`, `duration_ms`, `computed_at`, and `error` plus one `report_snapshot_sources` row per source sheet carrying its `sheet_version` (surfaced as the `source_versions` map of `sheet_id` to sheet `version`), keeps the last 3 succeeded snapshots per report, and publishes `report.refreshed.v1`; a second refresh while one is `queued|running` returns `409 conflict` with the active `run_id`.
-- **FR-F021-08:** `refresh_policy` is `{ mode: manual|interval, interval_minutes?, timezone }` with `interval_minutes` in 5..1440 and `timezone` an IANA name; interval reports are enqueued by the worker scheduler at most once per interval per report and never while a run is active.
-- **FR-F021-09:** `GET /api/v1/reports/{id}/rows?cursor&limit&snapshot_id?` returns the latest succeeded snapshot's rows in definition sort order with `limit` 1..500, each row `{ row_id, sources: {alias: source_row_id}, cells: {column_ref: {raw, display}}, calculated: {label: {raw, display}} }`, and a `meta { snapshot_id, computed_at, duration_ms, source_versions, stale, restricted_sources[], hidden_columns[] }`; `stale` is true when any current sheet `version` exceeds the snapshot's recorded version.
-- **FR-F021-10:** Row-level permission filtering: the rows endpoint returns a snapshot row only if the viewer holds `read` on every source sheet contributing a non-null source row for an `inner` join, and drops the right side (nulls) of a `left` join whose sheet the viewer cannot read; sheets the viewer cannot read appear in `meta.restricted_sources`; columns hidden from the viewer by F007 column visibility or F003 field-level ACL are removed from `cells` and listed in `meta.hidden_columns`.
+- **FR-F021-08:** `refresh_policy` is `{ mode: manual|interval, interval_minutes?, timezone }` in the API and is persisted as the typed columns `reports.refresh_mode`, `reports.refresh_interval_minutes` (5..1440, required when mode is `interval`), and `reports.refresh_timezone` (an IANA name), because the scheduler filters on them; interval reports are enqueued by the worker scheduler through `page_reports` over `reports(refresh_mode, refresh_interval_minutes) where deleted_at is null` at most once per interval per report and never while a run is active.
+- **FR-F021-09:** `GET /api/v1/reports/{id}/rows?cursor&limit&snapshot_id?` returns the latest succeeded snapshot's rows in definition sort order with `limit` 1..500, each row `{ row_id, sources: {alias: source_row_id}, cells: {column_ref: {raw, display}}, calculated: {label: {raw, display}} }`, assembled from `report_snapshot_rows` joined to `report_snapshot_row_sources`, and a `meta { snapshot_id, computed_at, duration_ms, source_versions, stale, restricted_sources[], hidden_columns[] }` whose `source_versions` is assembled from `report_snapshot_sources`; `stale` is true when any current sheet `version` exceeds the `sheet_version` recorded for that sheet, evaluated as a join against `sheets`.
+- **FR-F021-10:** Row-level permission filtering: the rows endpoint joins `report_snapshot_row_sources` to `report_sources` and returns a snapshot row only if the viewer holds `read` on every source sheet contributing a non-null `source_row_id` for an `inner` join, and drops the right side (nulls) of a `left` join whose sheet the viewer cannot read; sheets the viewer cannot read appear in `meta.restricted_sources`; columns hidden from the viewer by F007 column visibility or F003 field-level ACL are removed from `cells` and listed in `meta.hidden_columns`.
 - **FR-F021-11:** Group aggregates are computed at read time over the rows visible to the viewer, so hidden rows and hidden columns never contribute to `count`, `sum`, `avg`, `min`, `max`, or `count_distinct`; when tenant policy `reports.aggregate_hidden_values` is `true` and the report has `aggregate_policy: "owner"`, aggregates use the snapshot computed under the report owner's scope and the response sets `meta.aggregate_scope = "owner"`.
 - **FR-F021-12:** `GET /api/v1/reports` pages by opaque cursor with `limit` 1..100, filters by `workspace_id`, `folder_id`, `name` prefix, `deleted`, sorts by `name` or `updated_at`, and returns only reports the actor can read; `GET /api/v1/reports/{id}` returns the definition, `refresh_policy`, `latest_snapshot` summary, and `version`.
-- **FR-F021-13:** `PATCH /api/v1/reports/{id}` updates `name`, `description`, `folder_id`, `definition`, `refresh_policy`, `aggregate_policy` with `If-Match`; a stale version returns `409 conflict` with `current_version`; a definition change marks every existing snapshot `stale = true`; `DELETE` soft-deletes the report and cancels its scheduled refreshes; a foreign-tenant actor receives `404 not_found` on every route.
+- **FR-F021-13:** `PATCH /api/v1/reports/{id}` updates `name`, `description`, `folder_id`, `definition`, `refresh_policy`, `aggregate_policy` with `If-Match`; a stale version returns `409 conflict` with `current_version`; a definition change replaces the eight definition tables and calls `mark_snapshots_stale(report_id)` in the same `UnitOfWork`, so every existing snapshot becomes `stale = true`; `DELETE` soft-deletes the report and cancels its scheduled refreshes; a foreign-tenant actor receives `404 not_found` on every route.
 - **FR-F021-14:** Every mutation requires `Idempotency-Key`, writes an `audit_events` row with before/after diff, and publishes `report.created.v1`, `report.updated.v1`, or `report.deleted.v1` through the outbox; replaying a key with a different body returns `409 conflict`.
 - **FR-F021-15:** The web app renders a report editor (sources, joins, filters, grouping, calculated fields, refresh policy) and a report viewer (rows, group headers, stale banner, refresh button, restricted-source notice) with loading, empty, error, denied, stale, computing, and offline states.
 
 ### Non-functional requirements
 
 - **NFR-F021-01 Performance:** rows page of 500 from a 100,000-row snapshot responds under 500 ms p95 with permission filtering applied; a refresh joining three 100,000-row sheets with 500 columns each completes under 60 s and is acknowledged under 2 s; save with 25 calculated fields parses under 800 ms p95.
-- **NFR-F021-02 Security/privacy:** tenant isolation by `tenant_id` predicate on every query; permission filtering evaluated in service code with the F003 engine; cross-tenant, viewer, hidden-column, restricted-sheet, and guest-link negatives are in the harness; snapshot rows are never served to an actor lacking `read` on the report.
+- **NFR-F021-02 Security/privacy:** tenant isolation by the `tenant_id` predicate the repository base contract applies to every query; permission filtering evaluated in service code with the F003 engine; cross-tenant, viewer, hidden-column, restricted-sheet, and guest-link negatives are in the harness; snapshot rows are never served to an actor lacking `read` on the report.
 - **NFR-F021-03 Accessibility:** editor and viewer pass axe with zero serious violations; the join and filter builders are fully keyboard operable; stale and refresh state changes are announced through a live region; reduced motion disables skeleton shimmer.
 - **NFR-F021-04 Reliability/observability:** refresh jobs are idempotent by `run_id`, retry 3 times with backoff, dead-letter after the fourth failure, and record `duration_ms`; spans carry `tenant_id`, `report_id`, `run_id`, `correlation_id`; metrics `report_refresh_duration_seconds`, `report_refresh_failures_total`, `report_rows_filtered_total` are exported.
 
@@ -129,9 +129,10 @@ Excluded: metrics and KPI values (F022), dashboards and widgets (F023), charts a
 - [ ] Requirement tests: FR-F021-01 through FR-F021-15 in `testing/features/F021/requirements/cases.md`
 - [ ] Failure/edge-case tests: join cycle, disconnected source, type-mismatched join, operator/type mismatch, formula parse error, refresh while active, definition change marks snapshots stale, interval below 5 minutes
 - [ ] Permission-negative and tenant-isolation tests: cross-tenant `not_found`, viewer mutation `denied`, restricted sheet rows dropped, hidden column removed and excluded from aggregates, guest link cannot refresh
-- [ ] Rust unit tests: `crates/domain/src/reports/` definition validator, compiler SQL shape, calc evaluator, scope filter, stale computation
+- [ ] Rust unit tests: `crates/domain/src/reports/` definition validator, compiled read-plan shape, calc evaluator, scope filter, stale computation
+- [ ] Persistence tests: `crates/persistence/src/reports/` definition round-trip through `load_definition`/`replace_definition`, `list_reports_using_sheet`, `list_reports_using_column`, `claim_refresh`, `page_snapshot_rows`, `mark_snapshots_stale`, `prune_snapshots`; the F021 tests hold no SQL string, `sqlx::query*` call, or connection
 - [ ] API contract/integration tests: every route above with success and each error code
-- [ ] Database migration/constraint tests: unique name, alias uniqueness, single active snapshot, foreign keys, rollback
+- [ ] Database migration/constraint tests: unique name, alias and position uniqueness, aggregate and calculated-field label uniqueness, group level range, join `kind` and `left_source_id <> right_source_id` checks, refresh mode/interval check, single active snapshot, foreign keys, rollback of all twelve tables
 - [ ] React component tests: `ReportEditor`, `JoinBuilder`, `FilterBuilder`, `ReportViewer` states
 - [ ] Browser E2E tests: build the three-sheet report, refresh, view groups, stale banner, restricted source notice
 - [ ] Accessibility tests: axe on editor and viewer, keyboard join/filter building, live region announcements
@@ -157,7 +158,7 @@ Feature: Cross-source reports
 Scenario: Join three sheets and refresh
   Given editor Dana has sheets "Projects", "Risks", and "Budget" in workspace "PMO"
   When she saves report "Portfolio status" joining Risks.project to Projects.id and Budget.project to Projects.id and requests a refresh
-  Then the refresh is acknowledged within 2 seconds and a succeeded snapshot records row_count, duration_ms, and source_versions
+  Then the refresh is acknowledged within 2 seconds and a succeeded snapshot records row_count and duration_ms with one report_snapshot_sources row per source sheet
   And report.created.v1 and report.refreshed.v1 are in the outbox
 
 Scenario: Grouped aggregates exclude hidden values
@@ -176,7 +177,7 @@ Scenario: Viewer cannot mutate or refresh
   Then the response is 403 denied and no audit mutation row is written
 
 Scenario: Stale snapshot detected
-  Given a succeeded snapshot recorded Projects at version 7
+  Given a succeeded snapshot recorded Projects at sheet_version 7 in report_snapshot_sources
   When a row in Projects is edited making version 8
   Then GET rows returns meta.stale true until the next refresh succeeds
 ```
@@ -209,7 +210,7 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 - [ ] All FR/NFR acceptance tests pass in targeted and full modes
 - [ ] Rust unit/API/database, React, E2E, permission-negative, accessibility, and performance gates pass
 - [ ] Audit events and outbox events verified for every mutation and refresh
-- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets` and `check-contracts` pass
+- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets`, `check-contracts`, and `check-persistence` pass
 - [ ] Rollback verified: disable `F021_FEATURE`, stop the refresh consumer, run down migration on an empty tenant
 - [ ] `finished_at` recorded and file moved to `work/archived/`
 
@@ -217,4 +218,4 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 
 - Users can build reports that join several sheets by stable IDs, filter, group, and add calculated fields, and refresh them into cached snapshots that show stale state and source versions.
 - Viewers only see rows and columns they can open in the source sheets; hidden values never enter aggregates unless tenant policy allows.
-- Migration adds `reports`, `report_sources`, `report_filters`, `report_snapshots`, and `report_snapshot_rows`; rollback drops them. Feature is off by default behind `F021_FEATURE`.
+- Migration adds `reports`, `report_sources`, `report_source_columns`, `report_joins`, `report_filters`, `report_group_by`, `report_aggregates`, `report_calculated_fields`, `report_snapshots`, `report_snapshot_sources`, `report_snapshot_rows`, and `report_snapshot_row_sources`; rollback drops them. Feature is off by default behind `F021_FEATURE`.

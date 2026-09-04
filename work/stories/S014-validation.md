@@ -43,8 +43,8 @@ As a sheet editor, I want each cell normalized and checked against the column's 
 ## Surfaces
 
 - Infrastructure/container: JetStream job subject `columns.validate` consumed by the F004 worker runtime
-- Rust service/API: `crates/domain/src/columns/{normalize.rs, validation.rs, validate_job.rs}`; `services/api/src/columns/{handlers_validate.rs, job_dispatch.rs}`
-- Data/migration: none new; uses `cell_validation_states` and `cells.normalized` from S013
+- Rust service/API: `crates/domain/src/columns/{normalize.rs, validation.rs, validate_job.rs}`; `services/api/src/columns/{handlers_validate.rs, job_dispatch.rs}`; rules are loaded from `column_validation_rules` and type settings from `column_settings` through `ColumnRepository`, outcomes are written through `CellValidationStateRepository`, and normalized values through the F006 `CellRepository` — the engine, the handler, and the job hold no SQL (decision 2.1)
+- Data/migration: none new; uses `column_validation_rules`, `column_settings`, `cell_validation_states`, and `cells.normalized` from S013, `cell_validation_states` being the only store of per-cell validation state
 - React/UI: `apps/web/src/features/columns/{ColumnHeaderMenu.tsx, ColumnEditorDrawer.tsx, TypePicker.tsx, OptionListEditor.tsx, ValidationRuleEditor.tsx, TypeChangePreview.tsx, ValidationIcon.tsx, AddColumnButton.tsx, api.ts, hooks.ts}`
 - Mocks/fixtures: 500-row mixed validity sheet; 100,000-row generator for the performance lane; inline job executor; MSW handlers for component tests
 

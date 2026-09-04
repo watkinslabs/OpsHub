@@ -6,7 +6,7 @@ parent_epic: E007
 parent_feature: F033
 parent_story: S065
 depends_on: [T129]
-owned_paths: [crates/domain/src/resources/**, services/api/src/resources/**, testing/features/F033/api/**, testing/features/F033/requirements/**]
+owned_paths: [crates/domain/src/resources/**, crates/persistence/src/resources/**, services/api/src/resources/**, testing/features/F033/api/**, testing/features/F033/requirements/**]
 feature_flag: F033_FEATURE
 branch: t130-capacity-calendar
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S065` Resource profiles
 - Owner: platform
 - Branch: `t130-capacity-calendar`
-- Decision references: `docs/architecture-decisions.md` sections 2–3; `docs/capability-contracts.md` row F033
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3; `docs/capability-contracts.md` row F033
 
 ## Objective
 
@@ -28,10 +28,11 @@ Implement the capacity calculator over the F011 working calendar, FTE, leave, ho
 
 ## Specification
 
-- Owned paths: `crates/domain/src/resources/{capacity.rs, working_days.rs, distribution.rs, service_capacity.rs}`, `services/api/src/resources/handlers_capacity.rs`
-- Contract/input: query `{ from, to, granularity: day|week }` with `to − from ≤ 366` days; inputs from `working_calendars` and `calendar_exceptions` (F011), `resources.fte`, `resource_availability`, and non-deleted `allocations` overlapping the range.
+- Owned paths: `crates/domain/src/resources/{capacity.rs, working_days.rs, distribution.rs, service_capacity.rs}`, `crates/persistence/src/resources/{availability_repository.rs, allocation_repository.rs}`, `services/api/src/resources/handlers_capacity.rs`
+- Contract/input: query `{ from, to, granularity: day|week }` with `to − from ≤ 366` days; inputs from `working_calendars` and `calendar_exceptions` read through the F011 `WorkingCalendarRepository` trait, `resources.fte` from `ResourceRepository::get`, `resource_availability` from `AvailabilityRepository::list_availability_overlapping`, and non-deleted `allocations` overlapping the range from `AllocationRepository::list_allocations_overlapping`.
 - Output/behavior: `GET /api/v1/resources/{id}/capacity` returns `CapacityResponse { granularity, periods: [CapacityPeriod], totals }` where `calendar_hours` counts working days times hours per day excluding calendar exceptions, `fte_hours = calendar_hours × fte`, `leave_hours` and `holiday_hours` count whole working days of matching availability kinds at `hours_per_day × fte`, `reduced_hours = (calendar hours per day − hours_per_day) × fte` per reduced day, `available_hours = max(0, fte_hours − leave − holiday − reduced)`, `allocated_hours` distributes each hours allocation evenly over its working days and applies `planned_percent × available_hours` for percent allocations, `remaining_hours = available − allocated`, `over_allocated = allocated > available`, and allocations without working days produce `warning: no_working_days`; week periods start Monday in the resource time zone; `working_days.rs` precomputes working days per calendar per year in memory with a 24-hour cache keyed by `working-calendar.updated.v1`; `service_capacity.rs::recompute_span` is called by profile, availability, and allocation writes inside the transaction and enqueues `capacity.computed.v1` with `changed_fields { resource_id, from, to }`; a range over 366 days returns `400 invalid` with `field_errors.to`.
-- Dependencies: T129 schema and routes; F011 calendar and exception queries; F004 outbox writer.
+- Data access: `capacity.rs`, `working_days.rs`, `distribution.rs`, `service_capacity.rs`, and `handlers_capacity.rs` contain no SQL and no SQLx type; the calculator takes the repository traits as its inputs, and `recompute_span` runs inside the caller's `UnitOfWork` so the capacity read and the write that triggered it share one transaction (decision section 2.1)
+- Dependencies: T129 schema and repositories; F011 calendar and exception queries; F004 outbox writer.
 - Feature flag: `F033_FEATURE`
 
 ## TDD

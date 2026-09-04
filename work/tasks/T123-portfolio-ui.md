@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S062` Project rollup
 - Owner: platform
 - Branch: `t123-portfolio-ui`
-- Decision references: `docs/architecture-decisions.md` section 6; `docs/capability-contracts.md` row F031
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 6; `docs/capability-contracts.md` row F031
 
 ## Objective
 
@@ -31,6 +31,7 @@ Build the portfolio list and rollup pages with the project picker, measure mappi
 - Owned paths: `apps/web/src/features/portfolios/{PortfolioListPage.tsx, PortfolioPage.tsx, PortfolioHeader.tsx, RollupTable.tsx, RollupTotals.tsx, MeasureCell.tsx, ProjectPicker.tsx, NewPortfolioDialog.tsx, MeasureMappingEditor.tsx, api.ts, hooks.ts, routes.ts}`
 - Contract/input: generated `PortfoliosApi` client; route params `workspaceId`, `portfolioId`; query keys `['portfolios', workspaceId, cursor]`, `['portfolio', id]`, `['portfolio-rollup', id]`.
 - Output/behavior: list page with `New portfolio` for administrators; rollup page renders `RollupTotals` and `RollupTable` (one row per project; columns status, schedule variance, budget planned/actual/variance, risk, value, health) with `Last refreshed`, stale badge after `stale_after_seconds`, `Refresh` that calls `requestRefresh` and polls `['portfolio', id]` every 2 seconds while `rollup_state === 'refreshing'`, `Missing` cells with reason tooltip, `Restricted project` rows for `denied`, drill link only for `ok` rows; `ProjectPicker` replaces membership optimistically and shows `field_errors.projects[i]` inline on `invalid`; states: loading skeleton, empty call to action, error banner with correlation ID, refreshing, failed with `last_refresh_error`, denied affordances for viewers, not-found page; under 768 px rows become stacked cards; Lucide icons and tokens per ticket section 3; telemetry `portfolio_created`, `portfolio_opened`, `portfolio_projects_replaced`, `portfolio_refresh_requested`, `portfolio_drill_opened`.
+- Data access: this task is browser-only and touches no database; it consumes `PortfoliosApi`, and the `measure_mappings` object and `rows`/`totals` arrays it renders keep their JSON shapes even though the server stores them as `portfolio_measure_mappings`, `portfolio_rollup_rows`, and `portfolio_rollup_totals` rows (decision sections 2 and 2.1).
 - Dependencies: T122 routes; F005 workspace shell for the `Portfolios` sidebar entry; F006 sheet page as the drill target.
 - Feature flag: `F031_FEATURE` read through the flag hook; routes are not registered when off.
 

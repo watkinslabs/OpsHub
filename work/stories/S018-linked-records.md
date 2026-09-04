@@ -44,8 +44,8 @@ As a sheet editor, I want parent cells to roll up their children with a rule I c
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/links/{link.rs, link_service.rs, rollup.rs, rollup_service.rs, consumer.rs, sync.rs}`; `services/api/src/links/{handlers_links.rs, handlers_rollup.rs}`
-- Data/migration: none new; uses tables from S017
+- Rust service/API: `crates/domain/src/links/{link.rs, link_service.rs, rollup.rs, rollup_service.rs, consumer.rs, sync.rs}`; `services/api/src/links/{handlers_links.rs, handlers_rollup.rs}`; links go through `CellLinkRepository` and rules through `RollupRuleRepository` (which owns `rollup_rules`, `rollup_rule_status_priorities`, and `rollup_rule_filters`) in `crates/persistence/src/links/`, recomputed cells through the F006 `CellRepository` and their validation rows through the F007 `CellValidationStateRepository`; the services, consumers, and tests hold no SQL (decision 2.1)
+- Data/migration: none new; uses `cell_links`, `rollup_rules`, `rollup_rule_status_priorities`, and `rollup_rule_filters` from S017 through those repositories
 - React/UI: `apps/web/src/features/links/{HierarchyControls.tsx, IndentGuide.tsx, ChildRowsOutline.tsx, LinkPicker.tsx, LinkedCellRenderer.tsx, BrokenLinkBadge.tsx, RollupRuleEditor.tsx, RollupCellRenderer.tsx, api.ts, hooks.ts}`
 - Mocks/fixtures: `Plan` tree with `Cost` and `Status` columns, `Vendors` sheet with 20 rows, tenant B `Foreign`; 5,000-row tree generator for performance lane; MSW handlers for component tests
 

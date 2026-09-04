@@ -127,7 +127,7 @@ Excluded: workload aggregation across resources and persistent conflict records 
 
 - Test harness path: `testing/features/F033/`
 - Feature flag: `F033_FEATURE`
-- Fixture/seed factory: `testing/fixtures/resources.rs` builds tenant, workspace, resource-admin, resource-viewer, a linked user, foreign tenant, an F011 calendar (Mon–Fri 8 h with a holiday on `2026-10-12`), two resources (FTE 1.0 and 0.5), skills, a leave week, cost rates, and a project sheet with rows
+- Fixture/seed factory: `testing/fixtures/resources.rs` builds tenant, workspace, resource-admin, resource-viewer, a linked user, foreign tenant, an F011 calendar (Mon–Fri 8 h with a holiday on `2026-10-12`), two resources (FTE 1.0 and 0.5), skills, a leave week, cost rates, and a project sheet with rows; every fixture row is written through the `crates/persistence/src/resources/` repositories, never by raw SQL
 - Deterministic test data: fixed UUIDv7 seeds, fixed clock `2026-09-03T00:00:00Z`, UTC calendar
 - Mock/stub contracts: outbox publisher recorded in memory; F011 calendar service real against fixture; authz uses the real F003 engine
 - Parallel isolation: one schema per test worker, tenant ID per test

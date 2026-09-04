@@ -44,8 +44,8 @@ As a sheet editor, I want to create, list, rename, reorder, hide, retype, and so
 ## Surfaces
 
 - Infrastructure/container: none beyond F004 baseline
-- Rust service/API: `crates/domain/src/columns/{mod.rs, column.rs, types.rs, settings.rs, conversion.rs, position.rs, errors.rs, service.rs}`; `services/api/src/columns/{mod.rs, routes.rs, handlers_column.rs, handlers_reorder.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_columns_create_tables.sql` creating `columns`, `column_options`, `cell_validation_states`, and `cells.normalized` with indexes from ticket section 4
+- Rust service/API: `crates/domain/src/columns/{mod.rs, column.rs, types.rs, settings.rs, conversion.rs, position.rs, errors.rs, service.rs}`; `services/api/src/columns/{mod.rs, routes.rs, handlers_column.rs, handlers_reorder.rs, dto.rs}`; every table is reached through `ColumnRepository` (`columns`, `column_settings`, `column_validation_rules`), `ColumnOptionRepository`, and `CellValidationStateRepository` in `crates/persistence/src/columns/`, with cells written through the F006 `CellRepository`; the service, handlers, and tests contain no SQL (decision 2.1)
+- Data/migration: `services/api/migrations/<ts>_columns_create_tables.sql` creating `columns`, `column_settings`, `column_validation_rules`, `column_options`, `cell_validation_states`, and `cells.normalized`, and folding F006's interim `cells.validation_state`, `validation_code`, and `validation_message` columns into `cell_validation_states`, with the indexes and constraints from ticket section 4
 - React/UI: none in this story (S014 and T027 cover UI)
 - Mocks/fixtures: `testing/fixtures/columns.rs` sheet with one column per type, editor, viewer, foreign tenant; in-memory outbox recorder
 

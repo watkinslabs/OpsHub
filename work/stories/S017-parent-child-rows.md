@@ -44,8 +44,8 @@ As a sheet editor, I want to indent and outdent rows into a parent/child tree, l
 ## Surfaces
 
 - Infrastructure/container: none beyond F004 baseline
-- Rust service/API: `crates/domain/src/links/{mod.rs, hierarchy.rs, hierarchy_service.rs, hierarchy_reader.rs, errors.rs, schema.rs}`; `services/api/src/links/{mod.rs, routes.rs, handlers_hierarchy.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_links_create_tables.sql` creating `row_hierarchy`, `cell_links`, `rollup_rules` with the trigger, partial unique index, and indexes from ticket section 4
+- Rust service/API: `crates/domain/src/links/{mod.rs, hierarchy.rs, hierarchy_service.rs, hierarchy_reader.rs, errors.rs, schema.rs}`; `services/api/src/links/{mod.rs, routes.rs, handlers_hierarchy.rs, dto.rs}`; `row_hierarchy` is reached only through `RowHierarchyRepository` in `crates/persistence/src/links/` (named queries `subtree_by_path`, `ancestors_of`), rows through the F006 `RowRepository`; the model, service, handlers, and tests hold no SQL (decision 2.1)
+- Data/migration: `services/api/migrations/<ts>_links_create_tables.sql` creating `row_hierarchy`, `cell_links`, `rollup_rules`, `rollup_rule_status_priorities`, and `rollup_rule_filters` with the trigger, partial unique index, and indexes from ticket section 4
 - React/UI: none in this story (S018 and T036 cover UI)
 - Mocks/fixtures: `testing/fixtures/links.rs` tenant A editor/viewer, sheet `Plan` with a 3-level 60-row tree, tenant B sheet `Foreign`; in-memory outbox recorder
 

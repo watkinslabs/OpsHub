@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S078` natural-language reports
 - Owner: platform
 - Branch: `t156-evaluation-harness`
-- Decision references: `docs/architecture-decisions.md` sections 7, 9; `docs/capability-contracts.md` row F039
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 7, 9; `docs/capability-contracts.md` row F039
 
 ## Objective
 

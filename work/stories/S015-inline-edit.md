@@ -44,8 +44,8 @@ As a sheet editor, I want to change individual cells with per-cell validation an
 ## Surfaces
 
 - Infrastructure/container: none beyond F004 baseline
-- Rust service/API: `crates/domain/src/grid/{mod.rs, edit.rs, batch.rs, inverse.rs, history.rs, layout.rs, feed.rs, errors.rs, service.rs}`; `services/api/src/grid/{mod.rs, routes.rs, handlers_cells.rs, handlers_undo.rs, handlers_feed.rs, handlers_history.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_grid_create_tables.sql` creating `cell_history`, `edit_batches`, `sheet_user_layouts`, and adding `change_version` to `sheets` and `cells` with indexes from ticket section 4
+- Rust service/API: `crates/domain/src/grid/{mod.rs, edit.rs, batch.rs, inverse.rs, history.rs, layout.rs, feed.rs, errors.rs, service.rs}`; `services/api/src/grid/{mod.rs, routes.rs, handlers_cells.rs, handlers_undo.rs, handlers_feed.rs, handlers_history.rs, dto.rs}`; tables are reached through `CellHistoryRepository`, `EditBatchRepository`, and `SheetUserLayoutRepository` in `crates/persistence/src/grid/`, and cells, rows, and `sheets.change_version` through the F006 `CellRepository`, `RowRepository`, and `SheetRepository`; `inverse.rs` builds the inverse from the batch's `cell_history` rows and the row lock is `RowRepository::lock_rows_for_edit`, so no handler, service, or test holds SQL (decision 2.1)
+- Data/migration: `services/api/migrations/<ts>_grid_create_tables.sql` creating `cell_history`, `edit_batches`, `sheet_user_layouts`, `sheet_user_column_layouts`, and adding `change_version` to `sheets` and `cells` with the indexes from ticket section 4, including `cell_history(batch_id)` for the undo read
 - React/UI: none in this story (S016 and T031 cover the grid)
 - Mocks/fixtures: `testing/fixtures/grid.rs` tenant, 12-column sheet, 500 rows, editor A, editor B, commenter, viewer, foreign tenant; in-memory outbox recorder
 

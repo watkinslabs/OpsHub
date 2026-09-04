@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S078` natural-language reports
 - Owner: platform
 - Branch: `t155-proposal-diff-ui`
-- Decision references: `docs/architecture-decisions.md` sections 3, 8; `docs/capability-contracts.md` row F039
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 8; `docs/capability-contracts.md` row F039
 
 ## Objective
 

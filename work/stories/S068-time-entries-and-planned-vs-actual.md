@@ -20,7 +20,7 @@ finished_at: null
 - Owner: platform
 - Branch: `s068-time-entries-and-planned-vs-actual`
 - Child tasks: `T135` balancing UI, `T136` performance tests
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 9; `docs/capability-contracts.md` row F034
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 9; `docs/capability-contracts.md` row F034
 
 ## Vertical slice
 
@@ -30,7 +30,7 @@ The slice is the `summary_builder` worker plus the five web surfaces and the lat
 
 ## Requirements
 
-- **SR-S068-01:** `services/worker/src/workload/summary_builder.rs` maintains `effort_summaries` for scopes `row`, `project`, and `resource_period` within 60 seconds of `time-entry.recorded.v1`, `time-entry.reconciled.v1`, `allocation.*.v1`, and `capacity.computed.v1`, recording `computed_at` and `source_versions`; reads serve from summaries and report `stale: true` when a newer source event is queued (covers FR-F034-10).
+- **SR-S068-01:** `services/worker/src/workload/summary_builder.rs` maintains `effort_summaries` for scopes `row`, `project`, and `resource_period` within 60 seconds of `time-entry.recorded.v1`, `time-entry.reconciled.v1`, `allocation.*.v1`, and `capacity.computed.v1` through `EffortSummaryRepository::upsert_summary_with_sources`, recording `computed_at` on the summary and one `effort_summary_sources` row per source kind (`time_entry`, `reconciliation`, `allocation`, `capacity`) with its `source_version`; reads serve from summaries and report `stale: true` when a queued event's version exceeds the stored row for its kind; the worker holds no SQL of its own (covers FR-F034-10).
 - **SR-S068-02:** `GET /api/v1/rows/{id}/effort` renders in the task-row `Effort` tab as `planned_hours`, `actual_hours`, `pending_external_hours`, `remaining_hours`, `variance_hours`, `variance_pct`, and `by_resource[]`, with the F009 descendant rollup when `include_children=true` and cost figures only for `resource-admin` (FR-F034-09, NFR-F034-02).
 - **SR-S068-03:** The web surfaces at `/w/:workspaceId/workload`, `/workload/conflicts`, `/time`, and `/workload/reconcile` provide the resource-by-period heatmap, the conflicts panel whose `Shift` and `Reassign` actions call the F033 allocation API, the current user's time sheet, the reconciliation queue, and the effort panel, with loading, empty, error, stale, conflict, locked, denied, and offline states (FR-F034-13).
 - **SR-S068-04:** Client permission behavior: `resource-viewer` sees workload, conflicts, and effort without cost columns and without import or reconcile entry points; a non-viewer sees only their own row and entries; a cross-tenant id lands on the not-found view (FR-F034-12).
@@ -40,6 +40,7 @@ The slice is the `summary_builder` worker plus the five web surfaces and the lat
 
 ## Surfaces
 
+- Data access: the summary builder reaches PostgreSQL only through `crates/persistence/src/workload/{effort_summary_repository.rs, time_entry_repository.rs, conflict_repository.rs}` — `EffortSummaryRepository` owns `effort_summaries` and `effort_summary_sources` and rebuilds them from `time_entries` and the F033 allocation repository; no `sqlx::query*` call, connection, or SQL string appears in `services/worker/src/workload/`, in the web client, or in the performance benches, which drive fixtures and assertions through the same repositories (decision section 2.1)
 - Worker: `services/worker/src/workload/summary_builder.rs` registered in `services/worker/src/registry.rs` behind `F034_FEATURE`, with `rebuild_summaries` as the repair path
 - React/UI: `apps/web/src/features/workload/{routes.ts, api.ts, hooks.ts, WorkloadPage.tsx, WorkloadHeatmap.tsx, HeatmapCell.tsx, ConflictsPanel.tsx, ConflictItem.tsx, SuggestionActions.tsx, TimeSheetPage.tsx, TimeEntryRow.tsx, TimeEntryDialog.tsx, ImportDialog.tsx, ReconcileQueuePage.tsx, ReconcileDecisionDialog.tsx, EffortPanel.tsx}`
 - State: TanStack Query keys `['workload', filters]`, `['workload-conflicts', filters, cursor]`, `['time-entries', resourceId, from, to]`, `['row-effort', rowId, includeChildren]`; a `stale` response refetches every 5 seconds until fresh

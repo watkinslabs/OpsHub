@@ -44,8 +44,8 @@ As a sheet editor, I want to paste blocks, fill ranges, multi-select, bulk edit 
 ## Surfaces
 
 - Infrastructure/container: none
-- Rust service/API: `crates/domain/src/grid/{bulk.rs, selection.rs, fill.rs}`; `services/api/src/grid/handlers_bulk.rs`
-- Data/migration: none new; uses tables from S015
+- Rust service/API: `crates/domain/src/grid/{bulk.rs, selection.rs, fill.rs}`; `services/api/src/grid/handlers_bulk.rs`; the bulk paths use the same `crates/persistence/src/grid/` repositories plus the F006 `CellRepository` and `RowRepository` and contain no SQL (decision 2.1)
+- Data/migration: none new; uses `cell_history`, `edit_batches`, `sheet_user_layouts`, and `sheet_user_column_layouts` from S015 through those repositories
 - React/UI: `apps/web/src/features/grid/{VirtualGrid.tsx, GridHeaderRow.tsx, GridRow.tsx, GridCell.tsx, CellEditor.tsx, SelectionModel.ts, ClipboardController.ts, FillHandle.tsx, UndoRedoController.ts, ColumnResizeHandle.tsx, ColumnHeaderMenu.tsx, FrozenColumnsPane.tsx, BulkEditDialog.tsx, CellHistoryPopover.tsx, ConflictOutline.tsx, api.ts, hooks.ts}`
 - Mocks/fixtures: seeded 12-column/500-row sheet; 100,000-row generator for performance lane; MSW handlers for component tests; two-browser Playwright context for conflicts
 

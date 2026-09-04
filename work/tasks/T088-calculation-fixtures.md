@@ -6,7 +6,7 @@ parent_epic: E005
 parent_feature: F022
 parent_story: S044
 depends_on: [T087]
-owned_paths: [testing/features/F022/**, crates/domain/src/metrics/**, apps/web/src/features/metrics/**]
+owned_paths: [testing/features/F022/**, crates/domain/src/metrics/**, crates/persistence/src/metrics/**, apps/web/src/features/metrics/**]
 feature_flag: F022_FEATURE
 branch: t088-calculation-fixtures
 started_at: null
@@ -33,9 +33,9 @@ Build deterministic calculation fixtures with known expected values for every ag
 
 ## Specification
 
-- Owned paths: `testing/features/F022/api/calculation_tests.rs`, `testing/features/F022/api/permission_tests.rs`, `testing/features/F022/fixtures/expected_values.json`, `testing/features/F022/e2e/metric.spec.ts`, `testing/features/F022/accessibility/kpi.a11y.spec.ts`, `testing/features/F022/performance/{metric_values_bench.rs, recompute_bench.rs}`, `testing/features/F022/requirements/cases.md`, fixes limited to `crates/domain/src/metrics/**` and `apps/web/src/features/metrics/**`
+- Owned paths: `testing/features/F022/api/calculation_tests.rs`, `testing/features/F022/api/permission_tests.rs`, `testing/features/F022/fixtures/expected_values.json`, `testing/features/F022/e2e/metric.spec.ts`, `testing/features/F022/accessibility/kpi.a11y.spec.ts`, `testing/features/F022/performance/{metric_values_bench.rs, recompute_bench.rs}`, `testing/features/F022/requirements/cases.md`, fixes limited to `crates/domain/src/metrics/**`, `crates/persistence/src/metrics/**`, and `apps/web/src/features/metrics/**`
 - Contract/input: `expected_values.json` lists 40 cases `{ metric, scope, grain, from, to, expected_current, expected_series, expected_comparison, expected_formatted }` derived by hand from the three-sheet fixture at clock `2026-09-03T00:00:00Z`, including DST weeks of 2026-03-08 and 2026-11-01, an empty denominator for `percent_of`, and locale `de-DE` currency.
-- Output/behavior: calculation tests load each case, recompute, read values, and assert equality to the decimal; permission tests cover cross-tenant `404`, viewer mutation `403`, restricted-source scope, hidden-column null, and scope_key isolation between two viewers; E2E defines a metric from the report UI, waits for the value, edits a source row, sees the stale badge, and recomputes; accessibility runs axe on the card grid and editor and checks text alternatives; performance measures `values` p95 < 300 ms and recompute < 30 s over 100,000 rows with evidence under `testing/evidence/F022/`.
+- Output/behavior: calculation tests load each case, recompute, read values through the repository traits, and assert equality to the decimal; the fixtures and test lanes contain no SQL string, `sqlx::query*` call, or connection, and seed metrics, `metric_filters` rows, and expected values through `MetricRepository`, `MetricValueRepository`, and `MetricRunRepository`; permission tests cover cross-tenant `404`, viewer mutation `403`, restricted-source scope, hidden-column null, and scope_key isolation between two viewers; E2E defines a metric from the report UI, waits for the value, edits a source row, sees the stale badge, and recomputes; accessibility runs axe on the card grid and editor and checks text alternatives; performance measures `values` p95 < 300 ms and recompute < 30 s over 100,000 rows with evidence under `testing/evidence/F022/`.
 - Dependencies: T087 UI and rollups; F021 fixture; Playwright and criterion runners in `testing/harness/`.
 - Feature flag: `F022_FEATURE`
 

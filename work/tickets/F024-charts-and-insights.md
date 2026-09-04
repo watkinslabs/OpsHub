@@ -184,7 +184,7 @@ Scenario: Spec without formatting rejected
 - Blocks: none
 - Conflicts with: none (disjoint owned paths)
 - External dependencies: NATS JetStream for `charts.project`; `d3-scale` and `d3-shape` in the web app
-- Risks and mitigations: burndown reconstruction over `cell_history` is expensive, so the query uses one window-function pass per day boundary, caps the span at 366 days, and caches 60 s; least squares on short or flat series produces misleading bands, so fewer than 3 points yields no projection and bands are clamped at zero for count metrics; two-dimension bar charts can explode series, so series are capped at 20 with `truncated: true`.
+- Risks and mitigations: burndown reconstruction over `cell_history` is expensive, so the F008 repository query uses one window-function pass per day boundary, caps the span at 366 days, and caches 60 s; least squares on short or flat series produces misleading bands, so fewer than 3 points yields no projection and bands are clamped at zero for count metrics; two-dimension bar charts can explode series, so series are capped at 20 with `truncated: true`.
 - Open questions: none
 
 ## 7.1 Agent handoff
@@ -203,7 +203,7 @@ Recorded at implementation: implemented summary, files changed, commands and evi
 - [ ] All FR/NFR acceptance tests pass in targeted and full modes
 - [ ] Rust unit/API/database, React, E2E, permission-negative, accessibility, and performance gates pass
 - [ ] Audit events and outbox events verified for chart updates and projections
-- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets` and `check-contracts` pass
+- [ ] All changed files ≤ 500 lines; `cargo xtask validate-tickets`, `check-contracts`, and `check-persistence` pass
 - [ ] Rollback verified: disable `F024_FEATURE` (widgets fall back to the F023 unavailable state), stop the projection consumer, run down migration on an empty tenant
 - [ ] `finished_at` recorded and file moved to `work/archived/`
 

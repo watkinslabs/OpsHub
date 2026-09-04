@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S077` formula help
 - Owner: platform
 - Branch: `t154-permission-filtered-retrieval`
-- Decision references: `docs/architecture-decisions.md` sections 3, 7; `docs/capability-contracts.md` rows F003 and F039
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 7; `docs/capability-contracts.md` rows F003 and F039
 
 ## Objective
 

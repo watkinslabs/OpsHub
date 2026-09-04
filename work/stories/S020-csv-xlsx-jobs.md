@@ -46,8 +46,8 @@ Story split: S019 delivered the index, search route, and import creation, previe
 ## Surfaces
 
 - Infrastructure/container: none beyond S019
-- Rust service/API: `crates/domain/src/dataio/{import/chunker.rs, import/commit.rs, export/service.rs, export/csv_writer.rs, export/xlsx_writer.rs, export/pdf_writer.rs, export/permission_filter.rs, fixtures.rs}`; `services/api/src/dataio/{handlers_export.rs, handlers_import_commit.rs}`; `services/worker/src/dataio/{import_job.rs, export_job.rs, expiry_sweep.rs}`
-- Data/migration: none new; uses tables from S019
+- Rust service/API: `crates/domain/src/dataio/{import/chunker.rs, import/commit.rs, export/service.rs, export/csv_writer.rs, export/xlsx_writer.rs, export/pdf_writer.rs, export/permission_filter.rs, fixtures.rs}`; `services/api/src/dataio/{handlers_export.rs, handlers_import_commit.rs}`; `services/worker/src/dataio/{import_job.rs, export_job.rs, expiry_sweep.rs}`; the chunked commit, the export writers, and the expiry sweep reach their tables through the `crates/persistence/src/dataio/` repositories and write sheet rows only through the F008 bulk row service, holding no SQL themselves (decision 2.1)
+- Data/migration: none new; uses `import_jobs`, `import_column_mappings`, `import_rows`, `import_row_errors`, `export_jobs`, `export_job_columns`, and `export_job_filters` from S019
 - React/UI: `apps/web/src/features/dataio/{SearchCommandPalette.tsx, SearchResultsPage.tsx, SearchResultGroup.tsx, ImportWizard.tsx, ImportUploadStep.tsx, ImportMappingStep.tsx, ImportPreviewTable.tsx, ImportReportPanel.tsx, ImportStatusPanel.tsx, ExportDialog.tsx, ExportStatusToast.tsx, api.ts, hooks.ts, routes.ts}`
 - Mocks/fixtures: 100,000-row CSV generator with fixed seed; worker kill switch between chunks; MSW handlers for component tests; Playwright against a seeded tenant with MinIO
 

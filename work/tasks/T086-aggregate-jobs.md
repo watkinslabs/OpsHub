@@ -6,7 +6,7 @@ parent_epic: E005
 parent_feature: F022
 parent_story: S043
 depends_on: [T085]
-owned_paths: [crates/domain/src/metrics/**, services/api/src/metrics/**, services/worker/src/metrics/**, testing/features/F022/api/**]
+owned_paths: [crates/domain/src/metrics/**, crates/persistence/src/metrics/**, services/api/src/metrics/**, services/worker/src/metrics/**, testing/features/F022/api/**]
 feature_flag: F022_FEATURE
 branch: t086-aggregate-jobs
 started_at: null
@@ -33,10 +33,10 @@ Implement the per-scope aggregation worker, the recompute and values routes, and
 
 ## Specification
 
-- Owned paths: `crates/domain/src/metrics/{aggregate.rs, compare.rs, format.rs, values.rs}`, `services/api/src/metrics/handlers_values.rs`, `services/worker/src/metrics/{mod.rs, recompute_job.rs}`
-- Contract/input: `RecomputeJob { tenant_id, metric_id, run_id, scope_key, actor_id, correlation_id }` on subject `metrics.recompute`; `ViewerScope` from `reports::scope`; rows from `reports::read_rows` (snapshot) or `sheets::list_rows` (live); `values` query `{ from?, to?, grain? }`.
-- Output/behavior: `POST /api/v1/metrics/{id}/recompute` inserts a `queued` run for the actor's `scope_key`, publishes the job, returns `202 { run_id, status }`, and `409 conflict` while active; `aggregate.rs` folds rows into `chrono-tz` buckets for the trailing window (90 days, 52 weeks, 24 months, 8 quarters) applying `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, and `percent_of` (null on zero denominator); `recompute_job.rs` writes `metric_values` and finalizes `metric_runs` with `duration_ms`, `source_versions`, `rows_scanned` in one transaction, publishes `metric.computed.v1`, retries 3 times, dead-letters on the fourth failure, and ignores redelivery of a finished `run_id`; `GET /api/v1/metrics/{id}/values` returns `MetricValuesResponse { current, comparison, series, meta }` for the caller's scope, `meta.status = "computing"` with an enqueued run when no values exist, and `formatted` from `format.rs`.
-- Dependencies: T085 tables and routes; F021 `read_rows` and `ViewerScope`; F004 consumer registry; F049 formatter.
+- Owned paths: `crates/domain/src/metrics/{aggregate.rs, compare.rs, format.rs, values.rs}` (no SQL), `crates/persistence/src/metrics/{metric_value_repository.rs, metric_run_repository.rs}` owning `metric_values`, `metric_runs`, `metric_run_sources`, `services/api/src/metrics/handlers_values.rs`, `services/worker/src/metrics/{mod.rs, recompute_job.rs}`
+- Contract/input: `RecomputeJob { tenant_id, metric_id, run_id, scope_key, actor_id, correlation_id }` on subject `metrics.recompute`; `ViewerScope` from `reports::scope`; rows from F021's snapshot repository or the F006/F007 row repositories, never from this feature's own SQL; `values` query `{ from?, to?, grain? }`.
+- Output/behavior: `POST /api/v1/metrics/{id}/recompute` calls `claim_recompute` to insert a `queued` run for the actor's `scope_key` (`find_active_run` gives `409 conflict` while one is active), publishes the job, and returns `202 { run_id, status }`; `aggregate.rs` folds rows into `chrono-tz` buckets for the trailing window (90 days, 52 weeks, 24 months, 8 quarters) applying `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, and `percent_of` (null on zero denominator); `recompute_job.rs` calls `upsert_values` and finalizes the run — `metric_runs` with `duration_ms` and `rows_scanned` plus one `metric_run_sources` row per source version — in one `UnitOfWork` owned by the repositories and holds no SQL string, `sqlx::query*` call, or connection, publishes `metric.computed.v1`, retries 3 times, dead-letters on the fourth failure, and ignores redelivery of a finished `run_id`; `GET /api/v1/metrics/{id}/values` returns `MetricValuesResponse { current, comparison, series, meta }` for the caller's scope from `list_values`, with `meta.source_versions` assembled from `metric_run_sources` and unchanged in shape, `meta.status = "computing"` with an enqueued run when no values exist, and `formatted` from `format.rs`.
+- Dependencies: T085 tables, `MetricRepository`, and routes; F021 `read_rows` and `ViewerScope`; F004 consumer registry; F049 formatter.
 - Feature flag: `F022_FEATURE` gates the consumer registration in `services/worker/src/consumers.rs`.
 
 ## TDD

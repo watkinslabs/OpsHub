@@ -43,8 +43,8 @@ As a sheet editor, I want to parse and preview a formula against one row and see
 ## Surfaces
 
 - Infrastructure/container: none beyond F004 baseline
-- Rust service/API: `crates/domain/src/formulas/{mod.rs, lexer.rs, parser.rs, ast.rs, canonical.rs, eval.rs, value.rs, errors.rs, functions/*.rs}`; `services/api/src/formulas/{mod.rs, routes.rs, handlers_parse.rs, handlers_functions.rs, dto.rs}`
-- Data/migration: `services/api/migrations/<ts>_formulas_create_tables.sql` creating `formula_definitions`, `formula_dependencies`, `formula_results` with the constraints from ticket section 4 (tables are created here, populated by S070)
+- Rust service/API: `crates/domain/src/formulas/{mod.rs, lexer.rs, parser.rs, ast.rs, canonical.rs, eval.rs, value.rs, errors.rs, functions/*.rs}`; `services/api/src/formulas/{mod.rs, routes.rs, handlers_parse.rs, handlers_functions.rs, dto.rs}`. The lexer, parser, evaluator and handlers are pure of SQL (decision 2.1); the only table access is through `FormulaDefinitionRepository` in `crates/persistence/src/formulas/`, which the parse and evaluate use cases call to load an existing definition.
+- Data/migration: `services/api/migrations/<ts>_formulas_create_tables.sql` creating `formula_definitions`, `formula_dependencies`, `formula_results` with the constraints from ticket section 4 (tables are created here, populated by S070). Each table gets exactly one data access class in `crates/persistence/src/formulas/` — `FormulaDefinitionRepository`, `FormulaDependencyRepository`, `FormulaResultRepository` — implementing the shared `Repository` contract; `formula_definitions.ast` and `formula_results.value` stay `jsonb` because they are a compiled expression payload and one typed cell value, with every queried facet in typed columns and `formula_dependencies` rows.
 - React/UI: none in this story (S070 and T140 cover the editor and badges)
 - Mocks/fixtures: `testing/fixtures/formulas.rs` sheets `Plan` and `Rates`; fixed clock; in-memory outbox recorder
 
