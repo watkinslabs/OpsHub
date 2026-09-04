@@ -40,6 +40,44 @@ cd design/generator && for f in *.py; do case $f in _*) continue;; esac; python3
 That must leave the tree clean. A diff means an artboard was edited by hand instead of through its
 generator.
 
+## The build, once code exists
+
+Today the gates are the whole build. F001 creates the workspaces, and from then on a full local build
+is:
+
+```sh
+docker compose -f infra/compose/docker-compose.yml up -d   # postgres:18, nats:2.11 with JetStream, minio
+sqlx migrate run                                            # schema
+cargo build --workspace                                     # api, worker, realtime, mcp
+pnpm install --frozen-lockfile && pnpm --filter web build   # apps/web/dist
+cargo xtask test-all                                        # every feature harness
+```
+
+CI grows from one job to the five F001 specifies, all required checks: `validate-work` runs the
+thirteen gates; `rust` starts real Postgres and NATS containers and runs `cargo fmt --check`,
+`cargo clippy -- -D warnings` and `cargo test`; `web` runs lint, typecheck, tests and build;
+`policy` audits commit and pull-request text; `line-limit` enforces the 500-line rule.
+
+An image is built once and promoted through the environments unchanged — see
+`docs/architecture-decisions.md` section 11 for release and rollback, and section 2.2 for how a
+schema change is staged so the previous binary always runs against the current schema.
+
+### Build order
+
+The dependency graph is forward-only, but four features gate almost everything and are worth naming:
+
+1. **F001** — the workspaces and CI. Nothing compiles before it.
+2. **F068** — the repository contract. Write it before anything touches the database, or the first
+   features will contain SQL that has to be pulled back out.
+3. **F062** — tokens, theme and the component library. Build a screen before it and the screen gets
+   rewritten.
+4. **F002, F038, F003, F004** — tenants, authentication, authorization, runtime. Every later feature
+   assumes these.
+
+Then take milestones in order from `docs/milestones/README.md`, and within a milestone take any
+feature whose dependencies are archived. Lanes run in parallel where `owned_paths` are disjoint,
+which is what F043 exists to arbitrate.
+
 ## Picking up work
 
 1. Read `docs/milestones/README.md` and take the lowest-order feature in `work/plan.md` whose
