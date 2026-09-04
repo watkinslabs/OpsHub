@@ -17,6 +17,7 @@ implementation.
 | `docs/capability-contracts.md` | Contract catalog: aggregate, module slug, routes, events, tables, and roles per feature. |
 | `docs/product-capability-spec.md` | Product requirements and build order. |
 | `work/plan.md` | Delivery index: every feature with its stories, tasks, and dependencies. |
+| `docs/threat-model.md` | Assets, trust boundaries, threats and the feature that answers each. Required before implementation. |
 | `docs/authorization-model.md` | The permission catalogue, principal kinds and role catalogue every feature authorizes against. |
 | `docs/milestones/README.md` | What each milestone M0–M7 contains and its exit criteria, generated from the tickets. |
 | `work/epics/`, `work/tickets/`, `work/stories/`, `work/tasks/` | 9 epics, 61 feature tickets, 122 stories, 244 tasks. |
