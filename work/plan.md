@@ -125,6 +125,7 @@ Outcome: organizations can administer and connect OpsHub safely. Milestone M5.
 | F027 Governance/compliance | S053 retention/export; S054 access review | T105 retention and legal hold; T106 tenant export/purge; T107 access reports; T108 compliance tests | F003, F010 |
 | F028 API/webhooks | S055 REST API; S056 event delivery | T109 OpenAPI generation; T110 pagination/errors; T111 signed webhooks; T112 contract harness | F003, F038, F004 |
 | F029 Microsoft/Google/Slack | S057 OAuth connections; S058 notifications/sync | T113 OAuth vault; T114 provider adapters; T115 conflict policy; T116 mocked connector tests | F028, F037 |
+| F048 Entitlements and feature flags | S095 entitlement records; S096 flag administration | T189 entitlement schema; T190 entitlement middleware; T191 flag admin UI; T192 entitlement tests | F002, F003 |
 | F064 Billing and subscriptions | S127 subscription and plan lifecycle; S128 usage metering and invoicing | T253 billing schema and provider adapter; T254 plan lifecycle API; T255 usage metering and invoices; T256 billing negative tests | F002, F048 |
 | F065 Self-serve signup and trials | S129 public signup and verification; S130 trial provisioning and conversion | T257 signup schema and public API; T258 verification and anti-abuse; T259 tenant provisioning; T260 signup negative tests | F002, F038, F064 |
 | F063 Microsoft Entra integration | S125 Entra sign-in and directory; S126 Graph mail and group sync | T249 Entra connection and app registration; T250 OIDC sign-in and claims; T251 Graph mail transport; T252 group sync and negative tests | F026, F037, F038 |
@@ -152,7 +153,6 @@ Outcome: entitlement-gated modules and safe assisted work. Milestone M7.
 
 | Feature | Stories | Tasks | Depends on |
 |---|---|---|---|
-| F048 Entitlements and feature flags | S095 entitlement records; S096 flag administration | T189 entitlement schema; T190 entitlement middleware; T191 flag admin UI; T192 entitlement tests | F002, F003 |
 | F050 Dynamic View | S099 restricted views; S100 controlled editing | T197 filter policy; T198 external access; T199 restricted UI; T200 isolation tests | F013, F036, F048 |
 | F051 WorkApps | S101 app composition; S102 role experiences | T201 app manifest; T202 embedded surfaces; T203 role navigation; T204 app security tests | F013, F014, F023, F048 |
 | F052 Data Shuttle | S103 scheduled file flows; S104 mapping and run history | T205 file scheduler; T206 import/export mapping; T207 archive UI; T208 replay tests | F010, F048 |

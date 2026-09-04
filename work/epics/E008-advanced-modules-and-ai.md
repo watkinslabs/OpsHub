@@ -12,7 +12,7 @@ finished_at: null
 ## Decision references
 
 - Architecture: `docs/architecture-decisions.md` sections 2, 3, 4, 7, 9, 10
-- Capability contract: `docs/capability-contracts.md` rows F048, F050–F061, F039, F040
+- Capability contract: `docs/capability-contracts.md` rows F050–F061, F039, F040
 - Product spec: `docs/product-capability-spec.md` sections 5.1 (mobile, publishing, conditional formatting), 5.3 (update requests), 5.10, 5.11, and section 10 resolved decisions
 
 # E008 — Advanced modules and AI
@@ -23,12 +23,11 @@ Every premium module from spec section 5.11 (Dynamic View, WorkApps, Data Shuttl
 
 ## Scope
 
-- Included: entitlement records per module, feature flags with owner/rollout state/disable procedure/cleanup ticket, tenant overrides, and the evaluation endpoint (F048); restricted filtered views with field/row policies and controlled external editing (F050); no-code app shells with pages, role navigation, and published versions (F051); scheduled file ingestion/export with mapping, validation, archive, run history, and replay (F052); reference-data mapping, match engine, controlled sync, and conflict resolution across sheets (F053); multi-step cross-system workflows reusing the F019 runtime and F030 connector actions with a run console and step retry (F054); multi-source calendar aggregation, permissions, ICS publishing, and timezone handling (F055); pivots with saved outputs (F056); asset library with metadata, renditions, rights, and collections (F057); responsive PWA, offline queue, push, deep links (F058); scoped revocable publication and embed tokens (F059); typed conditional-formatting rules with deterministic visual states (F060); update requests with reminders and response audit trail (F061); AI formula/query proposals (F039) and evidence-backed insights and confirmed actions (F040).
+- Included: the premium modules themselves, gated by the F006-epic entitlement records they consume; feature flags with owner/rollout state/disable procedure/cleanup ticket, tenant overrides, and the evaluation endpoint (F048); restricted filtered views with field/row policies and controlled external editing (F050); no-code app shells with pages, role navigation, and published versions (F051); scheduled file ingestion/export with mapping, validation, archive, run history, and replay (F052); reference-data mapping, match engine, controlled sync, and conflict resolution across sheets (F053); multi-step cross-system workflows reusing the F019 runtime and F030 connector actions with a run console and step retry (F054); multi-source calendar aggregation, permissions, ICS publishing, and timezone handling (F055); pivots with saved outputs (F056); asset library with metadata, renditions, rights, and collections (F057); responsive PWA, offline queue, push, deep links (F058); scoped revocable publication and embed tokens (F059); typed conditional-formatting rules with deterministic visual states (F060); update requests with reminders and response audit trail (F061); AI formula/query proposals (F039) and evidence-backed insights and confirmed actions (F040).
 - Excluded: new core primitives (sheets, columns, formulas, views, forms, reports, dashboards, workflows, connectors are owned by E002–E007 and only consumed here); packaging, billing, and plan catalogs (administration concern per spec section 10, not domain behavior); offline document co-editing (spec section 10 mobile decision); AI training on tenant data; arbitrary code execution in Bridge or workflow steps.
 
 ## Child features
 
-- F048 Entitlements and feature flags: entitlement records per module, flag lifecycle, tenant overrides, `GET /api/v1/feature-flags/evaluate`; gate for every other feature in this epic.
 - F050 Dynamic View: row/field filter policies, controlled external editing, public token access on top of F013 views and F036 sharing.
 - F051 WorkApps: app manifest, pages embedding sheets/forms/reports/dashboards, role navigation, published versions at `/apps/{slug}`.
 - F052 Data Shuttle: scheduled file ingestion/export flows with mapping, validation, archive, run history, and replay over F010 jobs.

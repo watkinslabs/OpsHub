@@ -2,7 +2,7 @@
 id: T189
 type: task
 status: planned
-parent_epic: E008
+parent_epic: E006
 parent_feature: F048
 parent_story: S095
 depends_on: [S095]

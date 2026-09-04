@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F061
 parent_story: S122
 depends_on: [S122]
-owned_paths: [crates/domain/src/update-requests/**, services/api/src/update-requests/**, apps/web/src/features/update-requests/**, testing/features/F061/api/**, testing/features/F061/frontend/**]
+owned_paths: [crates/domain/src/update-requests/**, crates/persistence/src/update-requests/**, services/api/src/update-requests/**, apps/web/src/features/update-requests/**, testing/features/F061/api/**, testing/features/F061/frontend/**]
 feature_flag: F061_FEATURE
 branch: t243-recipient-form
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S122` Recipient experience
 - Owner: platform
 - Branch: `t243-recipient-form`
-- Decision references: `docs/architecture-decisions.md` sections 2, 3, 6; `docs/capability-contracts.md` row F061
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 6; `docs/capability-contracts.md` row F061
 
 ## Objective
 

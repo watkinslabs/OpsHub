@@ -2,7 +2,7 @@
 id: S096
 type: story
 status: planned
-parent_epic: E008
+parent_epic: E006
 parent_feature: F048
 depends_on: [S095]
 owned_paths: [crates/domain/src/entitlements/**, crates/persistence/src/entitlements/**, crates/auth/src/entitlements/**, services/api/src/entitlements/**, apps/web/src/features/entitlements/**, testing/features/F048/**]

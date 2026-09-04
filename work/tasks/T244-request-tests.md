@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S122` Recipient experience
 - Owner: platform
 - Branch: `t244-request-tests`
-- Decision references: `docs/architecture-decisions.md` sections 6, 8; `docs/capability-contracts.md` row F061
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 6, 8; `docs/capability-contracts.md` row F061
 
 ## Objective
 

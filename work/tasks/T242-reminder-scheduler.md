@@ -6,7 +6,7 @@ parent_epic: E008
 parent_feature: F061
 parent_story: S121
 depends_on: [S121]
-owned_paths: [crates/domain/src/update-requests/**, services/worker/src/update-requests/**, services/api/src/update-requests/**, testing/features/F061/api/**, testing/features/F061/performance/**]
+owned_paths: [crates/domain/src/update-requests/**, crates/persistence/src/update-requests/**, services/worker/src/update-requests/**, services/api/src/update-requests/**, testing/features/F061/api/**, testing/features/F061/performance/**]
 feature_flag: F061_FEATURE
 branch: t242-reminder-scheduler
 started_at: null
@@ -20,7 +20,7 @@ finished_at: null
 - Parent story: `S121` Request lifecycle
 - Owner: platform
 - Branch: `t242-reminder-scheduler`
-- Decision references: `docs/architecture-decisions.md` sections 3, 4, 6; `docs/capability-contracts.md` row F061
+- Decision references: `docs/architecture-decisions.md` sections 2, 2.1, 3, 4, 6; `docs/capability-contracts.md` row F061
 
 ## Objective
 

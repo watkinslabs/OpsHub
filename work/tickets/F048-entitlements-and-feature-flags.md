@@ -5,8 +5,8 @@ status: planned
 priority: P0
 owner: platform
 estimate: 5
-target_milestone: M7
-parent_epic: E008
+target_milestone: M5
+parent_epic: E006
 depends_on: [F002, F003]
 blocks: [F050, F051, F052, F053, F054, F055, F056, F057, F039]
 conflicts_with: []
