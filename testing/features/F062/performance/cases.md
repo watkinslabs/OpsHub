@@ -4,6 +4,7 @@ File: `testing/features/F062/performance/{budget_tests,visual_tests}.ts`. Flag `
 
 - `themed_bundle_under_budget` — NFR-F062-01: the built `apps/web/src/ui` entry stays under 210 KB gzipped with Data Grid and Charts split into their own chunks; the check names the largest contributors on failure.
 - `tokens_css_under_12kb` — NFR-F062-01: the emitted token and theme CSS stays under 12 KB.
+- `hundred_thousand_row_grid_mounts_within_budget` — FR-F062-17: a 100,000-row, 500-column sheet mounts with at most 60 rendered rows and 40 rendered columns.
 - `ten_thousand_row_grid_scroll_holds_sixty_fps` — NFR-F062-01: scrolling a virtualized 10,000-row `DataGridPanel` holds 60 fps with no frame over 16 ms at the 95th percentile.
 - `theme_switch_repaints_under_sixteen_ms` — NFR-F062-01: toggling theme on a 1,000-row table repaints without a reflow exceeding 16 ms.
 - `density_switch_causes_no_layout_thrash` — FR-F062-07: switching density triggers one style recalculation, not one per row.
