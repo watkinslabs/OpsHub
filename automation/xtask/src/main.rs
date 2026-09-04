@@ -1,5 +1,6 @@
 mod backlog;
 mod content;
+mod order;
 mod persistence;
 mod policy;
 mod release;
@@ -28,10 +29,10 @@ fn main() -> ExitCode {
         Some("check-roles") => persistence::check_roles(),
         Some("check-design") => persistence::check_design(),
         Some("check-references") => persistence::check_references(),
-        Some("check-order") => persistence::check_order(),
+        Some("check-order") => order::check_order(),
         Some("check-filters") => persistence::check_filters(),
         Some("check-completeness") => persistence::check_completeness(),
-        Some("build-order") => { let f = args.next(); persistence::build_order(f.as_deref()) }
+        Some("build-order") => { let f = args.next(); order::build_order(f.as_deref()) }
         Some("check-ownership") => policy::check_ownership_command(),
         Some("check-migrations") => release::check_migrations(),
         Some("test-feature") => args.next().ok_or("feature id required".into()).and_then(|id| release::test_feature(&id)),
