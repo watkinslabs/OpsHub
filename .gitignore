@@ -3,6 +3,9 @@ target/
 **/target/
 *.pdb
 
+__pycache__/
+*.py[cod]
+
 # Node / web
 node_modules/
 dist/
