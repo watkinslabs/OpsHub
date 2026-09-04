@@ -28,7 +28,8 @@ As a product engineer building any OpsHub screen, I want the themed MUI set behi
 ## Requirements
 
 - **SR-S124-01:** `apps/web/src/ui/index.ts` re-exports the themed MUI vocabulary listed in the ticket as the single import surface, and lint fails on a direct `@mui/material` import or a duplicate component name under `apps/web/src/features/**` (covers FR-F062-09).
-- **SR-S124-02:** `ui/data/DataGridPanel.tsx` wraps MUI X `DataGrid` with theme, density, virtualization above 100 rows, sticky header, column resize and reorder, selection, and server-side pagination bound to the F028 cursor, plus its empty, error and denied states (FR-F062-10).
+- **SR-S124-02:** `ui/data/DataGridPanel.tsx` wraps MUI X **Community** `DataGrid` with theme, density, virtualization above 100 rows, sticky header, column resize, selection, sorting, filtering and server-side pagination bound to the F028 cursor, plus its empty, error and denied states (FR-F062-10).
+- **SR-S124-10:** Pro capabilities are gated, not assumed: `useProEntitlement` reads `data-grid-pro` through F048 and returns `{ allowed: false, reason: "not_entitled" }` until F048 ships; without it reorder, pinning, grouping, tree data, aggregation and Excel export render as disabled affordances with a tooltip linking to `/admin/entitlements`, the Pro chunk is never loaded, and no console error appears (FR-F062-16).
 - **SR-S124-03:** `ui/data/ChartPanel.tsx` wraps MUI X `Charts` with the fixed five-series categorical palette, legend or direct labels so colour is never the only signal, and axis and grid colours from the border and text tokens; `ui/data/DateField.tsx` wraps the Date Pickers with the F049 locale and timezone and an `en-US`/`UTC` fallback (FR-F062-10, FR-F062-13).
 - **SR-S124-04:** `ui/patterns/` exports `PageHeader`, `EmptyState`, `ErrorState`, `DeniedState`, `NotFoundState`, `OfflineBanner`, `StaleBanner`, `LoadingSkeleton`, `ConfirmDialog`, `FormLayout` and `FilterBar`, each taking copy as props with no hard-coded feature wording, and `ErrorState` always rendering `correlation_id` with a retry action (FR-F062-11, NFR-F062-04).
 - **SR-S124-05:** `FormattedDate`, `FormattedNumber` and `RelativeTime` read locale and timezone from F049 context, always pass an explicit locale, and no component concatenates translated fragments (FR-F062-11).
@@ -51,7 +52,7 @@ As a product engineer building any OpsHub screen, I want the themed MUI set behi
 - Feature flag: `F062_FEATURE`
 - Targeted command: `cargo xtask test-feature F062`
 - Full command: `cargo xtask test-all`
-- First failing tests: `direct_mui_import_fails_lint`, `data_grid_virtualizes_above_one_hundred_rows`, `chart_palette_is_fixed_and_labelled`, `error_state_renders_correlation_id_and_retry`, `app_shell_rail_width_persists_across_reload`, `icons_import_only_through_registry`, `formatted_date_uses_explicit_locale`, `ui_modules_perform_no_network_call`, `themed_bundle_under_budget`
+- First failing tests: `direct_mui_import_fails_lint`, `pro_affordances_disabled_without_entitlement`, `pro_bundle_absent_by_default`, `data_grid_virtualizes_above_one_hundred_rows`, `chart_palette_is_fixed_and_labelled`, `error_state_renders_correlation_id_and_retry`, `app_shell_rail_width_persists_across_reload`, `icons_import_only_through_registry`, `formatted_date_uses_explicit_locale`, `ui_modules_perform_no_network_call`, `themed_bundle_under_budget`
 
 ## Exit criteria
 
